@@ -1,0 +1,6 @@
+{
+  "model": "gemini-3.8-flash",
+  "temperature": 0.2,
+  "safety_settings": "default",
+  "grounding": false
+}
