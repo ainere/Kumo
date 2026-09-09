@@ -7,6 +7,7 @@ import path from "node:path";
 import { loadConfig } from "../config/settings.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
 import { checkAgyHealth, getAgyUsage } from "../../bridge/agy-runner.js";
+import { saveCachedQuotas } from "../utils/quota-cache.js";
 import {
   getBanner,
   c,
@@ -26,12 +27,17 @@ export async function statusCommand(opts = {}) {
   console.log(`  ${c.bold}KUMO System & Live Account Quota Status${c.reset}`);
   console.log(separator(64));
 
-  console.log(`  ${c.dim}Workspace:${c.reset}    ${workspace}`);
+  const g1 = c.brightCyan;
+  const g2 = c.cyan;
+  const g3 = c.brightBlue;
+  const g4 = c.blue;
+
+  console.log(`  ${g1}${"Workspace:".padEnd(20)}${c.reset}${workspace}`);
   console.log(
-    `  ${c.dim}Orchestrator:${c.reset} ${c.brightCyan}${config.orchestratorModel}${c.reset} (${config.orchestratorProvider || "codex"}, reasoning: ${config.reasoningEffort})`
+    `  ${g1}${"Orchestrator:".padEnd(20)}${c.reset}${c.brightCyan}${config.orchestratorModel}${c.reset}${c.dim} (${config.orchestratorProvider || "codex"}, reasoning: ${config.reasoningEffort})${c.reset}`
   );
   console.log(
-    `  ${c.dim}Worker:${c.reset}       ${c.brightBlue}${config.workerModel}${c.reset} (${config.workerProvider || "gemini"} via MCP Bridge)`
+    `  ${g2}${"Worker:".padEnd(20)}${c.reset}${c.brightBlue}${config.workerModel}${c.reset}${c.dim} (${config.workerProvider || "gemini"} via MCP Bridge)${c.reset}`
   );
   console.log(separator(64));
 
@@ -43,18 +49,18 @@ export async function statusCommand(opts = {}) {
     codexLimits = await client.getRateLimits();
     await client.stop();
   } catch (err) {
-    console.log(`  ${c.dim}Orchestrator Limits:${c.reset} ${badge.warn} (Could not query: ${err.message})`);
+    console.log(`  ${g2}${"Orchestrator Limits:".padEnd(20)}${c.reset}${badge.warn} (Could not query: ${err.message})`);
   }
 
   if (codexLimits) {
     console.log(`  ${c.bold}Orchestrator Quota (${codexLimits.planType}):${c.reset}`);
-    console.log(`    Monthly Remaining: ${progressBar(codexLimits.remainingPercent, 16)}`);
-    console.log(`    Reset Time:        ${c.brightYellow}${codexLimits.resetFormatted}${c.reset}`);
+    console.log(`    ${"Monthly Remaining:".padEnd(20)}${progressBar(codexLimits.remainingPercent, 14)}`);
+    console.log(`    ${"Reset Time:".padEnd(20)}${c.brightYellow}${codexLimits.resetFormatted}${c.reset}`);
 
     if (codexLimits.creditsAvailable > 0) {
-      console.log(`    Reset Credits:     ${c.brightGreen}${codexLimits.creditsAvailable} reset available${c.reset}`);
+      console.log(`    ${"Reset Credits:".padEnd(20)}${c.brightGreen}${codexLimits.creditsAvailable} reset available${c.reset}`);
     } else {
-      console.log(`    Reset Credits:     ${c.dim}0 resets available${c.reset}`);
+      console.log(`    ${"Reset Credits:".padEnd(20)}${c.dim}0 resets available${c.reset}`);
     }
   }
 
@@ -66,31 +72,52 @@ export async function statusCommand(opts = {}) {
     getAgyUsage().catch(() => null),
   ]);
 
-  console.log(`  ${c.bold}Worker Provider (Antigravity / Google AI Pro):${c.reset}`);
+  saveCachedQuotas(codexLimits, agyUsage);
+
+  const isClaude = config.workerProvider === "claude";
+  const workerTitle = isClaude ? "Claude" : "Antigravity / Google AI Pro";
+  console.log(`  ${c.bold}Worker Provider (${workerTitle}):${c.reset}`);
   if (workerHealth.authenticated) {
-    console.log(`    Health:            ${badge.ok} Connected & Authenticated`);
-    console.log(`    Binary:            ${c.dim}${workerHealth.binary}${c.reset}`);
+    console.log(`    ${"Health:".padEnd(20)}${badge.ok} Connected & Authenticated`);
+    console.log(`    ${"Binary:".padEnd(20)}${c.dim}${workerHealth.binary}${c.reset}`);
   } else {
-    console.log(`    Health:            ${badge.warn} CLI available, check login`);
+    console.log(`    ${"Health:".padEnd(20)}${badge.warn} CLI available, check login`);
     if (workerHealth.error) {
-      console.log(`    Detail:            ${c.dim}${workerHealth.error.slice(0, 100)}${c.reset}`);
+      console.log(`    ${"Detail:".padEnd(20)}${c.dim}${workerHealth.error.slice(0, 100)}${c.reset}`);
     }
   }
 
   if (agyUsage) {
-    if (agyUsage.geminiWeeklyPercent !== null) {
+    const weeklyPercent = isClaude
+      ? (agyUsage.claudeGptWeeklyPercent ?? agyUsage.geminiWeeklyPercent)
+      : (agyUsage.geminiWeeklyPercent ?? agyUsage.claudeGptWeeklyPercent);
+    const weeklyReset = isClaude
+      ? (agyUsage.claudeGptWeeklyResetFormatted || "weekly")
+      : (agyUsage.geminiWeeklyResetFormatted || "weekly");
+
+    if (weeklyPercent !== null && weeklyPercent !== undefined) {
       console.log(
-        `    Weekly Remaining:  ${progressBar(agyUsage.geminiWeeklyPercent, 16)} (${agyUsage.geminiWeeklyResetFormatted})`
+        `    ${"Weekly Remaining:".padEnd(20)}${progressBar(weeklyPercent, 14)} (${weeklyReset})`
       );
     }
-    if (agyUsage.gemini5HourPercent !== null) {
+
+    const fiveHourPercent = isClaude
+      ? (agyUsage.claudeGpt5HourPercent ?? agyUsage.gemini5HourPercent)
+      : (agyUsage.gemini5HourPercent ?? agyUsage.claudeGpt5HourPercent);
+    const fiveHourReset = isClaude
+      ? (agyUsage.claudeGpt5HourResetFormatted || "5-hour")
+      : (agyUsage.gemini5HourResetFormatted || "5-hour");
+
+    if (fiveHourPercent !== null && fiveHourPercent !== undefined) {
       console.log(
-        `    5-Hour Remaining:  ${progressBar(agyUsage.gemini5HourPercent, 16)} (${agyUsage.gemini5HourResetFormatted})`
+        `    ${"5-Hour Remaining:".padEnd(20)}${progressBar(fiveHourPercent, 14)} (${fiveHourReset})`
       );
     }
-    if (agyUsage.claudeGptWeeklyPercent !== null) {
+
+    if (!isClaude && agyUsage.claudeGptWeeklyPercent !== null) {
+      const cReset = agyUsage.claudeGptWeeklyResetFormatted || "weekly";
       console.log(
-        `    Claude & GPT Pool: ${c.dim}${agyUsage.claudeGptWeeklyPercent}% weekly • ${agyUsage.claudeGpt5HourPercent}% 5-hour${c.reset}`
+        `    ${"Claude Pool:".padEnd(20)}${progressBar(agyUsage.claudeGptWeeklyPercent, 14)} (${cReset})`
       );
     }
   }
