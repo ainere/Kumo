@@ -1,0 +1,36 @@
+# Node / Dependencies
+node_modules/
+package-lock.json
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+id_rsa
+id_ed25519
+
+# Operating System & IDE junk
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs & build artifacts
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs/
+*.log
+dist/
+build/
+coverage/
+
+# Antigravity session & transient IDE directories
+.system_generated/
+scratch/

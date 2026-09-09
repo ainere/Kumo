@@ -1,0 +1,25 @@
+{
+  "name": "kumo",
+  "version": "1.0.0",
+  "description": "Kumo (雲 / 蜘蛛) — Cross-provider AI orchestrator linking ChatGPT, Gemini, Claude, and beyond",
+  "type": "module",
+  "bin": {
+    "kumo": "./bin/kumo.js",
+    "orchestrator": "./bin/kumo.js"
+  },
+  "main": "./src/cli.js",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "doctor": "node ./bin/kumo.js doctor"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "commander": "^13.1.0",
+    "zod": "^3.24.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "private": true,
+  "license": "MIT"
+}
