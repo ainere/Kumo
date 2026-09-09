@@ -102,41 +102,85 @@ kumo banner                               # Display Cloud Cumulus banner
 
 ---
 
-## 5. Visual Display & Layout Standards
+## 5. How to Actually Start and Do Work with KUMO
+
+KUMO provides both an **interactive REPL session** and a **headless one-shot execution** mode:
+
+### 1. Launching a Session
+From your target project workspace directory:
+```powershell
+# Open dedicated interactive session (spawns in independent window)
+kumo
+
+# Or run directly inside the current terminal
+kumo --here
+
+# Or execute a single headless prompt across providers without launching the UI
+kumo run "Explore src/ and summarize the architecture"
+```
+
+### 2. The Core Orchestration Workflow
+When inside the session (`kumo ›`):
+1. **Enter High-Level Tasks**: You don't need to manually read or paste code. Simply describe your goal:
+   - Feature additions: *"Implement JWT authentication in src/auth.js and write unit tests"*
+   - Architectural exploration: *"Explore src/ and document data flow between providers"*
+   - Refactoring: *"Refactor bridge error handling to support automatic reconnection"*
+   - Bug fixing: *"Run tests, locate why status bars clip, and fix the root cause"*
+2. **Orchestrator Plans & Delegates**:
+   - **ChatGPT 6 Astra** (or your selected orchestrator) evaluates requirements, decomposes steps, and issues targeted commands to the worker via MCP stdio bridge tools (`gemini_explore`, `gemini_implement`, `gemini_test`, `gemini_research`, `gemini_review`).
+3. **Grunt Worker Executes**:
+   - **Gemini 3.8 Flash** executes the heavy file inspection, refactoring, and test execution using its 1M context window and fast inference speed.
+   - **Quota Preservation**: Codex never bloats its ChatGPT Plus quota reading large codebase files directly.
+4. **Review & Verification**:
+   - The orchestrator inspects the generated diffs, verifies test results, and presents a concise summary to the user.
+
+### 3. Model & Quota Management
+- Type `/model` at any time to open the **interactive arrow-key model picker** (`↑`/`↓`, `Enter`, `Esc`).
+- Type `/effort <low|medium|high|max>` to adjust reasoning depth on the fly.
+- Type `/status` or `/refresh` to monitor live rate limits and 14-block gradient usage bars.
+
+---
+
+## 6. Visual Display & Layout Standards
 
 All metadata labels and progress bars adhere to strict layout standards:
 - **Banner**: Refined Cloud Cumulus ASCII cluster with `KUMO (雲) v1.0.0` title badge.
-- **Labels**: Exactly 20-character width (`.padEnd(20)`), styled with cyan-to-blue gradient:
+- **Window Title**: Set to `KUMO — 雲` using em dash (`—`) and kanji (`雲`).
+- **Coloring Scheme**: Pure luminous blueish gradient palette (`brightCyan` → `cyan` → `brightBlue` → `skyBlue`). Dark navy blue (`\x1b[34m`) and over-dimmed text are completely eliminated for maximum contrast across all terminal backgrounds.
+- **Labels**: Standard 24-character width (`.padEnd(24)`):
   - `Workspace:` (`brightCyan`)
   - `Orchestrator:` (`brightCyan`)
   - `Worker:` (`cyan`)
-  - `Orchestrator Quota:` (`cyan`)
+  - `Orchestrator Monthly:` / `Orchestrator Weekly:` (`cyan`)
   - `Worker Weekly:` (`brightBlue`)
-  - `Worker 5-Hour:` (`brightBlue`)
-  - `Claude & GPT Pool:` (`blue`, optional)
-  - `Auth:` (`blue`)
-- **Quota Bars**: Standardized **14-block ASCII progress bar** across all metrics (`progressBar(percent, 14)`).
+  - `Worker 5-Hour:` (`brightBlue`, omitted if no 5-hour limit exists)
+- **Model Reasoning Suffix**: Attached directly to model names with a hyphen (`gpt-5.6-luna-low`, `gemini-3.8-flash-medium`).
+- **Subscription Tags**: Enclosed in parentheses beside the model (`(ChatGPT Plus)`, `(Google AI Pro)`).
+- **Bracket-Free Quotas**: Clean progress bars without model or subscription tags in brackets.
+- **Active Model Scoping**: Quotas strictly display only the metrics for the models actively in use. Unselected model pools (e.g. Claude/GPT pool when using Gemini) are completely suppressed.
+- **Quota Bars**: 14-block ASCII progress bar with filled blocks smoothly transitioning along the **blueish gradient** (`progressBar(percent, 14)`).
 - **Reset Timestamps**: Display both relative countdown and local calendar date:
   `in 6d 22h (Sep 17, 03:53 AM)`
 
 ---
 
-## 6. Verification & Automated Tests
+## 7. Verification & Automated Tests
 
 Run the test suite from the repository root:
 ```powershell
 node --test tests/*.test.js
 ```
 
-All 16 tests pass:
+All 24 tests pass:
 - `tests/bridge.test.js`: Validates MCP stdio bridge initialization and tool discovery.
 - `tests/cli.test.js`: Validates CLI command parsing, binary detection, and Codex invocation parameters.
 - `tests/cloud-banners.test.js`: Validates Cloud Cumulus banner rendering, 14-block progress bars, and reset formatters.
 - `tests/codex-client.test.js`: Validates Codex JSON-RPC app client protocol and rate limits querying.
 - `tests/model.test.js`: Validates presets (including `test`), `effortCommand` for orchestrator and worker, and model switching.
+- `tests/model-picker-and-gradient.test.js`: Validates blueish gradient progress bar colors, model discovery (`getAgyModels`, `getOrchestratorModels`), and active model scoping.
 
 ---
 
-## 7. Repository Info
+## 8. Repository Info
 - **Repository**: [https://github.com/ainere/Kumo.git](https://github.com/ainere/Kumo.git)
 - **Branch**: `main`

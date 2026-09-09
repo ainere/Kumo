@@ -40,13 +40,14 @@ export function launchInNewWindow(opts = {}) {
       [
         "/c",
         "start",
+        "KUMO — 雲",
         "powershell.exe",
         "-NoProfile",
         "-NoExit",
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        `Set-Location '${workspace}'; ${kumoCmd}`,
+        `$host.UI.RawUI.WindowTitle = 'KUMO — 雲'; Set-Location '${workspace}'; ${kumoCmd}`,
       ],
       {
         cwd: workspace,

@@ -29,9 +29,27 @@ export const c = {
   brightRed: "\x1b[91m",
   brightBlue: "\x1b[94m",
   brightMagenta: "\x1b[95m",
+  brightWhite: "\x1b[97m",
+
+  // Vibrant blueish gradient tones (no dark navy)
+  skyBlue: "\x1b[38;5;75m",
+  periwinkle: "\x1b[38;5;111m",
+  electricCyan: "\x1b[38;5;51m",
 };
 
 export const DEFAULT_SUBTITLE = "Frontier Reasoning ◄───[MCP]───► High-Speed Execution";
+
+/**
+ * Signature blueish gradient steps matching Cloud Cumulus theme (electric cyan -> sky blue -> bright blue).
+ */
+export const BLUEISH_GRADIENT = [
+  "\x1b[38;5;51m",  // vibrant electric cyan
+  "\x1b[38;5;45m",
+  "\x1b[38;5;39m",  // sky blue
+  "\x1b[38;5;75m",  // soft bright blue
+  "\x1b[38;5;111m", // periwinkle
+  "\x1b[94m",       // bright blue
+];
 
 /**
  * Cloud banner design implementation.
@@ -43,9 +61,9 @@ export const BANNER_DESIGNS = {
     description: "Atmospheric cloud cumulus cluster with KUMO (雲) title badge",
     render: (v = "1.0.0", sub = DEFAULT_SUBTITLE) => {
       const l1 = `${c.brightCyan}         .---.                    ${c.reset}`;
-      const l2 = `${c.brightCyan}      .-(     ).    ${c.cyan}.---.         ${c.reset}  ${c.bold}${c.white}KUMO${c.reset} ${c.brightCyan}(雲)${c.reset} ${c.dim}v${v}${c.reset}`;
-      const l3 = `${c.cyan}    .(          ).-(     ).       ${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
-      const l4 = `${c.brightBlue}   (____.__.__.____)(____)        ${c.reset}  ${c.dim}${sub}${c.reset}`;
+      const l2 = `${c.brightCyan}      .-(     ).    ${c.cyan}.---.         ${c.reset}  ${c.bold}${c.white}KUMO${c.reset} ${c.brightCyan}(雲)${c.reset} ${c.gray}v${v}${c.reset}`;
+      const l3 = `${c.cyan}    .(          ).-(     ).       ${c.reset}  ${c.gray}Cross-Provider AI Orchestrator${c.reset}`;
+      const l4 = `${c.brightBlue}   (____.__.__.____)(____)        ${c.reset}  ${c.skyBlue}${sub}${c.reset}`;
       return `${l1}\n${l2}\n${l3}\n${l4}`;
     },
   },
@@ -67,15 +85,15 @@ export const badge = {
   fail: `${c.brightRed}[FAIL]${c.reset}`,
   warn: `${c.brightYellow}[WARN]${c.reset}`,
   info: `${c.brightCyan}[INFO]${c.reset}`,
-  dot: `${c.dim}•${c.reset}`,
-  arrow: `${c.dim}→${c.reset}`,
+  dot: `${c.skyBlue}•${c.reset}`,
+  arrow: `${c.brightCyan}→${c.reset}`,
 };
 
 /**
- * Horizontal separator line with cyan-to-blue gradient
+ * Horizontal separator line with luminous cyan-to-blue gradient (no dark navy)
  */
 export function separator(length = 64) {
-  const steps = [c.cyan, c.brightCyan, c.brightBlue, c.blue];
+  const steps = [c.brightCyan, c.cyan, c.brightBlue, c.skyBlue, c.periwinkle];
   let res = "";
   for (let i = 0; i < length; i++) {
     const idx = Math.floor((i / length) * steps.length);
@@ -87,18 +105,20 @@ export function separator(length = 64) {
 /**
  * Render a visual ASCII progress bar for remaining percentages (0 - 100).
  * Always standardizes to 14 blocks for consistent alignment across all quotas.
+ * Uses the signature blueish gradient (cyan to bright blue) for filled blocks.
  */
 export function progressBar(percent = 100, width = 14) {
   const clamped = Math.max(0, Math.min(100, Math.round(percent)));
   const filled = Math.round((clamped / 100) * width);
   const empty = width - filled;
 
-  let color = c.brightGreen;
-  if (clamped <= 15) color = c.brightRed;
-  else if (clamped <= 40) color = c.brightYellow;
-
-  const bar = `${color}${"█".repeat(filled)}${c.dim}${"░".repeat(empty)}${c.reset}`;
-  return `${bar} ${color}${clamped}%${c.reset}`;
+  let bar = "";
+  for (let i = 0; i < filled; i++) {
+    const color = BLUEISH_GRADIENT[Math.floor((i / width) * BLUEISH_GRADIENT.length)] || c.brightCyan;
+    bar += `${color}█`;
+  }
+  bar += `${c.gray}${"░".repeat(empty)}${c.reset}`;
+  return `${bar} ${c.brightCyan}${clamped}%${c.reset}`;
 }
 
 /**

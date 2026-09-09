@@ -321,3 +321,86 @@ export async function checkAgyHealth() {
     };
   }
 }
+
+/** Default fallback worker models */
+export const DEFAULT_WORKER_MODELS = [
+  { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash" },
+  { id: "gemini-3.7-flash", name: "Gemini 3.7 Flash" },
+  { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash" },
+  { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro" },
+  { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+  { id: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 Thinking" },
+  { id: "gpt-oss-120b", name: "GPT-OSS 120B" },
+];
+
+/**
+ * Discover available worker models via `agy models`.
+ * @returns {Promise<Array<{id: string, name: string}>>}
+ */
+export async function getAgyModels() {
+  const bin = getCliBinary();
+
+  return new Promise((resolve) => {
+    let stdout = "";
+    const proc = spawn(bin, ["models"], {
+      stdio: ["ignore", "pipe", "ignore"],
+      shell: false,
+    });
+
+    const timer = setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        /* ignore */
+      }
+      resolve(DEFAULT_WORKER_MODELS);
+    }, 4000);
+
+    proc.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0 || !stdout.trim()) {
+        return resolve(DEFAULT_WORKER_MODELS);
+      }
+
+      const lines = stdout.trim().split("\n");
+      const models = [];
+      const seen = new Set();
+
+      for (const line of lines) {
+        const parts = line.split("\t").map((s) => s.trim());
+        const id = parts[0];
+        const displayName = parts[1] || id;
+
+        if (!id || id.toLowerCase().includes("fetching") || id.toLowerCase().startsWith("usage")) {
+          continue;
+        }
+
+        // Clean base model identifier
+        let baseId = id;
+        if (id.endsWith("-high") || id.endsWith("-medium") || id.endsWith("-low")) {
+          baseId = id.replace(/-(high|medium|low)$/, "");
+        }
+
+        if (!seen.has(baseId)) {
+          seen.add(baseId);
+          models.push({
+            id: baseId,
+            name: displayName.replace(/\s*\((High|Medium|Low)\)/i, ""),
+          });
+        }
+      }
+
+      resolve(models.length > 0 ? models : DEFAULT_WORKER_MODELS);
+    });
+
+    proc.on("error", () => {
+      clearTimeout(timer);
+      resolve(DEFAULT_WORKER_MODELS);
+    });
+  });
+}
+

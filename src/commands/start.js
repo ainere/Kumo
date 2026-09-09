@@ -7,7 +7,14 @@
 
 import path from "node:path";
 import readline from "node:readline";
-import { loadConfig, setConfigValue, PRESETS, applyPreset } from "../config/settings.js";
+import {
+  loadConfig,
+  setConfigValue,
+  PRESETS,
+  applyPreset,
+  resolveOrchestratorModel,
+  resolveWorkerModel,
+} from "../config/settings.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
 import { getAgyUsage } from "../../bridge/agy-runner.js";
 import { launchInNewWindow } from "../utils/window-launcher.js";
@@ -19,90 +26,119 @@ import {
   separator,
   progressBar,
 } from "../utils/ui.js";
+import { openInteractiveModelPicker } from "../utils/model-picker.js";
+
+function getOrchestratorPeriod(limits) {
+  if (!limits) return "Monthly";
+  if (limits.windowMinutes) {
+    if (limits.windowMinutes <= 360) return "5-Hour";
+    if (limits.windowMinutes <= 1440) return "Daily";
+    if (limits.windowMinutes <= 11520) return "Weekly";
+    return "Monthly";
+  }
+  if (limits.resetsAt) {
+    const diffSec = limits.resetsAt - Math.floor(Date.now() / 1000);
+    const diffDays = diffSec / 86400;
+    if (diffDays > 8) return "Monthly";
+    if (diffDays > 1) return "Weekly";
+    if (diffSec <= 21600) return "5-Hour";
+    return "Daily";
+  }
+  return "Monthly";
+}
+
+function setKumoTitle() {
+  if (process.stdout.isTTY) {
+    process.stdout.write("\x1b]0;KUMO — 雲\x07");
+  }
+}
 
 /**
  * Render the startup header with cloud cumulus kanji banner and live dual-provider quotas.
- * Formats every line with a clean 20-character label and 14-block progress bars.
+ * Formats every line with a clean 24-character label and 14-block progress bars.
  */
 function renderHeader(workspace, config, codexLimits = null, agyUsage = null) {
-  const sub = `${c.brightCyan}${config.orchestratorModel}${c.reset} ${c.dim}◄───[MCP]───►${c.reset} ${c.brightBlue}${config.workerModel}${c.reset}`;
+  const orchModelFull = config.reasoningEffort ? `${config.orchestratorModel}-${config.reasoningEffort}` : config.orchestratorModel;
+  const workerModelFull = config.workerEffort ? `${config.workerModel}-${config.workerEffort}` : config.workerModel;
+
+  const sub = `${c.brightCyan}${orchModelFull}${c.reset} ${c.skyBlue}◄───[MCP]───►${c.reset} ${c.brightBlue}${workerModelFull}${c.reset}`;
 
   console.log("\n" + getBanner("1.0.0", "cloud", sub));
   console.log(separator(64));
 
-  // Blueish gradient sequence for metadata labels matching the banner & separator
+  // Luminous blueish gradient sequence for metadata labels matching the banner & separator
   const g1 = c.brightCyan;
   const g2 = c.cyan;
   const g3 = c.brightBlue;
-  const g4 = c.blue;
+  const g4 = c.skyBlue;
 
-  console.log(`  ${g1}${"Workspace:".padEnd(20)}${c.reset}${workspace}`);
+  const orchSub = codexLimits?.planType || (config.orchestratorProvider === "codex" ? "ChatGPT Plus" : "Codex");
+
+  console.log(`  ${g1}${"Workspace:".padEnd(24)}${c.reset}${workspace}`);
   console.log(
-    `  ${g1}${"Orchestrator:".padEnd(20)}${c.reset}${c.brightCyan}${config.orchestratorModel}${c.reset}${c.dim} (${config.orchestratorProvider || "codex"}, reasoning: ${config.reasoningEffort})${c.reset}`
+    `  ${g1}${"Orchestrator:".padEnd(24)}${c.reset}${c.brightCyan}${orchModelFull}${c.reset}${c.gray} (${orchSub})${c.reset}`
   );
-  const workerEffortStr = config.workerEffort ? `, reasoning: ${config.workerEffort}` : "";
   console.log(
-    `  ${g2}${"Worker:".padEnd(20)}${c.reset}${c.brightBlue}${config.workerModel}${c.reset}${c.dim} (${config.workerProvider || "gemini"} via MCP Bridge${workerEffortStr})${c.reset}`
+    `  ${g2}${"Worker:".padEnd(24)}${c.reset}${c.brightBlue}${workerModelFull}${c.reset}${c.gray} (Google AI Pro)${c.reset}`
   );
 
   // Orchestrator quota line (standard 14 blocks)
   if (codexLimits) {
     const bar = progressBar(codexLimits.remainingPercent, 14);
-    const plan = codexLimits.planType ? ` [${codexLimits.planType}]` : "";
+    const orchPeriod = getOrchestratorPeriod(codexLimits);
+    const orchLabel = `Orchestrator ${orchPeriod}:`.padEnd(24);
     console.log(
-      `  ${g2}${"Orchestrator Quota:".padEnd(20)}${c.reset}${bar} ${c.dim}• Resets ${codexLimits.resetFormatted}${plan}${c.reset}`
+      `  ${g2}${orchLabel}${c.reset}${bar} ${c.gray}• Resets ${codexLimits.resetFormatted}${c.reset}`
     );
   }
 
-  // Worker quotas (each on its own line with 14 blocks and exact reset date)
+  // Worker quotas strictly for the active worker model
   if (agyUsage) {
-    const isClaude = config.workerProvider === "claude";
-    const workerLabel = isClaude ? "Claude" : "Gemini";
+    const isClaudeOrGpt = /claude|gpt|anthropic/i.test(config.workerModel) || config.workerProvider === "claude";
 
-    // Worker Weekly limit
-    const weeklyPercent = isClaude
-      ? (agyUsage.claudeGptWeeklyPercent ?? agyUsage.geminiWeeklyPercent)
-      : (agyUsage.geminiWeeklyPercent ?? agyUsage.claudeGptWeeklyPercent);
-    const weeklyReset = isClaude
+    const weeklyPercent = isClaudeOrGpt
+      ? agyUsage.claudeGptWeeklyPercent
+      : agyUsage.geminiWeeklyPercent;
+    const weeklyReset = isClaudeOrGpt
       ? (agyUsage.claudeGptWeeklyResetFormatted || "weekly")
       : (agyUsage.geminiWeeklyResetFormatted || "weekly");
 
     if (weeklyPercent !== null && weeklyPercent !== undefined) {
       const wBar = progressBar(weeklyPercent, 14);
       console.log(
-        `  ${g3}${"Worker Weekly:".padEnd(20)}${c.reset}${wBar} ${c.dim}• Resets ${weeklyReset} [${workerLabel}]${c.reset}`
+        `  ${g3}${"Worker Weekly:".padEnd(24)}${c.reset}${wBar} ${c.gray}• Resets ${weeklyReset}${c.reset}`
       );
     }
 
-    // Worker 5-Hour limit
-    const fiveHourPercent = isClaude
-      ? (agyUsage.claudeGpt5HourPercent ?? agyUsage.gemini5HourPercent)
-      : (agyUsage.gemini5HourPercent ?? agyUsage.claudeGpt5HourPercent);
-    const fiveHourReset = isClaude
+    const fiveHourPercent = isClaudeOrGpt
+      ? agyUsage.claudeGpt5HourPercent
+      : agyUsage.gemini5HourPercent;
+    const fiveHourReset = isClaudeOrGpt
       ? (agyUsage.claudeGpt5HourResetFormatted || "5-hour")
       : (agyUsage.gemini5HourResetFormatted || "5-hour");
 
     if (fiveHourPercent !== null && fiveHourPercent !== undefined) {
       const hBar = progressBar(fiveHourPercent, 14);
       console.log(
-        `  ${g3}${"Worker 5-Hour:".padEnd(20)}${c.reset}${hBar} ${c.dim}• Resets ${fiveHourReset} [${workerLabel}]${c.reset}`
-      );
-    }
-
-    // Additional Claude & GPT pool if not main worker and present
-    if (!isClaude && agyUsage.claudeGptWeeklyPercent !== null) {
-      const cBar = progressBar(agyUsage.claudeGptWeeklyPercent, 14);
-      const cReset = agyUsage.claudeGptWeeklyResetFormatted || "weekly";
-      console.log(
-        `  ${g4}${"Claude & GPT Pool:".padEnd(20)}${c.reset}${cBar} ${c.dim}• Resets ${cReset} [Agy Pool]${c.reset}`
+        `  ${g3}${"Worker 5-Hour:".padEnd(24)}${c.reset}${hBar} ${c.gray}• Resets ${fiveHourReset}${c.reset}`
       );
     }
   }
 
-  console.log(`  ${g4}${"Auth:".padEnd(20)}${c.reset}${c.dim}Subscription credentials (Zero API keys)${c.reset}`);
+  console.log(separator(64));
+  console.log(`  ${c.bold}${c.brightCyan}How to Work with KUMO:${c.reset}`);
+  console.log(`  ${c.gray}1.${c.reset} Type any coding task, architecture query, or bug fix below.`);
+  console.log(`  ${c.gray}2.${c.reset} Orchestrator ${c.brightCyan}(${orchModelFull})${c.reset} scopes the plan and breaks down steps.`);
+  console.log(`  ${c.gray}3.${c.reset} Worker ${c.brightBlue}(${workerModelFull})${c.reset} executes exploration, edits, and tests via MCP.`);
+  console.log(`  ${c.gray}4.${c.reset} Type ${c.cyan}/model${c.reset} to switch models interactively using arrow keys.`);
+  console.log("");
+  console.log(`  ${c.skyBlue}Examples to try:${c.reset}`);
+  console.log(`    ${c.gray}›${c.reset} Explore src/ and outline the application architecture`);
+  console.log(`    ${c.gray}›${c.reset} Refactor the authentication handler and add unit tests`);
+  console.log(`    ${c.gray}›${c.reset} Run npm test and fix any failing test cases`);
   console.log(separator(64));
   console.log(
-    `  ${c.dim}Commands: ${c.cyan}/help${c.dim}, ${c.cyan}/status${c.dim}, ${c.cyan}/model <name>${c.dim}, ${c.cyan}/effort <level>${c.dim}, ${c.cyan}/clear${c.dim}, ${c.cyan}/exit${c.reset}`
+    `  ${c.gray}Commands:${c.reset} ${c.cyan}/model${c.reset} ${c.gray}(interactive)${c.reset}, ${c.cyan}/effort <level>${c.reset}, ${c.cyan}/status${c.reset}, ${c.cyan}/help${c.reset}, ${c.cyan}/clear${c.reset}, ${c.cyan}/exit${c.reset}`
   );
   console.log(separator(64) + "\n");
 }
@@ -122,9 +158,7 @@ export async function startCommand(opts = {}) {
   }
 
   // Set terminal title
-  if (process.stdout.isTTY) {
-    process.stdout.write(`\x1b]0;Kumo — ${path.basename(workspace)}\x07`);
-  }
+  setKumoTitle();
 
   // Load instant cached quotas for sub-millisecond menu render
   const cached = getCachedQuotas();
@@ -164,14 +198,8 @@ export async function startCommand(opts = {}) {
       if (liveAgy) agyUsage = liveAgy;
       saveCachedQuotas(codexLimits, agyUsage);
 
-      // Update window title with live metrics
-      if (process.stdout.isTTY) {
-        const cP = codexLimits ? `${codexLimits.remainingPercent}%` : "";
-        const gP = agyUsage?.geminiWeeklyPercent !== null ? `${agyUsage.geminiWeeklyPercent}%` : "";
-        process.stdout.write(
-          `\x1b]0;Kumo [Codex: ${cP} | Gemini: ${gP}] — ${path.basename(workspace)}\x07`
-        );
-      }
+      // Update window title
+      setKumoTitle();
     } catch (err) {
       console.error(`\n${badge.warn} Background initialization warning: ${err.message}`);
     }
@@ -193,13 +221,7 @@ export async function startCommand(opts = {}) {
         if (newAgy) agyUsage = newAgy;
         saveCachedQuotas(codexLimits, agyUsage);
 
-        if (process.stdout.isTTY) {
-          const cP = codexLimits ? `${codexLimits.remainingPercent}%` : "";
-          const gP = agyUsage?.geminiWeeklyPercent !== null ? `${agyUsage.geminiWeeklyPercent}%` : "";
-          process.stdout.write(
-            `\x1b]0;Kumo [Codex: ${cP} | Gemini: ${gP}] — ${path.basename(workspace)}\x07`
-          );
-        }
+        setKumoTitle();
 
         // If turn is idle at prompt, refresh the screen banner cleanly
         if (!isTurnActive) {
@@ -272,24 +294,82 @@ export async function startCommand(opts = {}) {
 
       switch (cmd) {
         case "help":
-          console.log(`\n  ${c.bold}KUMO Interactive Commands:${c.reset}`);
-          console.log(`    ${c.cyan}/status${c.reset}, ${c.cyan}/quota${c.reset}          Show live Codex and Antigravity quotas`);
-          console.log(`    ${c.cyan}/model [name]${c.reset}           Inspect or switch orchestrator/worker model`);
-          console.log(`    ${c.cyan}/effort <level>${c.reset}         Set reasoning effort (low, medium, high, max)`);
-          console.log(`    ${c.cyan}/reasoning <level>${c.reset}      Alias for /effort`);
-          console.log(`    ${c.cyan}/clear${c.reset}                  Clear console screen and re-render cloud banner`);
-          console.log(`    ${c.cyan}/refresh${c.reset}                Re-query orchestrator and worker quotas`);
-          console.log(`    ${c.cyan}/help${c.reset}                   Display this help message`);
-          console.log(`    ${c.cyan}/exit${c.reset}                   Quit session cleanly\n`);
+          console.log(`\n  ${c.bold}${c.brightCyan}KUMO — Cross-Provider AI Orchestrator${c.reset}`);
+          console.log(separator(60));
+          console.log(`  ${c.bold}How Orchestration Works:${c.reset}`);
+          console.log(`  • ${c.brightCyan}Orchestrator (${config.orchestratorModel}):${c.reset} Scopes architecture, plans steps, reviews diffs.`);
+          console.log(`  • ${c.brightBlue}Worker (${config.workerModel}):${c.reset} Reads files, writes code, and executes tests via MCP.`);
+          console.log(`  • Grunt execution saves orchestrator quota and accelerates iterations.`);
+          console.log("");
+          console.log(`  ${c.bold}Interactive Commands:${c.reset}`);
+          console.log(`    ${c.cyan}/model${c.reset}                 Browse and select models/presets with arrow keys`);
+          console.log(`    ${c.cyan}/model <name>${c.reset}          Quick-switch orchestrator model`);
+          console.log(`    ${c.cyan}/model worker <name>${c.reset}   Quick-switch worker model`);
+          console.log(`    ${c.cyan}/effort <level>${c.reset}         Set orchestrator reasoning effort (low, medium, high, max)`);
+          console.log(`    ${c.cyan}/effort worker <lvl>${c.reset}    Set worker reasoning effort (low, medium, high)`);
+          console.log(`    ${c.cyan}/status${c.reset}, ${c.cyan}/quota${c.reset}          Show live rate limits and quota progress bars`);
+          console.log(`    ${c.cyan}/refresh${c.reset}                Re-fetch live quotas from Codex and Antigravity`);
+          console.log(`    ${c.cyan}/clear${c.reset}                  Clear console screen and re-render header`);
+          console.log(`    ${c.cyan}/exit${c.reset}                   Quit interactive session cleanly`);
+          console.log(separator(60) + "\n");
           rl.prompt();
           return;
 
         case "model":
           if (!arg1) {
+            if (process.stdout.isTTY && process.stdin.isTTY) {
+              rl.pause();
+              try {
+                const oldOrch = config.orchestratorModel;
+                const oldEffort = config.reasoningEffort;
+                const oldWorker = config.workerModel;
+                const oldWorkerEffort = config.workerEffort;
+                const updated = await openInteractiveModelPicker({
+                  onConfigChanged: async (up) => {
+                    Object.assign(config, up);
+                  },
+                });
+                Object.assign(config, updated);
+
+                const changed =
+                  oldOrch !== config.orchestratorModel ||
+                  oldEffort !== config.reasoningEffort ||
+                  oldWorker !== config.workerModel ||
+                  oldWorkerEffort !== config.workerEffort;
+
+                if (changed) {
+                  console.clear();
+                  renderHeader(workspace, config, codexLimits, agyUsage);
+                  console.log(
+                    `  ${badge.ok} Switched to Orchestrator ${c.brightCyan}${config.orchestratorModel}-${config.reasoningEffort}${c.reset} • Worker ${c.brightBlue}${config.workerModel}-${config.workerEffort || "medium"}${c.reset}\n`
+                  );
+                }
+
+                setKumoTitle();
+
+                // If orchestrator model or effort changed, restart thread
+                if (oldOrch !== config.orchestratorModel || oldEffort !== config.reasoningEffort) {
+                  try {
+                    await client.startThread({
+                      workspace,
+                      model: config.orchestratorModel,
+                      reasoningEffort: config.reasoningEffort,
+                    });
+                  } catch (e) {
+                    console.log(`  ${badge.warn} Thread update note: ${e.message}`);
+                  }
+                }
+              } finally {
+                rl.resume();
+                rl.prompt();
+              }
+              return;
+            }
+
             console.log(`\n  ${c.bold}Active Model Configuration:${c.reset}`);
-            console.log(`    ${c.dim}Orchestrator:${c.reset} ${c.brightCyan}${config.orchestratorModel}${c.reset} (reasoning: ${config.reasoningEffort})`);
-            console.log(`    ${c.dim}Worker:${c.reset}       ${c.brightBlue}${config.workerModel}${c.reset} (reasoning: ${config.workerEffort || "medium"})\n`);
-            console.log(`  ${c.dim}To switch:${c.reset}`);
+            console.log(`    ${c.gray}Orchestrator:${c.reset} ${c.brightCyan}${config.orchestratorModel}-${config.reasoningEffort}${c.reset}`);
+            console.log(`    ${c.gray}Worker:${c.reset}       ${c.brightBlue}${config.workerModel}-${config.workerEffort || "medium"}${c.reset}\n`);
+            console.log(`  ${c.gray}To switch:${c.reset}`);
             console.log(`    ${c.cyan}/model <model-name>${c.reset}                  (switch orchestrator model)`);
             console.log(`    ${c.cyan}/model worker <model-name> [effort]${c.reset}  (switch worker model & effort)\n`);
             rl.prompt();
@@ -297,31 +377,58 @@ export async function startCommand(opts = {}) {
           }
 
           if (arg1 === "worker" && arg2) {
-            config.workerModel = arg2;
-            setConfigValue("workerModel", arg2);
+            const resolvedWorker = resolveWorkerModel(arg2);
+            config.workerModel = resolvedWorker;
+            setConfigValue("workerModel", resolvedWorker);
             if (parts[3]) {
               config.workerEffort = parts[3].toLowerCase();
               setConfigValue("workerEffort", parts[3].toLowerCase());
             }
-            const extra = config.workerEffort ? ` (reasoning: ${config.workerEffort})` : "";
-            console.log(`\n${badge.ok} Worker model switched to ${c.brightBlue}${arg2}${c.reset}${extra}\n`);
+            console.clear();
+            renderHeader(workspace, config, codexLimits, agyUsage);
+            console.log(`  ${badge.ok} Worker switched to ${c.brightBlue}${resolvedWorker}-${config.workerEffort || 'medium'}${c.reset}\n`);
+            setKumoTitle();
             rl.prompt();
             return;
           }
 
-          const newModel = (arg1 === "orchestrator" && arg2) ? arg2 : arg1;
-          config.orchestratorModel = newModel;
-          setConfigValue("orchestratorModel", newModel);
+          const rawTarget = (arg1 === "orchestrator" && arg2) ? arg2 : arg1;
+          if (PRESETS[rawTarget]) {
+            applyPreset(rawTarget);
+            Object.assign(config, loadConfig());
+            console.clear();
+            renderHeader(workspace, config, codexLimits, agyUsage);
+            console.log(`  ${badge.ok} Applied preset '${rawTarget}': Orchestrator ${c.brightCyan}${config.orchestratorModel}-${config.reasoningEffort}${c.reset} • Worker ${c.brightBlue}${config.workerModel}-${config.workerEffort || "medium"}${c.reset}\n`);
+            setKumoTitle();
+            try {
+              await client.startThread({
+                workspace,
+                model: config.orchestratorModel,
+                reasoningEffort: config.reasoningEffort,
+              });
+            } catch (e) {
+              console.log(`  ${badge.warn} Thread update note: ${e.message}`);
+            }
+            rl.prompt();
+            return;
+          }
+
+          const resolvedOrch = resolveOrchestratorModel(rawTarget);
+          config.orchestratorModel = resolvedOrch;
+          setConfigValue("orchestratorModel", resolvedOrch);
+          console.clear();
+          renderHeader(workspace, config, codexLimits, agyUsage);
+          console.log(`  ${badge.ok} Orchestrator switched to ${c.brightCyan}${resolvedOrch}-${config.reasoningEffort}${c.reset}\n`);
+          setKumoTitle();
 
           try {
             await client.startThread({
               workspace,
-              model: newModel,
+              model: resolvedOrch,
               reasoningEffort: config.reasoningEffort,
             });
-            console.log(`\n${badge.ok} Orchestrator switched to ${c.brightCyan}${newModel}${c.reset} (reasoning: ${config.reasoningEffort})\n`);
           } catch (e) {
-            console.log(`\n${badge.warn} Switched model in settings, thread update: ${e.message}\n`);
+            console.log(`  ${badge.warn} Thread update note: ${e.message}`);
           }
           rl.prompt();
           return;
@@ -344,7 +451,9 @@ export async function startCommand(opts = {}) {
             }
             config.workerEffort = wEffort;
             setConfigValue("workerEffort", wEffort);
-            console.log(`\n${badge.ok} Worker reasoning effort set to ${c.brightBlue}${wEffort}${c.reset}\n`);
+            console.clear();
+            renderHeader(workspace, config, codexLimits, agyUsage);
+            console.log(`  ${badge.ok} Worker reasoning effort set to ${c.brightBlue}${wEffort}${c.reset}\n`);
             rl.prompt();
             return;
           }
@@ -368,6 +477,9 @@ export async function startCommand(opts = {}) {
 
           config.reasoningEffort = effortLevel;
           setConfigValue("reasoningEffort", effortLevel);
+          console.clear();
+          renderHeader(workspace, config, codexLimits, agyUsage);
+          console.log(`  ${badge.ok} Orchestrator reasoning effort set to ${c.brightCyan}${effortLevel}${c.reset}\n`);
 
           try {
             await client.startThread({
@@ -375,9 +487,8 @@ export async function startCommand(opts = {}) {
               model: config.orchestratorModel,
               reasoningEffort: effortLevel,
             });
-            console.log(`\n${badge.ok} Reasoning effort set to ${c.brightCyan}${effortLevel}${c.reset}\n`);
           } catch (e) {
-            console.log(`\n${badge.warn} Saved effort to config: ${e.message}\n`);
+            console.log(`  ${badge.warn} Thread update note: ${e.message}`);
           }
           rl.prompt();
           return;
@@ -402,7 +513,8 @@ export async function startCommand(opts = {}) {
 
             console.log(`\n  ${c.bold}Live Account Quotas & Remaining Limits:${c.reset}`);
             if (codexLimits) {
-              console.log(`    ${c.bold}Orchestrator (${codexLimits.planType}):${c.reset}`);
+              const plan = codexLimits.planType ? ` [${codexLimits.planType}]` : "";
+              console.log(`    ${c.bold}Orchestrator (${config.orchestratorModel})${plan}:${c.reset}`);
               console.log(`      Monthly Remaining: ${progressBar(codexLimits.remainingPercent, 14)}`);
               console.log(`      Reset Time:        ${c.brightYellow}${codexLimits.resetFormatted}${c.reset}`);
               if (codexLimits.creditsAvailable > 0) {
@@ -410,12 +522,18 @@ export async function startCommand(opts = {}) {
               }
             }
             if (agyUsage) {
-              console.log(`    ${c.bold}Worker (Antigravity / Google AI Pro):${c.reset}`);
-              if (agyUsage.geminiWeeklyPercent !== null) {
-                console.log(`      Weekly Remaining:  ${progressBar(agyUsage.geminiWeeklyPercent, 14)} (${agyUsage.geminiWeeklyResetFormatted})`);
+              const isClaudeOrGpt = /claude|gpt|anthropic/i.test(config.workerModel) || config.workerProvider === "claude";
+              const weeklyPercent = isClaudeOrGpt ? agyUsage.claudeGptWeeklyPercent : agyUsage.geminiWeeklyPercent;
+              const weeklyReset = isClaudeOrGpt ? (agyUsage.claudeGptWeeklyResetFormatted || "weekly") : (agyUsage.geminiWeeklyResetFormatted || "weekly");
+              const fiveHourPercent = isClaudeOrGpt ? agyUsage.claudeGpt5HourPercent : agyUsage.gemini5HourPercent;
+              const fiveHourReset = isClaudeOrGpt ? (agyUsage.claudeGpt5HourResetFormatted || "5-hour") : (agyUsage.gemini5HourResetFormatted || "5-hour");
+
+              console.log(`    ${c.bold}Worker Provider (${config.workerModel}):${c.reset}`);
+              if (weeklyPercent !== null && weeklyPercent !== undefined) {
+                console.log(`      Weekly Remaining:  ${progressBar(weeklyPercent, 14)} (${weeklyReset}) [${config.workerModel}]`);
               }
-              if (agyUsage.gemini5HourPercent !== null) {
-                console.log(`      5-Hour Remaining:  ${progressBar(agyUsage.gemini5HourPercent, 14)} (${agyUsage.gemini5HourResetFormatted})`);
+              if (fiveHourPercent !== null && fiveHourPercent !== undefined) {
+                console.log(`      5-Hour Remaining:  ${progressBar(fiveHourPercent, 14)} (${fiveHourReset}) [${config.workerModel}]`);
               }
             }
             console.log("");
@@ -432,7 +550,9 @@ export async function startCommand(opts = {}) {
               getAgyUsage().catch(() => null),
             ]);
             saveCachedQuotas(codexLimits, agyUsage);
-            console.log(`  ${badge.ok} Quotas refreshed: Codex ${codexLimits?.remainingPercent ?? 0}% remaining • Gemini ${agyUsage?.geminiWeeklyPercent ?? 0}% weekly\n`);
+            const isClaudeOrGpt = /claude|gpt|anthropic/i.test(config.workerModel) || config.workerProvider === "claude";
+            const wPercent = isClaudeOrGpt ? (agyUsage?.claudeGptWeeklyPercent ?? 0) : (agyUsage?.geminiWeeklyPercent ?? 0);
+            console.log(`  ${badge.ok} Quotas refreshed: ${config.orchestratorModel} ${codexLimits?.remainingPercent ?? 0}% remaining • ${config.workerModel} ${wPercent}% weekly\n`);
           } catch (e) {
             console.log(`  ${badge.warn} Refresh failed: ${e.message}\n`);
           }
