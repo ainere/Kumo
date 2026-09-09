@@ -1,5 +1,5 @@
 /**
- * cloud-banners.test.js — Verification tests for Cloud banner styling,
+ * cloud-banners.test.js — Verification tests for Cloud Cumulus kanji banner styling,
  * progress bars, and rate limit formatting helpers.
  */
 
@@ -10,27 +10,25 @@ import {
   getBanner,
   progressBar,
   formatResetTime,
+  formatIsoResetTime,
   formatPlanType,
   DEFAULT_SUBTITLE,
 } from "../src/utils/ui.js";
 
-test("all cloud banner styles render cleanly and contain KUMO and subtitle", () => {
-  const expectedStyles = ["cloud", "cloud-cumulus", "cloud-kanji", "cloud-minimal"];
+test("cloud cumulus banner renders cleanly and contains KUMO, kanji and subtitle", () => {
+  assert.ok(BANNER_DESIGNS.cloud, "Banner style 'cloud' must exist");
 
-  for (const style of expectedStyles) {
-    assert.ok(BANNER_DESIGNS[style], `Banner style '${style}' must exist in BANNER_DESIGNS`);
-
-    const rendered = getBanner("1.0.0", style);
-    assert.ok(rendered.includes("KUMO"), `Banner '${style}' must contain 'KUMO'`);
-    assert.ok(rendered.includes("1.0.0"), `Banner '${style}' must contain version '1.0.0'`);
-    assert.ok(
-      rendered.includes(DEFAULT_SUBTITLE),
-      `Banner '${style}' must contain default subtitle`
-    );
-  }
+  const rendered = getBanner("1.0.0", "cloud");
+  assert.ok(rendered.includes("KUMO"), "Banner must contain 'KUMO'");
+  assert.ok(rendered.includes("雲"), "Banner must contain centered kanji '雲'");
+  assert.ok(rendered.includes("1.0.0"), "Banner must contain version '1.0.0'");
+  assert.ok(
+    rendered.includes(DEFAULT_SUBTITLE),
+    "Banner must contain default subtitle"
+  );
 });
 
-test("custom subtitle renders in cloud banners", () => {
+test("custom subtitle renders in cloud banner", () => {
   const custom = "Custom Orchestrator ◄───[MCP]───► Custom Worker";
   const rendered = getBanner("2.0.0", "cloud", custom);
   assert.ok(rendered.includes(custom), "Banner must contain the custom subtitle");
@@ -55,8 +53,8 @@ test("progressBar clamps and renders correct visual bars", () => {
   assert.ok(barUnder.includes("0%"));
 });
 
-test("formatPlanType capitalizes known plan identifiers", () => {
-  assert.strictEqual(formatPlanType("go"), "ChatGPT Plus");
+test("formatPlanType capitalizes known plan identifiers and distinguishes Go", () => {
+  assert.strictEqual(formatPlanType("go"), "ChatGPT Go");
   assert.strictEqual(formatPlanType("plus"), "ChatGPT Plus");
   assert.strictEqual(formatPlanType("pro"), "ChatGPT Pro");
   assert.strictEqual(formatPlanType("team"), "ChatGPT Team");
@@ -75,4 +73,10 @@ test("formatResetTime calculates relative countdown", () => {
   assert.ok(pastFormatted.includes("Reset due now"));
 
   assert.strictEqual(formatResetTime(null), "N/A");
+});
+
+test("formatIsoResetTime formats ISO 8601 timestamps", () => {
+  const future = new Date(Date.now() + 3600 * 1000 * 2).toISOString();
+  const formatted = formatIsoResetTime(future);
+  assert.ok(formatted.includes("in 2h 0m") || formatted.includes("in 1h 59m"));
 });

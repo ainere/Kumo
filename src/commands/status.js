@@ -1,11 +1,12 @@
 /**
- * status.js — Display live account usage limits, quotas, and provider health.
+ * status.js — Display live account usage limits, quotas, and provider health
+ * for both the root orchestrator (Codex) and execution worker (Antigravity).
  */
 
 import path from "node:path";
 import { loadConfig } from "../config/settings.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
-import { checkAgyHealth } from "../../bridge/agy-runner.js";
+import { checkAgyHealth, getAgyUsage } from "../../bridge/agy-runner.js";
 import {
   getBanner,
   c,
@@ -22,7 +23,7 @@ export async function statusCommand(opts = {}) {
 
   console.log("\n" + getBanner("1.0.0", style, DEFAULT_SUBTITLE));
   console.log(separator(64));
-  console.log(`  ${c.bold}KUMO System & Live Account Status${c.reset}`);
+  console.log(`  ${c.bold}KUMO System & Live Account Quota Status${c.reset}`);
   console.log(separator(64));
 
   console.log(`  ${c.dim}Workspace:${c.reset}    ${workspace}`);
@@ -34,54 +35,64 @@ export async function statusCommand(opts = {}) {
   );
   console.log(separator(64));
 
-  // Query Codex live rate limits
+  // 1. Query Codex live rate limits
   const client = new CodexAppClient();
-  let limits = null;
+  let codexLimits = null;
   try {
     await client.start();
-    limits = await client.getRateLimits();
+    codexLimits = await client.getRateLimits();
     await client.stop();
   } catch (err) {
     console.log(`  ${c.dim}Orchestrator Limits:${c.reset} ${badge.warn} (Could not query: ${err.message})`);
   }
 
-  if (limits) {
-    console.log(`  ${c.bold}Orchestrator Limits (${limits.planType}):${c.reset}`);
-    console.log(`    Usage:       ${progressBar(limits.usedPercent, 16)}`);
-    console.log(`    Reset Time:  ${c.brightYellow}${limits.resetFormatted}${c.reset}`);
+  if (codexLimits) {
+    console.log(`  ${c.bold}Orchestrator Quota (${codexLimits.planType}):${c.reset}`);
+    console.log(`    Monthly Remaining: ${progressBar(codexLimits.remainingPercent, 16)}`);
+    console.log(`    Reset Time:        ${c.brightYellow}${codexLimits.resetFormatted}${c.reset}`);
 
-    if (limits.creditsAvailable > 0) {
-      console.log(`    Credits:     ${c.brightGreen}${limits.creditsAvailable} rate limit reset available${c.reset}`);
+    if (codexLimits.creditsAvailable > 0) {
+      console.log(`    Reset Credits:     ${c.brightGreen}${codexLimits.creditsAvailable} reset available${c.reset}`);
     } else {
-      console.log(`    Credits:     ${c.dim}0 resets available${c.reset}`);
-    }
-
-    if (limits.secondary) {
-      console.log(
-        `    Secondary:   ${progressBar(limits.secondary.usedPercent, 16)} (${limits.secondary.resetFormatted})`
-      );
+      console.log(`    Reset Credits:     ${c.dim}0 resets available${c.reset}`);
     }
   }
 
   console.log(separator(64));
 
-  // Check worker CLI health
-  try {
-    const workerHealth = await checkAgyHealth();
-    if (workerHealth.authenticated) {
-      console.log(`  ${c.bold}Worker Provider (Gemini / Antigravity):${c.reset}`);
-      console.log(`    Status:      ${badge.ok} Authenticated & Connected`);
-      console.log(`    Binary:      ${c.dim}${workerHealth.binary}${c.reset}`);
-      console.log(`    Credentials: ${c.dim}Google AI Pro subscription active${c.reset}`);
-    } else {
-      console.log(`  ${c.bold}Worker Provider (Gemini / Antigravity):${c.reset}`);
-      console.log(`    Status:      ${badge.warn} CLI available, not yet authenticated`);
-      if (workerHealth.error) {
-        console.log(`    Detail:      ${c.dim}${workerHealth.error.slice(0, 120)}${c.reset}`);
-      }
+  // 2. Query Antigravity live usage & health
+  const [workerHealth, agyUsage] = await Promise.all([
+    checkAgyHealth().catch((e) => ({ authenticated: false, error: e.message })),
+    getAgyUsage().catch(() => null),
+  ]);
+
+  console.log(`  ${c.bold}Worker Provider (Antigravity / Google AI Pro):${c.reset}`);
+  if (workerHealth.authenticated) {
+    console.log(`    Health:            ${badge.ok} Connected & Authenticated`);
+    console.log(`    Binary:            ${c.dim}${workerHealth.binary}${c.reset}`);
+  } else {
+    console.log(`    Health:            ${badge.warn} CLI available, check login`);
+    if (workerHealth.error) {
+      console.log(`    Detail:            ${c.dim}${workerHealth.error.slice(0, 100)}${c.reset}`);
     }
-  } catch (err) {
-    console.log(`  ${c.dim}Worker Status:${c.reset} ${badge.fail} ${err.message}`);
+  }
+
+  if (agyUsage) {
+    if (agyUsage.geminiWeeklyPercent !== null) {
+      console.log(
+        `    Weekly Remaining:  ${progressBar(agyUsage.geminiWeeklyPercent, 16)} (${agyUsage.geminiWeeklyResetFormatted})`
+      );
+    }
+    if (agyUsage.gemini5HourPercent !== null) {
+      console.log(
+        `    5-Hour Remaining:  ${progressBar(agyUsage.gemini5HourPercent, 16)} (${agyUsage.gemini5HourResetFormatted})`
+      );
+    }
+    if (agyUsage.claudeGptWeeklyPercent !== null) {
+      console.log(
+        `    Claude & GPT Pool: ${c.dim}${agyUsage.claudeGptWeeklyPercent}% weekly • ${agyUsage.claudeGpt5HourPercent}% 5-hour${c.reset}`
+      );
+    }
   }
 
   console.log(separator(64) + "\n");

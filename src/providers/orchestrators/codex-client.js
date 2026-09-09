@@ -124,6 +124,7 @@ export class CodexAppClient extends EventEmitter {
       planType: formatPlanType(planType),
       rawPlan: planType,
       usedPercent: primary?.usedPercent ?? 0,
+      remainingPercent: Math.max(0, 100 - (primary?.usedPercent ?? 0)),
       resetsAt: primary?.resetsAt ?? null,
       resetFormatted: formatResetTime(primary?.resetsAt),
       windowMinutes: primary?.windowDurationMins ?? null,

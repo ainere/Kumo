@@ -20,10 +20,9 @@ export function createCli() {
     .description("KUMO — Cross-provider CLI orchestrator pairing frontier reasoning models with high-speed execution workers")
     .version("1.0.0");
 
-  // Default interactive command (when invoked without subcommand)
+  // Default interactive command (launches new window and closes old CMD by default)
   program
     .option("-d, --dir <path>", "Target workspace directory (defaults to current working directory)")
-    .option("-w, --new-window", "Launch Kumo in a separate dedicated terminal window")
     .option("--here", "Force running in current terminal (do not spawn new window)")
     .action(async (opts) => {
       await startCommand(opts);
@@ -34,25 +33,33 @@ export function createCli() {
     .command("start")
     .description("Start an interactive orchestration session in the target workspace")
     .option("-d, --dir <path>", "Target workspace directory")
-    .option("-w, --new-window", "Launch Kumo in a separate dedicated terminal window")
     .option("--here", "Force running in current terminal")
     .action(async (opts) => {
       await startCommand(opts);
-    });
-
-  // Dedicated launch command (alias for start --new-window)
-  program
-    .command("launch")
-    .description("Launch Kumo in a dedicated new terminal window")
-    .option("-d, --dir <path>", "Target workspace directory")
-    .action(async (opts) => {
-      await startCommand({ ...opts, newWindow: true });
     });
 
   // Live status and usage limits command
   program
     .command("status")
     .description("Display live orchestrator quota, rate limits, reset countdown, and worker health")
+    .option("-d, --dir <path>", "Target workspace directory")
+    .action(async (opts) => {
+      await statusCommand(opts);
+    });
+
+  // Quota alias
+  program
+    .command("quota")
+    .description("Display live orchestrator and worker quotas (alias for status)")
+    .option("-d, --dir <path>", "Target workspace directory")
+    .action(async (opts) => {
+      await statusCommand(opts);
+    });
+
+  // Usage alias
+  program
+    .command("usage")
+    .description("Display live orchestrator and worker quotas (alias for status)")
     .option("-d, --dir <path>", "Target workspace directory")
     .action(async (opts) => {
       await statusCommand(opts);
@@ -103,10 +110,10 @@ export function createCli() {
 
   // Banner command
   program
-    .command("banner [style]")
-    .description("Showcase and switch between cloud banner styles (cloud, cloud-cumulus, cloud-kanji, cloud-minimal)")
-    .action((style) => {
-      bannerCommand(style);
+    .command("banner")
+    .description("Display the KUMO Cloud Cumulus banner")
+    .action(() => {
+      bannerCommand();
     });
 
   return program;

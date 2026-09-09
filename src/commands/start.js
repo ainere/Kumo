@@ -1,13 +1,14 @@
 /**
  * start.js — Independent interactive terminal UI (REPL) for KUMO.
- * Runs Codex and Gemini/Agy purely in the background via hidden channels,
- * providing clean streaming output, live rate limits, and custom commands.
+ * Runs Codex and Antigravity purely in the background via hidden channels,
+ * providing clean streaming output, live dual-provider quotas, and custom commands.
  */
 
 import path from "node:path";
 import readline from "node:readline";
 import { loadConfig } from "../config/settings.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
+import { getAgyUsage } from "../../bridge/agy-runner.js";
 import { launchInNewWindow } from "../utils/window-launcher.js";
 import {
   getBanner,
@@ -15,30 +16,36 @@ import {
   badge,
   separator,
   progressBar,
-  DEFAULT_SUBTITLE,
 } from "../utils/ui.js";
 
 /**
- * Render the startup header with cloud banner and live rate limits.
+ * Render the startup header with cloud cumulus kanji banner and live dual-provider quotas.
  */
-function renderHeader(workspace, config, limits = null) {
-  const style = config.bannerStyle || "cloud";
+function renderHeader(workspace, config, codexLimits = null, agyUsage = null) {
   const sub = `${config.orchestratorModel} ◄───[MCP]───► ${config.workerModel}`;
 
-  console.log("\n" + getBanner("1.0.0", style, sub));
+  console.log("\n" + getBanner("1.0.0", "cloud", sub));
   console.log(separator(64));
   console.log(`  ${c.dim}Workspace:${c.reset}    ${workspace}`);
   console.log(
     `  ${c.dim}Orchestrator:${c.reset} ${c.brightCyan}${config.orchestratorModel}${c.reset} (${config.orchestratorProvider || "codex"}, reasoning: ${config.reasoningEffort})`
   );
   console.log(
-    `  ${c.dim}Worker:${c.reset}       ${c.brightBlue}${config.workerModel}${c.reset} (${config.workerProvider || "gemini"} via MCP Bridge)`
+    `  ${c.dim}Worker:${c.reset}       ${c.brightBlue}${config.workerModel}${c.reset} (antigravity via MCP Bridge)`
   );
 
-  if (limits) {
-    const bar = progressBar(limits.usedPercent, 12);
+  if (codexLimits) {
+    const bar = progressBar(codexLimits.remainingPercent, 12);
     console.log(
-      `  ${c.dim}Quota:${c.reset}        ${bar} ${c.dim}• Resets ${limits.resetFormatted} (${limits.planType})${c.reset}`
+      `  ${c.dim}Quota (Codex):${c.reset} ${bar} ${c.dim}• Resets ${codexLimits.resetFormatted} (${codexLimits.planType})${c.reset}`
+    );
+  }
+
+  if (agyUsage && agyUsage.geminiWeeklyPercent !== null) {
+    const wBar = progressBar(agyUsage.geminiWeeklyPercent, 8);
+    const hBar = progressBar(agyUsage.gemini5HourPercent ?? 100, 8);
+    console.log(
+      `  ${c.dim}Quota (Gemini):${c.reset}${wBar} ${c.dim}weekly •${c.reset} ${hBar} ${c.dim}5-hour (Google AI Pro)${c.reset}`
     );
   }
 
@@ -54,8 +61,9 @@ export async function startCommand(opts = {}) {
   const workspace = path.resolve(opts.dir || process.cwd());
   const config = loadConfig();
 
-  // If new window requested and not explicitly running here
-  if (opts.newWindow && !opts.here) {
+  // If not running in child window and not explicitly told to stay here, launch dedicated window
+  const shouldNewWindow = !opts.here && process.stdout.isTTY && !process.env.KUMO_HERE;
+  if (shouldNewWindow) {
     const launched = launchInNewWindow({
       workspace,
       args: process.argv.slice(2),
@@ -68,8 +76,6 @@ export async function startCommand(opts = {}) {
     process.stdout.write(`\x1b]0;Kumo — ${path.basename(workspace)}\x07`);
   }
 
-  // Initial spinner while connecting to background Codex
-  process.stdout.write(`\n  ${c.dim}Initializing background orchestrator...${c.reset}\r`);
   const client = new CodexAppClient({
     env: {
       ORCHESTRATOR_WORKSPACE: workspace,
@@ -77,24 +83,27 @@ export async function startCommand(opts = {}) {
     },
   });
 
-  let limits = null;
+  let codexLimits = null;
+  let agyUsage = null;
+
   try {
     await client.start();
-    limits = await client.getRateLimits();
+    [codexLimits, agyUsage] = await Promise.all([
+      client.getRateLimits().catch(() => null),
+      getAgyUsage().catch(() => null),
+    ]);
     await client.startThread({
       workspace,
       model: config.orchestratorModel,
       reasoningEffort: config.reasoningEffort,
     });
   } catch (err) {
-    process.stdout.write(`\r${" ".repeat(60)}\r`);
     console.error(`\n${badge.fail} Failed to initialize background orchestrator: ${err.message}`);
     console.error(`  Make sure Codex CLI is installed and logged in ('codex login').\n`);
     process.exit(1);
   }
 
-  process.stdout.write(`\r${" ".repeat(60)}\r`);
-  renderHeader(workspace, config, limits);
+  renderHeader(workspace, config, codexLimits, agyUsage);
 
   let isTurnActive = false;
   let activeToolName = null;
@@ -152,15 +161,13 @@ export async function startCommand(opts = {}) {
     if (input.startsWith("/")) {
       const parts = input.slice(1).split(" ");
       const cmd = parts[0].toLowerCase();
-      const arg = parts.slice(1).join(" ").trim();
 
       switch (cmd) {
         case "help":
           console.log(`\n  ${c.bold}KUMO Interactive Commands:${c.reset}`);
-          console.log(`    ${c.cyan}/status${c.reset}        Show live usage limits, reset countdown & quota`);
+          console.log(`    ${c.cyan}/status${c.reset}, ${c.cyan}/quota${c.reset}  Show live Codex and Antigravity quotas`);
           console.log(`    ${c.cyan}/clear${c.reset}         Clear console screen and re-render cloud banner`);
-          console.log(`    ${c.cyan}/refresh${c.reset}       Re-query orchestrator status and quota`);
-          console.log(`    ${c.cyan}/banner [name]${c.reset} Preview or switch cloud banner style`);
+          console.log(`    ${c.cyan}/refresh${c.reset}       Re-query orchestrator and worker quotas`);
           console.log(`    ${c.cyan}/help${c.reset}          Display this help message`);
           console.log(`    ${c.cyan}/exit${c.reset}          Quit session cleanly\n`);
           rl.prompt();
@@ -169,21 +176,36 @@ export async function startCommand(opts = {}) {
         case "clear":
         case "cls":
           console.clear();
-          renderHeader(workspace, config, limits);
+          renderHeader(workspace, config, codexLimits, agyUsage);
           rl.prompt();
           return;
 
         case "status":
         case "limits":
+        case "quota":
+        case "usage":
           try {
-            process.stdout.write(`  ${c.dim}Fetching live quota...${c.reset}\r`);
-            limits = await client.getRateLimits();
-            process.stdout.write("\r\x1b[2K");
-            console.log(`\n  ${c.bold}Account Usage (${limits.planType}):${c.reset}`);
-            console.log(`    Usage:       ${progressBar(limits.usedPercent, 16)}`);
-            console.log(`    Reset Time:  ${c.brightYellow}${limits.resetFormatted}${c.reset}`);
-            if (limits.creditsAvailable > 0) {
-              console.log(`    Credits:     ${c.brightGreen}${limits.creditsAvailable} reset available${c.reset}`);
+            [codexLimits, agyUsage] = await Promise.all([
+              client.getRateLimits().catch(() => null),
+              getAgyUsage().catch(() => null),
+            ]);
+            console.log(`\n  ${c.bold}Account Quotas & Remaining Limits:${c.reset}`);
+            if (codexLimits) {
+              console.log(`    ${c.bold}Orchestrator (${codexLimits.planType}):${c.reset}`);
+              console.log(`      Monthly Remaining: ${progressBar(codexLimits.remainingPercent, 14)}`);
+              console.log(`      Reset Time:        ${c.brightYellow}${codexLimits.resetFormatted}${c.reset}`);
+              if (codexLimits.creditsAvailable > 0) {
+                console.log(`      Reset Credits:     ${c.brightGreen}${codexLimits.creditsAvailable} reset available${c.reset}`);
+              }
+            }
+            if (agyUsage) {
+              console.log(`    ${c.bold}Worker (Antigravity / Google AI Pro):${c.reset}`);
+              if (agyUsage.geminiWeeklyPercent !== null) {
+                console.log(`      Weekly Remaining:  ${progressBar(agyUsage.geminiWeeklyPercent, 14)} (${agyUsage.geminiWeeklyResetFormatted})`);
+              }
+              if (agyUsage.gemini5HourPercent !== null) {
+                console.log(`      5-Hour Remaining:  ${progressBar(agyUsage.gemini5HourPercent, 14)} (${agyUsage.gemini5HourResetFormatted})`);
+              }
             }
             console.log("");
           } catch (e) {
@@ -194,10 +216,11 @@ export async function startCommand(opts = {}) {
 
         case "refresh":
           try {
-            process.stdout.write(`  ${c.dim}Refreshing session...${c.reset}\r`);
-            limits = await client.getRateLimits();
-            process.stdout.write("\r\x1b[2K");
-            console.log(`  ${badge.ok} Quota refreshed: ${limits.usedPercent}% used • Resets ${limits.resetFormatted}\n`);
+            [codexLimits, agyUsage] = await Promise.all([
+              client.getRateLimits().catch(() => null),
+              getAgyUsage().catch(() => null),
+            ]);
+            console.log(`  ${badge.ok} Quotas refreshed: Codex ${codexLimits?.remainingPercent ?? 0}% remaining • Gemini ${agyUsage?.geminiWeeklyPercent ?? 0}% weekly\n`);
           } catch (e) {
             console.log(`  ${badge.warn} Refresh failed: ${e.message}\n`);
           }
