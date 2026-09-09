@@ -14,7 +14,8 @@ export async function startCommand(opts = {}) {
   const providerId = config.orchestratorProvider || "codex";
   const orchestrator = getOrchestrator(providerId);
 
-  console.log("\n" + getBanner());
+  const style = config.bannerStyle || "block";
+  console.log("\n" + getBanner("1.0.0", style));
   console.log(separator(64));
   console.log(`  ${c.dim}Workspace:${c.reset}    ${workspace}`);
   console.log(`  ${c.dim}Orchestrator:${c.reset} ${c.brightCyan}${config.orchestratorModel}${c.reset} (${providerId}, reasoning: ${config.reasoningEffort})`);

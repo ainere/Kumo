@@ -129,7 +129,7 @@ export async function launchCodex(opts) {
       cwd: opts.workspace || process.cwd(),
       stdio: "inherit",
       env,
-      shell: process.platform === "win32",
+      shell: false,
     });
 
     proc.on("close", (code) => {
