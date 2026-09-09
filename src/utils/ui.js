@@ -34,8 +34,66 @@ export const c = {
  * Available banner design implementations.
  */
 export const BANNER_DESIGNS = {
+  slant: {
+    name: "Slant (Aligned)",
+    description: "Properly aligned slanted forward-motion isometric ASCII font with badge",
+    render: (v) => {
+      const l1 = `${c.brightCyan}    __ __${c.cyan}                  ${c.blue}        ${c.reset}`;
+      const l2 = `${c.brightCyan}   / //_/${c.cyan}__  ______ ___  ${c.blue}____     ${c.reset}  ${c.bold}${c.white}KUMO${c.reset} ${c.dim}v${v}${c.reset}`;
+      const l3 = `${c.brightCyan}  / ,<  ${c.cyan}/ / / / __ \`__ \\${c.blue}/ __ \\    ${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
+      const l4 = `${c.brightCyan} / /| | ${c.cyan}/ /_/ / / / / / /${c.blue} /_/ /    ${c.reset}  ${c.dim}Codex (Astra) ◄───[MCP]───► Gemini (Flash)${c.reset}`;
+      const l5 = `${c.brightCyan}/_/ |_| ${c.cyan}\\__,_/_/ /_/ /_/${c.blue}\\____/     ${c.reset}`;
+      return `${l1}\n${l2}\n${l3}\n${l4}\n${l5}`;
+    },
+  },
+
+  spider: {
+    name: "Spider (蜘蛛)",
+    description: "ASCII Spider glyph linking the two provider endpoints",
+    render: (v) => {
+      const s1 = `${c.brightCyan}      / _ \\     ${c.reset}  ${c.bold}${c.white}KUMO (蜘蛛)${c.reset} ${c.dim}v${v}${c.reset}`;
+      const s2 = `${c.cyan}    \\(\\(_)/)/   ${c.reset}  ${c.dim}Cross-Provider AI Orchestration Harness${c.reset}`;
+      const s3 = `${c.blue}     -(_)-      ${c.reset}  ${c.dim}OpenAI Codex ◄───[MCP]───► Google Gemini${c.reset}`;
+      const s4 = `${c.brightBlue}    / / \\ \\     ${c.reset}  ${c.dim}High-Speed Agent Weaver${c.reset}`;
+      return `${s1}\n${s2}\n${s3}\n${s4}`;
+    },
+  },
+
+  cloud: {
+    name: "Cloud (雲)",
+    description: "Clean ASCII Cloud illustration with balanced provider subtitle",
+    render: (v) => {
+      const c1 = `${c.brightCyan}       .--.     ${c.reset}  ${c.bold}${c.white}KUMO (雲)${c.reset} ${c.dim}v${v}${c.reset}`;
+      const c2 = `${c.cyan}    .-(    ).   ${c.reset}  ${c.dim}Cross-Provider AI Orchestration Harness${c.reset}`;
+      const c3 = `${c.blue}   (___.__)__)  ${c.reset}  ${c.dim}OpenAI Codex ◄───[MCP]───► Google Gemini${c.reset}`;
+      return `${c1}\n${c2}\n${c3}`;
+    },
+  },
+
+  web: {
+    name: "Web / Mesh",
+    description: "ASCII Web geometry capturing the multi-agent mesh",
+    render: (v) => {
+      const w1 = `${c.brightCyan}    /\\  /\\    ${c.reset}  ${c.bold}${c.white}KUMO (蜘蛛の巣)${c.reset} ${c.dim}v${v}${c.reset}`;
+      const w2 = `${c.cyan}   <  ><  >   ${c.reset}  ${c.dim}Cross-Provider AI Orchestration Harness${c.reset}`;
+      const w3 = `${c.blue}    \\/  \\/    ${c.reset}  ${c.dim}Codex (Astra) ◄───[MCP]───► Gemini (Flash)${c.reset}`;
+      return `${w1}\n${w2}\n${w3}`;
+    },
+  },
+
+  isometric: {
+    name: "Isometric 3D",
+    description: "Double-line geometric wireframe block font",
+    render: (v) => {
+      const l1 = `${c.brightCyan}╦╔═╦ ╦╔╦╗╔═╗${c.reset}   ${c.bold}${c.white}KUMO${c.reset} ${c.dim}v${v}${c.reset}`;
+      const l2 = `${c.cyan}╠╩╗║ ║║║║║ ║${c.reset}   ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
+      const l3 = `${c.blue}╩ ╩╚═╝╩ ╩╚═╝${c.reset}   ${c.dim}Codex (Astra) ◄───[MCP]───► Gemini (Flash)${c.reset}`;
+      return `${l1}\n${l2}\n${l3}`;
+    },
+  },
+
   block: {
-    name: "Block (Current Default)",
+    name: "Block",
     description: "Solid, modern sans-serif block typography with subtle cyan-to-blue gradient",
     render: (v) => {
       const l1 = `${c.brightCyan}█  █${c.cyan}  █   █${c.blue}  █   █${c.brightBlue}   ███ ${c.reset}`;
@@ -44,18 +102,6 @@ export const BANNER_DESIGNS = {
       const l4 = `${c.brightCyan}█ █ ${c.cyan}  █   █${c.blue}  █   █${c.brightBlue}  █   █${c.reset}`;
       const l5 = `${c.brightCyan}█  █${c.cyan}   ███ ${c.blue}  █   █${c.brightBlue}   ███ ${c.reset}`;
       return `${l1}\n${l2}\n${l3}\n${l4}\n${l5}`;
-    },
-  },
-
-  slant: {
-    name: "Slant",
-    description: "Dynamic slanted forward-motion isometric ASCII font",
-    render: (v) => {
-      const l1 = `${c.brightCyan}    __ __${c.cyan}__  ____  ${c.blue}____ ___  ${c.brightBlue}____  ${c.reset}`;
-      const l2 = `${c.brightCyan}   / //_/${c.cyan}/ / / /  \\${c.blue}/ __ \`__ \\${c.brightBlue}/ __ \\ ${c.reset}  ${c.bold}${c.white}KUMO${c.reset} ${c.dim}v${v}${c.reset}`;
-      const l3 = `${c.brightCyan}  / ,<  ${c.cyan}/ /_/ / /\\${c.blue} / / / / /${c.brightBlue} /_/ / ${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
-      const l4 = `${c.brightCyan} /_/|_| ${c.cyan}\\__,_/_/  ${c.blue}/_/ /_/ /_${c.brightBlue}\\____/  ${c.reset}`;
-      return `${l1}\n${l2}\n${l3}\n${l4}`;
     },
   },
 
@@ -89,24 +135,13 @@ export const BANNER_DESIGNS = {
       return `${top}\n${m1}\n${m2}\n${bot}`;
     },
   },
-
-  isometric: {
-    name: "Isometric 3D",
-    description: "Double-line geometric wireframe block font",
-    render: (v) => {
-      const l1 = `${c.brightCyan}╦╔═╦ ╦╔╦╗╔═╗${c.reset}   ${c.bold}${c.white}KUMO${c.reset} ${c.dim}v${v}${c.reset}`;
-      const l2 = `${c.cyan}╠╩╗║ ║║║║║ ║${c.reset}   ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
-      const l3 = `${c.blue}╩ ╩╚═╝╩ ╩╚═╝${c.reset}`;
-      return `${l1}\n${l2}\n${l3}`;
-    },
-  },
 };
 
 /**
  * Get configured or default banner string.
  */
-export function getBanner(version = "1.0.0", style = "block") {
-  const design = BANNER_DESIGNS[style] || BANNER_DESIGNS.block;
+export function getBanner(version = "1.0.0", style = "slant") {
+  const design = BANNER_DESIGNS[style] || BANNER_DESIGNS.slant || BANNER_DESIGNS.block;
   return design.render(version);
 }
 
