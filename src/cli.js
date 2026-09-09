@@ -9,6 +9,7 @@ import { doctorCommand } from "./commands/doctor.js";
 import { configCommand } from "./commands/config.js";
 import { initCommand } from "./commands/init.js";
 import { modelCommand } from "./commands/model.js";
+import { bannerCommand } from "./commands/banner.js";
 
 export function createCli() {
   const program = new Command();
@@ -75,6 +76,14 @@ export function createCli() {
     .option("--dry-run", "Preview files without writing to disk")
     .action((opts) => {
       initCommand(opts);
+    });
+
+  // Banner command
+  program
+    .command("banner [style]")
+    .description("Showcase and switch between banner design styles (block, slant, kanji, minimal, box, isometric)")
+    .action((style) => {
+      bannerCommand(style);
     });
 
   return program;

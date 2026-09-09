@@ -6,12 +6,12 @@ import { runDiagnostics } from "../utils/diagnostics.js";
 import { getBanner, c, badge, separator } from "../utils/ui.js";
 
 export async function doctorCommand() {
-  console.log("\n" + getBanner());
+  const results = await runDiagnostics();
+  const style = results.config.values.bannerStyle || "block";
+  console.log("\n" + getBanner("1.0.0", style));
   console.log(separator(64));
   console.log(`  ${c.bold}System & Subscription Diagnostics${c.reset}`);
   console.log(separator(64) + "\n");
-
-  const results = await runDiagnostics();
 
   // Helper for check lines
   const printCheck = (label, res) => {
