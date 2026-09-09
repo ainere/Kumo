@@ -5,6 +5,7 @@
 import path from "node:path";
 import { getOrchestrator } from "../providers/orchestrators/registry.js";
 import { loadConfig } from "../config/settings.js";
+import { getBanner, c, badge, separator } from "../utils/ui.js";
 
 export async function startCommand(opts = {}) {
   const workspace = path.resolve(opts.dir || process.cwd());
@@ -13,11 +14,13 @@ export async function startCommand(opts = {}) {
   const providerId = config.orchestratorProvider || "codex";
   const orchestrator = getOrchestrator(providerId);
 
-  console.log("\n🕸️  Kumo (雲) — Cross-Provider Orchestration");
-  console.log(`   📂 Workspace:    ${workspace}`);
-  console.log(`   🧠 Orchestrator: ${config.orchestratorModel} (${providerId}, effort: ${config.reasoningEffort})`);
-  console.log(`   ⚡ Worker:       ${config.workerModel} (${config.workerProvider || 'gemini'} via MCP Bridge)`);
-  console.log("   🔑 Auth:         Subscriptions (Zero API keys)\n");
+  console.log("\n" + getBanner());
+  console.log(separator(64));
+  console.log(`  ${c.dim}Workspace:${c.reset}    ${workspace}`);
+  console.log(`  ${c.dim}Orchestrator:${c.reset} ${c.brightCyan}${config.orchestratorModel}${c.reset} (${providerId}, reasoning: ${config.reasoningEffort})`);
+  console.log(`  ${c.dim}Worker:${c.reset}       ${c.brightBlue}${config.workerModel}${c.reset} (${config.workerProvider || 'gemini'} via MCP Bridge)`);
+  console.log(`  ${c.dim}Auth:${c.reset}         Subscription credentials (Zero API keys)`);
+  console.log(separator(64) + "\n");
 
   try {
     const exitCode = await orchestrator.launch({
@@ -28,7 +31,7 @@ export async function startCommand(opts = {}) {
     });
     process.exit(exitCode);
   } catch (err) {
-    console.error(`\n❌ Failed to launch session: ${err.message}`);
+    console.error(`\n${badge.fail} Failed to launch session: ${err.message}`);
     process.exit(1);
   }
 }

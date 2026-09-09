@@ -1,32 +1,40 @@
-# Kumo (雲 / 蜘蛛) — Cross-Provider AI Orchestrator
+# KUMO — Cross-Provider AI Orchestration Harness
 
-**Kumo** (Japanese for *cloud* / *spider*) is a modular, standalone CLI application that weaves together flagship AI models across competing providers.
+```text
+█  █  █   █  █   █   ███ 
+█ █   █   █  ██ ██  █   █   KUMO v1.0.0
+██    █   █  █ █ █  █   █   Cross-Provider AI Orchestrator
+█ █   █   █  █   █  █   █
+█  █   ███   █   █   ███ 
+```
 
-Out of the box, it pairs **ChatGPT 6 Astra** (via Codex CLI on ChatGPT Plus) as the high-level architect/orchestrator and **Gemini 3.8 Flash** (via Google AI Pro on Antigravity / Gemini CLI) as the high-throughput grunt worker — with **zero separate API keys**.
+**Kumo** is a modular CLI application that pairs frontier reasoning models with high-throughput execution workers across independent AI ecosystems.
 
-Its provider architecture is open-ended, ready for Anthropic Claude (Claude Code / Sonnet / Opus), OpenAI, Google, and future agents.
+By default, it coordinates **ChatGPT 6 Astra** (via Codex CLI on ChatGPT Plus) as the root orchestrator and **Gemini 3.8 Flash** (via Antigravity / Gemini CLI on Google AI Pro) as the high-throughput worker — utilizing your existing consumer subscriptions with **zero separate API keys**.
+
+The provider architecture is designed for multi-provider extensibility, including future support for Anthropic Claude, OpenAI, and Google workflows.
 
 ---
 
 ## Architecture
 
-```
-                          You run anywhere:
-                              $ kumo
-                                │
-                                ▼
-                 ┌─────────────────────────────┐
-                 │       Kumo CLI (雲)         │
-                 │   • Dynamic Workspace CWD   │
-                 │   • Model / Preset Manager  │
-                 │   • Provider Dispatcher     │
-                 └──────────────┬──────────────┘
-                                │
-      ┌─────────────────────────┴─────────────────────────┐
-      ▼                                                   ▼
+```text
+                          Global invocation:
+                               $ kumo
+                                 │
+                                 ▼
+                  ┌─────────────────────────────┐
+                  │          KUMO CLI           │
+                  │   • Dynamic Workspace CWD   │
+                  │   • Model / Preset Manager  │
+                  │   • Provider Dispatcher     │
+                  └──────────────┬──────────────┘
+                                 │
+       ┌─────────────────────────┴─────────────────────────┐
+       ▼                                                   ▼
 ┌───────────────────────────┐               ┌───────────────────────────┐
 │   Orchestrator Provider   │               │      Worker Provider      │
-│   (Default: Codex / OpenAI│               │  (Default: Gemini / Google│
+│   (Default: OpenAI Codex  │               │  (Default: Google Gemini  │
 │     ChatGPT 6 Astra Low)  │ ◄─── [MCP] ──►│     Gemini 3.8 Flash)     │
 │   • Task decomposition    │               │   • File exploration      │
 │   • Architectural design  │               │   • Code implementation   │
@@ -36,107 +44,122 @@ Its provider architecture is open-ended, ready for Anthropic Claude (Claude Code
 
 ---
 
-## Global Installation
+## Installation
 
-From `d:\Projects\Orchestrator`:
+Install dependencies and link the binary globally:
 
 ```powershell
 npm install
 npm link --force
 ```
 
-Now `kumo` is available globally in any terminal and any directory.
+After linking, `kumo` is available from any directory.
 
 ---
 
 ## Quick Start & Verification
 
-### 1. Pre-flight Doctor Check
-Run `kumo doctor` from any folder to check your subscription tools and bridge:
+### 1. Pre-flight Diagnostics
+Run `kumo doctor` to verify environment prerequisites and subscription authentication:
 
 ```powershell
 kumo doctor
 ```
 
+Output:
 ```text
-🔍 Running Kumo (雲) Cross-Provider Diagnostics...
+█  █  █   █  █   █   ███ 
+█ █   █   █  ██ ██  █   █   KUMO v1.0.0
+██    █   █  █ █ █  █   █   Cross-Provider AI Orchestrator
+█ █   █   █  █   █  █   █
+█  █   ███   █   █   ███ 
+────────────────────────────────────────────────────────────────
+  System & Subscription Diagnostics
+────────────────────────────────────────────────────────────────
 
-  ✅ Node.js:               v25.9.0 (Supported)
-  ✅ Codex CLI (OpenAI):    Installed (codex-cli 0.153.4)
-  ✅ Gemini CLI (Google):   Installed 'gemini' (0.59.0)
-  ✅ MCP Bridge Server:     Bridge initialized successfully with 5 tools registered.
+  [OK] Node.js Runtime            v25.9.0 (Supported)
+  [OK] Codex CLI (OpenAI)         Installed (codex-cli 0.153.4)
+  [OK] Gemini CLI (Google)        Installed 'gemini' (0.59.0)
+  [OK] MCP Bridge Server          Bridge initialized successfully with 5 tools registered.
 
-✨ All systems operational! Run 'kumo' in any project to start.
+  Global Config:  C:\Users\username\.kumo\config.json
+    • orchestratorProvider: "codex"
+    • orchestratorModel: "chatgpt-6-astra"
+    • reasoningEffort: "low"
+    • workerProvider: "gemini"
+    • workerModel: "gemini-3.8-flash"
+
+────────────────────────────────────────────────────────────────
+  [OK] All systems operational. Ready to run 'kumo'.
+────────────────────────────────────────────────────────────────
 ```
 
-### 2. Launch Interactive Orchestration in Any Project
+### 2. Launch Interactive Orchestration
 
 ```powershell
-cd d:\Projects\AnyRepo
+cd d:\Projects\TargetRepository
 kumo
 ```
 
-- Connects to your active workspace dynamically.
-- Launches the native terminal UI (Option A feel with streaming, diff viewing, and approvals).
-- Injects Gemini 3.8 Flash tools (`gemini_explore`, `gemini_implement`, `gemini_test`, etc.).
-- Leaves **zero footprint** in your target project.
+- Dynamically attaches to the target workspace directory.
+- Starts the native terminal session with streaming output, diff inspection, and tool approvals.
+- Registers Gemini worker tools (`gemini_explore`, `gemini_implement`, `gemini_test`, `gemini_research`, `gemini_review`) via standard Model Context Protocol (MCP).
+- Requires no temporary files or workspace-polluting artifacts.
 
 ---
 
-## Model Management (`kumo model`)
+## Model Configuration (`kumo model`)
 
-Kumo is designed so you can use **any model** for either orchestrator or worker, with curated presets for common subscription tiers:
+Inspect or change the orchestrator or worker models without modifying project files:
 
 ```powershell
-# 1. View active models and presets
+# Inspect active models and available presets
 kumo model
 
-# 2. Switch Orchestrator model to any model name
+# Set orchestrator model and reasoning effort
 kumo model orchestrator chatgpt-6-astra low
-# Or Sol:
 kumo model orchestrator chatgpt-5.6-sol low
 
-# 3. Switch Worker model to any model name
+# Set worker model
 kumo model worker gemini-3.8-flash
-# Or 3.7:
 kumo model worker gemini-3.7-flash
 
-# 4. Apply a curated preset
+# Apply a preset profile
 kumo model use pro       # Astra Medium + Gemini 3.8 Flash
 kumo model use speed     # Sol + Gemini 3.8 Flash
-kumo model use default   # Astra Low + Gemini 3.8 Flash (ChatGPT Plus optimized)
+kumo model use default   # Astra Low + Gemini 3.8 Flash (ChatGPT Plus quota-optimized)
 ```
 
 ---
 
-## Command Reference
+## CLI Reference
 
 | Command | Description |
 |---|---|
-| `kumo` | Start interactive cross-provider session in current folder |
-| `kumo -d <path>` | Start interactive session targeting a specific folder |
+| `kumo` | Launch interactive session in the current directory |
+| `kumo -d <path>` | Launch interactive session in a specified directory |
 | `kumo run "<prompt>"` | Execute a single task non-interactively across providers |
-| `kumo model` | Inspect or switch orchestrator/worker models and presets |
-| `kumo model orchestrator <model> [effort]` | Set orchestrator model (accepts any model string) |
-| `kumo model worker <model>` | Set worker model (accepts any model string) |
-| `kumo model use <preset>` | Apply a preset (`default`, `pro`, `speed`, `gemini-3.7`) |
-| `kumo doctor` | Diagnostics: verify subscription auth, CLIs, and bridge health |
-| `kumo config list` | View all global configuration settings (`~/.kumo/config.json`) |
-| `kumo config set <key> <val>` | Update any configuration value |
-| `kumo config reset` | Reset configuration to defaults |
-| `kumo init` | (Optional) Scaffold project guidelines (`AGENTS.md`, `GEMINI.md`) into current directory |
+| `kumo model` | View active models, providers, and presets |
+| `kumo model orchestrator <model> [effort]` | Configure orchestrator model |
+| `kumo model worker <model>` | Configure worker model |
+| `kumo model use <preset>` | Apply predefined configuration preset (`default`, `pro`, `speed`, `gemini-3.7`) |
+| `kumo doctor` | Perform diagnostic check on system environment and logins |
+| `kumo config list` | View global configuration keys and values (`~/.kumo/config.json`) |
+| `kumo config set <key> <val>` | Update a specific configuration property |
+| `kumo config reset` | Reset global configuration to defaults |
+| `kumo init` | (Optional) Initialize repository rule files (`AGENTS.md`, `GEMINI.md`) |
 
 ---
 
-## Open-Ended Provider Extensibility
+## Architecture & Extensibility
 
-The codebase is organized into modular provider adapters:
+The codebase implements a decoupled provider structure:
 - **Orchestrators** ([`src/providers/orchestrators/`](file:///d:/Projects/Orchestrator/src/providers/orchestrators/)):
-  - `codex.js`: OpenAI Codex CLI launcher with dynamic MCP injection.
-  - `registry.js`: Provider lookup table. Adding Anthropic Claude Code is as simple as adding `claude.js` implementing `{ launch, buildInvocation }`!
+  - `codex.js`: OpenAI Codex CLI adapter with dynamic MCP bridge injection.
+  - `registry.js`: Provider registry allowing additional orchestrator adapters.
 - **Workers** ([`src/providers/workers/`](file:///d:/Projects/Orchestrator/src/providers/workers/)):
-  - `gemini.js`: Google Gemini adapter via MCP bridge.
-  - `registry.js`: Worker lookup table for future worker providers.
+  - `gemini.js`: Google Gemini adapter backed by Antigravity / Gemini CLI.
+  - `registry.js`: Worker registry supporting future agent execution engines.
 - **MCP Bridge** ([`src/bridge/`](file:///d:/Projects/Orchestrator/src/bridge/)):
-  - `prompts.js`: System prompts for `explore`, `implement`, `test`, `research`, `review`.
-  - `agy-runner.js`: Cross-platform worker subprocess runner.
+  - `prompts.js`: Role prompts for `explore`, `implement`, `test`, `research`, and `review`.
+  - `agy-runner.js`: Subprocess executor enforcing timeout, permission sandboxes, and buffer management.

@@ -3,57 +3,44 @@
  */
 
 import { runDiagnostics } from "../utils/diagnostics.js";
+import { getBanner, c, badge, separator } from "../utils/ui.js";
 
 export async function doctorCommand() {
-  console.log("\n🔍 Running Kumo (雲) Cross-Provider Diagnostics...\n");
+  console.log("\n" + getBanner());
+  console.log(separator(64));
+  console.log(`  ${c.bold}System & Subscription Diagnostics${c.reset}`);
+  console.log(separator(64) + "\n");
 
   const results = await runDiagnostics();
 
-  // Node.js
-  if (results.node.ok) {
-    console.log(`  ✅ Node.js:               ${results.node.details}`);
-  } else {
-    console.log(`  ❌ Node.js:               ${results.node.details}`);
-  }
+  // Helper for check lines
+  const printCheck = (label, res) => {
+    const status = res.ok ? badge.ok : badge.fail;
+    const padLabel = label.padEnd(26);
+    console.log(`  ${status} ${padLabel} ${res.details}`);
+  };
 
-  // Codex CLI
-  if (results.codex.ok) {
-    console.log(`  ✅ Codex CLI (OpenAI):    ${results.codex.details}`);
-  } else {
-    console.log(`  ❌ Codex CLI (OpenAI):    ${results.codex.details}`);
-  }
+  printCheck("Node.js Runtime", results.node);
+  printCheck("Codex CLI (OpenAI)", results.codex);
+  printCheck("Gemini CLI (Google)", results.gemini);
+  printCheck("MCP Bridge Server", results.bridge);
 
-  // Antigravity / Gemini CLI
-  if (results.gemini.ok) {
-    console.log(`  ✅ Gemini CLI (Google):   ${results.gemini.details}`);
-  } else {
-    console.log(`  ❌ Gemini CLI (Google):   ${results.gemini.details}`);
-  }
-
-  // MCP Bridge
-  if (results.bridge.ok) {
-    console.log(`  ✅ MCP Bridge Server:     ${results.bridge.details}`);
-  } else {
-    console.log(`  ❌ MCP Bridge Server:     ${results.bridge.details}`);
-  }
-
-  console.log(`\n📁 Global Config File:      ${results.config.path}`);
-  console.log("   Current Settings:");
+  console.log(`\n  ${c.dim}Global Config:${c.reset}  ${results.config.path}`);
   for (const [k, v] of Object.entries(results.config.values)) {
-    console.log(`     • ${k}: ${JSON.stringify(v)}`);
+    console.log(`    ${badge.dot} ${k}: ${c.dim}${JSON.stringify(v)}${c.reset}`);
   }
 
-  console.log("\n" + "─".repeat(60));
+  console.log("\n" + separator(64));
   if (results.node.ok && results.codex.ok && results.gemini.ok && results.bridge.ok) {
-    console.log("✨ All systems operational! Run 'kumo' in any project to start.");
+    console.log(`  ${badge.ok} ${c.brightGreen}All systems operational.${c.reset} Ready to run 'kumo'.`);
   } else {
-    console.log("⚠️ Some components require attention. Review the issues above.");
+    console.log(`  ${badge.warn} ${c.brightYellow}Action required for some components:${c.reset}`);
     if (!results.codex.ok) {
-      console.log("   • To install Codex: npm install -g @openai/codex && codex login");
+      console.log(`    ${badge.dot} Install Codex CLI: npm install -g @openai/codex && codex login`);
     }
     if (!results.gemini.ok) {
-      console.log("   • To configure Gemini binary: kumo config set cliBinary gemini");
+      console.log(`    ${badge.dot} Configure Gemini binary: kumo config set cliBinary gemini`);
     }
   }
-  console.log("");
+  console.log(separator(64) + "\n");
 }

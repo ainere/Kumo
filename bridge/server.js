@@ -116,7 +116,7 @@ function formatResult(result, toolName) {
       content: [
         {
           type: "text",
-          text: `⏱ ${toolName} timed out after ${DEFAULT_TIMEOUT_MS / 1000}s.\n\nPartial output:\n${result.stdout || "(none)"}`,
+          text: `[TIMEOUT] ${toolName} timed out after ${DEFAULT_TIMEOUT_MS / 1000}s.\n\nPartial output:\n${result.stdout || "(none)"}`,
         },
       ],
       isError: true,
@@ -128,7 +128,7 @@ function formatResult(result, toolName) {
       content: [
         {
           type: "text",
-          text: `❌ ${toolName} failed (exit code ${result.code}).\n\nstderr:\n${result.stderr || "(none)"}\n\nstdout:\n${result.stdout || "(none)"}`,
+          text: `[ERROR] ${toolName} failed (exit code ${result.code}).\n\nstderr:\n${result.stderr || "(none)"}\n\nstdout:\n${result.stdout || "(none)"}`,
         },
       ],
       isError: true,

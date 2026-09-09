@@ -15,7 +15,7 @@ export function createCli() {
 
   program
     .name("kumo")
-    .description("Kumo (雲 / 蜘蛛) — Cross-provider AI orchestrator linking ChatGPT, Gemini, Claude, and beyond")
+    .description("KUMO — Cross-provider CLI orchestrator pairing frontier reasoning models with high-speed execution workers")
     .version("1.0.0");
 
   // Default interactive command (when invoked without subcommand)

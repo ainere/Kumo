@@ -34,5 +34,5 @@ max_concurrent_threads_per_session = 4
 # via your Google AI Pro subscription.
 [mcp_servers.gemini-bridge]
 command = "node"
-args = ["bridge/server.js"]
+args = ["src/bridge/server.js"]
 env = {}
