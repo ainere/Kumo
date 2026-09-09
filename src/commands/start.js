@@ -40,8 +40,9 @@ function renderHeader(workspace, config, codexLimits = null, agyUsage = null) {
   console.log(
     `  ${g1}${"Orchestrator:".padEnd(20)}${c.reset}${c.brightCyan}${config.orchestratorModel}${c.reset}${c.dim} (${config.orchestratorProvider || "codex"}, reasoning: ${config.reasoningEffort})${c.reset}`
   );
+  const workerEffortStr = config.workerEffort ? `, reasoning: ${config.workerEffort}` : "";
   console.log(
-    `  ${g2}${"Worker:".padEnd(20)}${c.reset}${c.brightBlue}${config.workerModel}${c.reset}${c.dim} (${config.workerProvider || "gemini"} via MCP Bridge)${c.reset}`
+    `  ${g2}${"Worker:".padEnd(20)}${c.reset}${c.brightBlue}${config.workerModel}${c.reset}${c.dim} (${config.workerProvider || "gemini"} via MCP Bridge${workerEffortStr})${c.reset}`
   );
 
   // Orchestrator quota line (standard 14 blocks)
@@ -287,10 +288,10 @@ export async function startCommand(opts = {}) {
           if (!arg1) {
             console.log(`\n  ${c.bold}Active Model Configuration:${c.reset}`);
             console.log(`    ${c.dim}Orchestrator:${c.reset} ${c.brightCyan}${config.orchestratorModel}${c.reset} (reasoning: ${config.reasoningEffort})`);
-            console.log(`    ${c.dim}Worker:${c.reset}       ${c.brightBlue}${config.workerModel}${c.reset}\n`);
+            console.log(`    ${c.dim}Worker:${c.reset}       ${c.brightBlue}${config.workerModel}${c.reset} (reasoning: ${config.workerEffort || "medium"})\n`);
             console.log(`  ${c.dim}To switch:${c.reset}`);
-            console.log(`    ${c.cyan}/model <model-name>${c.reset}             (switch orchestrator model)`);
-            console.log(`    ${c.cyan}/model worker <model-name>${c.reset}      (switch worker model)\n`);
+            console.log(`    ${c.cyan}/model <model-name>${c.reset}                  (switch orchestrator model)`);
+            console.log(`    ${c.cyan}/model worker <model-name> [effort]${c.reset}  (switch worker model & effort)\n`);
             rl.prompt();
             return;
           }
@@ -298,7 +299,12 @@ export async function startCommand(opts = {}) {
           if (arg1 === "worker" && arg2) {
             config.workerModel = arg2;
             setConfigValue("workerModel", arg2);
-            console.log(`\n${badge.ok} Worker model switched to ${c.brightBlue}${arg2}${c.reset}\n`);
+            if (parts[3]) {
+              config.workerEffort = parts[3].toLowerCase();
+              setConfigValue("workerEffort", parts[3].toLowerCase());
+            }
+            const extra = config.workerEffort ? ` (reasoning: ${config.workerEffort})` : "";
+            console.log(`\n${badge.ok} Worker model switched to ${c.brightBlue}${arg2}${c.reset}${extra}\n`);
             rl.prompt();
             return;
           }
@@ -322,10 +328,32 @@ export async function startCommand(opts = {}) {
 
         case "effort":
         case "reasoning":
+          if (arg1 === "worker") {
+            if (!arg2) {
+              console.log(`\n  ${c.dim}Current worker reasoning effort:${c.reset} ${c.brightBlue}${config.workerEffort || "medium"}${c.reset}`);
+              console.log(`  ${c.dim}Available:${c.reset} low, medium, high`);
+              console.log(`  ${c.dim}Usage:${c.reset} /effort worker <low|medium|high>\n`);
+              rl.prompt();
+              return;
+            }
+            const wEffort = arg2.toLowerCase();
+            if (!["low", "medium", "high"].includes(wEffort)) {
+              console.log(`\n${badge.warn} Invalid worker effort '${arg2}'. Supported: low, medium, high\n`);
+              rl.prompt();
+              return;
+            }
+            config.workerEffort = wEffort;
+            setConfigValue("workerEffort", wEffort);
+            console.log(`\n${badge.ok} Worker reasoning effort set to ${c.brightBlue}${wEffort}${c.reset}\n`);
+            rl.prompt();
+            return;
+          }
+
           if (!arg1) {
-            console.log(`\n  ${c.dim}Current reasoning effort:${c.reset} ${c.brightCyan}${config.reasoningEffort || "low"}${c.reset}`);
-            console.log(`  ${c.dim}Available:${c.reset} low, medium, high, max`);
-            console.log(`  ${c.dim}Usage:${c.reset} /effort <level>\n`);
+            console.log(`\n  ${c.dim}Current orchestrator reasoning effort:${c.reset} ${c.brightCyan}${config.reasoningEffort || "low"}${c.reset}`);
+            console.log(`  ${c.dim}Current worker reasoning effort:${c.reset}       ${c.brightBlue}${config.workerEffort || "medium"}${c.reset}`);
+            console.log(`  ${c.dim}Usage:${c.reset} /effort <low|medium|high|max>`);
+            console.log(`         /effort worker <low|medium|high>\n`);
             rl.prompt();
             return;
           }

@@ -26,7 +26,13 @@ import { runAgy } from "./agy-runner.js";
 // Configuration
 // ---------------------------------------------------------------------------
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+function getCliArg(flag) {
+  const idx = process.argv.indexOf(flag);
+  return idx !== -1 && process.argv[idx + 1] ? process.argv[idx + 1] : null;
+}
+
+const GEMINI_MODEL = getCliArg("--model") || process.env.GEMINI_MODEL || "gemini-3.8-flash";
+const GEMINI_EFFORT = getCliArg("--effort") || process.env.GEMINI_EFFORT || process.env.WORKER_EFFORT || "medium";
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.GEMINI_TIMEOUT_MS || "300000", 10);
 
 // ---------------------------------------------------------------------------
@@ -182,6 +188,7 @@ server.tool(
     const result = await runAgy({
       prompt: task,
       model: GEMINI_MODEL,
+      effort: GEMINI_EFFORT,
       mode: "read-only",
       files: files || [],
       timeoutMs: DEFAULT_TIMEOUT_MS,
@@ -218,6 +225,7 @@ server.tool(
     const result = await runAgy({
       prompt: task,
       model: GEMINI_MODEL,
+      effort: GEMINI_EFFORT,
       mode: "workspace-write",
       files: files || [],
       timeoutMs: DEFAULT_TIMEOUT_MS,
@@ -252,6 +260,7 @@ server.tool(
     const result = await runAgy({
       prompt: task,
       model: GEMINI_MODEL,
+      effort: GEMINI_EFFORT,
       mode: "workspace-write",
       files: files || [],
       timeoutMs: DEFAULT_TIMEOUT_MS,
@@ -287,6 +296,7 @@ server.tool(
     const result = await runAgy({
       prompt: task,
       model: GEMINI_MODEL,
+      effort: GEMINI_EFFORT,
       mode: "read-only",
       files: files || [],
       timeoutMs: DEFAULT_TIMEOUT_MS,
@@ -323,6 +333,7 @@ server.tool(
     const result = await runAgy({
       prompt: task,
       model: GEMINI_MODEL,
+      effort: GEMINI_EFFORT,
       mode: "read-only",
       files: files || [],
       timeoutMs: DEFAULT_TIMEOUT_MS,

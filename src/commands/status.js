@@ -36,8 +36,9 @@ export async function statusCommand(opts = {}) {
   console.log(
     `  ${g1}${"Orchestrator:".padEnd(20)}${c.reset}${c.brightCyan}${config.orchestratorModel}${c.reset}${c.dim} (${config.orchestratorProvider || "codex"}, reasoning: ${config.reasoningEffort})${c.reset}`
   );
+  const workerEffortStr = config.workerEffort ? `, reasoning: ${config.workerEffort}` : "";
   console.log(
-    `  ${g2}${"Worker:".padEnd(20)}${c.reset}${c.brightBlue}${config.workerModel}${c.reset}${c.dim} (${config.workerProvider || "gemini"} via MCP Bridge)${c.reset}`
+    `  ${g2}${"Worker:".padEnd(20)}${c.reset}${c.brightBlue}${config.workerModel}${c.reset}${c.dim} (${config.workerProvider || "gemini"} via MCP Bridge${workerEffortStr})${c.reset}`
   );
   console.log(separator(64));
 

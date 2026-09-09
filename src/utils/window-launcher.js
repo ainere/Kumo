@@ -32,24 +32,21 @@ export function launchInNewWindow(opts = {}) {
   const isMac = process.platform === "darwin";
 
   if (isWin) {
-    const entryPoint = path.resolve(__dirname, "../../bin/kumo.js");
-    const nodeBin = process.argv[0];
-    const directRunCmd = `& '${nodeBin}' '${entryPoint}' --here${trailing}`;
+    const kumoCmd = `kumo --here${trailing}`;
 
-    // Spawn a fresh PowerShell window running Kumo with -NoProfile for ultra-fast startup
+    // Spawn a fresh PowerShell window running Kumo
     const child = spawn(
       "cmd.exe",
       [
         "/c",
         "start",
-        "Kumo",
         "powershell.exe",
         "-NoProfile",
         "-NoExit",
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        `Set-Location '${workspace}'; ${directRunCmd}`,
+        `Set-Location '${workspace}'; ${kumoCmd}`,
       ],
       {
         cwd: workspace,
