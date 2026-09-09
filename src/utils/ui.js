@@ -1,6 +1,6 @@
 /**
  * ui.js — Formal terminal styling utilities, ANSI color coding,
- * and multi-style banner designs for KUMO.
+ * cloud-themed banner designs, and rate limit formatters for KUMO.
  */
 
 // ANSI Color and Style Codes
@@ -28,111 +28,57 @@ export const c = {
   brightYellow: "\x1b[93m",
   brightRed: "\x1b[91m",
   brightBlue: "\x1b[94m",
+  brightMagenta: "\x1b[95m",
 };
 
+export const DEFAULT_SUBTITLE = "Frontier Reasoning ◄───[MCP]───► High-Speed Execution";
+
 /**
- * Available banner design implementations.
+ * Cloud banner design implementations.
+ * Focus exclusively on refined Cloud (雲) aesthetics.
  */
 export const BANNER_DESIGNS = {
-  slant: {
-    name: "Slant (Aligned)",
-    description: "Properly aligned slanted forward-motion isometric ASCII font with badge",
-    render: (v) => {
-      const l1 = `${c.brightCyan}    __ __${c.cyan}                  ${c.blue}        ${c.reset}`;
-      const l2 = `${c.brightCyan}   / //_/${c.cyan}__  ______ ___  ${c.blue}____     ${c.reset}  ${c.bold}${c.white}KUMO${c.reset} ${c.dim}v${v}${c.reset}`;
-      const l3 = `${c.brightCyan}  / ,<  ${c.cyan}/ / / / __ \`__ \\${c.blue}/ __ \\    ${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
-      const l4 = `${c.brightCyan} / /| | ${c.cyan}/ /_/ / / / / / /${c.blue} /_/ /    ${c.reset}  ${c.dim}Codex (Astra) ◄───[MCP]───► Gemini (Flash)${c.reset}`;
-      const l5 = `${c.brightCyan}/_/ |_| ${c.cyan}\\__,_/_/ /_/ /_/${c.blue}\\____/     ${c.reset}`;
-      return `${l1}\n${l2}\n${l3}\n${l4}\n${l5}`;
-    },
-  },
-
-  spider: {
-    name: "Spider (蜘蛛)",
-    description: "ASCII Spider glyph linking the two provider endpoints",
-    render: (v) => {
-      const s1 = `${c.brightCyan}      / _ \\     ${c.reset}  ${c.bold}${c.white}KUMO (蜘蛛)${c.reset} ${c.dim}v${v}${c.reset}`;
-      const s2 = `${c.cyan}    \\(\\(_)/)/   ${c.reset}  ${c.dim}Cross-Provider AI Orchestration Harness${c.reset}`;
-      const s3 = `${c.blue}     -(_)-      ${c.reset}  ${c.dim}OpenAI Codex ◄───[MCP]───► Google Gemini${c.reset}`;
-      const s4 = `${c.brightBlue}    / / \\ \\     ${c.reset}  ${c.dim}High-Speed Agent Weaver${c.reset}`;
-      return `${s1}\n${s2}\n${s3}\n${s4}`;
-    },
-  },
-
   cloud: {
-    name: "Cloud (雲)",
-    description: "Clean ASCII Cloud illustration with balanced provider subtitle",
-    render: (v) => {
-      const c1 = `${c.brightCyan}       .--.     ${c.reset}  ${c.bold}${c.white}KUMO (雲)${c.reset} ${c.dim}v${v}${c.reset}`;
-      const c2 = `${c.cyan}    .-(    ).   ${c.reset}  ${c.dim}Cross-Provider AI Orchestration Harness${c.reset}`;
-      const c3 = `${c.blue}   (___.__)__)  ${c.reset}  ${c.dim}OpenAI Codex ◄───[MCP]───► Google Gemini${c.reset}`;
+    name: "Cloud (Classic Puffy 雲)",
+    description: "Refined ASCII puffy cloud with balanced typography and gradient depth",
+    render: (v = "1.0.0", sub = DEFAULT_SUBTITLE) => {
+      const c1 = `${c.brightCyan}       .--.       ${c.reset}  ${c.bold}${c.white}KUMO (雲)${c.reset} ${c.dim}v${v}${c.reset}`;
+      const c2 = `${c.cyan}    .-(    ).     ${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
+      const c3 = `${c.blue}   (___.__)__)    ${c.reset}  ${c.dim}${sub}${c.reset}`;
       return `${c1}\n${c2}\n${c3}`;
     },
   },
 
-  web: {
-    name: "Web / Mesh",
-    description: "ASCII Web geometry capturing the multi-agent mesh",
-    render: (v) => {
-      const w1 = `${c.brightCyan}    /\\  /\\    ${c.reset}  ${c.bold}${c.white}KUMO (蜘蛛の巣)${c.reset} ${c.dim}v${v}${c.reset}`;
-      const w2 = `${c.cyan}   <  ><  >   ${c.reset}  ${c.dim}Cross-Provider AI Orchestration Harness${c.reset}`;
-      const w3 = `${c.blue}    \\/  \\/    ${c.reset}  ${c.dim}Codex (Astra) ◄───[MCP]───► Gemini (Flash)${c.reset}`;
-      return `${w1}\n${w2}\n${w3}`;
+  "cloud-cumulus": {
+    name: "Cloud Cumulus (Atmospheric Multi-Tier)",
+    description: "Expanded atmospheric cloud cluster with volumetric shaded borders",
+    render: (v = "1.0.0", sub = DEFAULT_SUBTITLE) => {
+      const l1 = `${c.brightCyan}         .---.                ${c.reset}`;
+      const l2 = `${c.brightCyan}      .-(     ).    ${c.cyan}.---.     ${c.reset}  ${c.bold}${c.white}KUMO${c.reset} ${c.dim}v${v}${c.reset}`;
+      const l3 = `${c.cyan}    .(          ).-(     ).   ${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
+      const l4 = `${c.blue}   (____.__.__.____)(____)    ${c.reset}  ${c.dim}${sub}${c.reset}`;
+      return `${l1}\n${l2}\n${l3}\n${l4}`;
     },
   },
 
-  isometric: {
-    name: "Isometric 3D",
-    description: "Double-line geometric wireframe block font",
-    render: (v) => {
-      const l1 = `${c.brightCyan}╦╔═╦ ╦╔╦╗╔═╗${c.reset}   ${c.bold}${c.white}KUMO${c.reset} ${c.dim}v${v}${c.reset}`;
-      const l2 = `${c.cyan}╠╩╗║ ║║║║║ ║${c.reset}   ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
-      const l3 = `${c.blue}╩ ╩╚═╝╩ ╩╚═╝${c.reset}   ${c.dim}Codex (Astra) ◄───[MCP]───► Gemini (Flash)${c.reset}`;
-      return `${l1}\n${l2}\n${l3}`;
-    },
-  },
-
-  block: {
-    name: "Block",
-    description: "Solid, modern sans-serif block typography with subtle cyan-to-blue gradient",
-    render: (v) => {
-      const l1 = `${c.brightCyan}█  █${c.cyan}  █   █${c.blue}  █   █${c.brightBlue}   ███ ${c.reset}`;
-      const l2 = `${c.brightCyan}█ █ ${c.cyan}  █   █${c.blue}  ██ ██${c.brightBlue}  █   █${c.reset}   ${c.bold}${c.white}KUMO${c.reset} ${c.dim}v${v}${c.reset}`;
-      const l3 = `${c.brightCyan}██  ${c.cyan}  █   █${c.blue}  █ █ █${c.brightBlue}  █   █${c.reset}   ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
-      const l4 = `${c.brightCyan}█ █ ${c.cyan}  █   █${c.blue}  █   █${c.brightBlue}  █   █${c.reset}`;
-      const l5 = `${c.brightCyan}█  █${c.cyan}   ███ ${c.blue}  █   █${c.brightBlue}   ███ ${c.reset}`;
-      return `${l1}\n${l2}\n${l3}\n${l4}\n${l5}`;
-    },
-  },
-
-  kanji: {
-    name: "Kanji & Cloud (雲)",
-    description: "Prominent Japanese kanji for cloud/spider with balanced subtitle badge",
-    render: (v) => {
-      const k1 = `${c.brightCyan}    雨    ${c.reset}  ${c.bold}${c.white}KUMO (雲)${c.reset} ${c.dim}v${v}${c.reset}`;
-      const k2 = `${c.cyan}  一 云 一${c.reset}  ${c.dim}Cross-Provider AI Orchestration Harness${c.reset}`;
-      const k3 = `${c.blue}   二 二  ${c.reset}  ${c.dim}Codex (Astra) × Gemini (Flash)${c.reset}`;
+  "cloud-kanji": {
+    name: "Cloud Kanji (雲 Crest)",
+    description: "Artistic cloud enclosure surrounding the traditional Japanese 雲 kanji",
+    render: (v = "1.0.0", sub = DEFAULT_SUBTITLE) => {
+      const k1 = `${c.brightCyan}     ╭─── 雲 ───╮     ${c.reset}  ${c.bold}${c.white}KUMO (雲)${c.reset} ${c.dim}v${v}${c.reset}`;
+      const k2 = `${c.cyan}    -(   KUMO   )-    ${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
+      const k3 = `${c.blue}     ╰──────────╯     ${c.reset}  ${c.dim}${sub}${c.reset}`;
       return `${k1}\n${k2}\n${k3}`;
     },
   },
 
-  minimal: {
-    name: "Minimal Line",
-    description: "Compact single-line badge inspired by modern developer CLI tools",
-    render: (v) => {
-      return `${c.bold}${c.brightCyan}KUMO${c.reset} ${c.dim}v${v}${c.reset} ${c.dim}│${c.reset} ${c.white}Cross-Provider AI Orchestrator${c.reset}`;
-    },
-  },
-
-  box: {
-    name: "Box Framed Card",
-    description: "Clean Unicode boxed card with framed provider and version details",
-    render: (v) => {
-      const top = `${c.dim}┌────────────────────────────────────────────────────────┐${c.reset}`;
-      const m1  = `${c.dim}│${c.reset}  ${c.bold}${c.brightCyan}KUMO${c.reset} ${c.dim}v${v}${c.reset}  ${c.dim}•  Cross-Provider AI Orchestrator${c.reset}       ${c.dim}│${c.reset}`;
-      const m2  = `${c.dim}│${c.reset}  ${c.dim}OpenAI Codex (Astra)  ◄───[MCP]───►  Google Gemini     │${c.reset}`;
-      const bot = `${c.dim}└────────────────────────────────────────────────────────┘${c.reset}`;
-      return `${top}\n${m1}\n${m2}\n${bot}`;
+  "cloud-minimal": {
+    name: "Cloud Minimal (Developer Header)",
+    description: "Streamlined single/double-line compact cloud glyph for high-density terminals",
+    render: (v = "1.0.0", sub = DEFAULT_SUBTITLE) => {
+      const m1 = `${c.cyan} ☁  ${c.bold}${c.white}KUMO${c.reset} ${c.dim}v${v}${c.reset}  ${c.dim}│${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
+      const m2 = `    ${c.dim}${sub}${c.reset}`;
+      return `${m1}\n${m2}`;
     },
   },
 };
@@ -140,9 +86,9 @@ export const BANNER_DESIGNS = {
 /**
  * Get configured or default banner string.
  */
-export function getBanner(version = "1.0.0", style = "slant") {
-  const design = BANNER_DESIGNS[style] || BANNER_DESIGNS.slant || BANNER_DESIGNS.block;
-  return design.render(version);
+export function getBanner(version = "1.0.0", style = "cloud", subtitle = DEFAULT_SUBTITLE) {
+  const design = BANNER_DESIGNS[style] || BANNER_DESIGNS.cloud;
+  return design.render(version, subtitle);
 }
 
 /**
@@ -162,4 +108,68 @@ export const badge = {
  */
 export function separator(length = 64) {
   return `${c.dim}${"─".repeat(length)}${c.reset}`;
+}
+
+/**
+ * Render a visual ASCII progress bar for percentages (0 - 100).
+ */
+export function progressBar(percent = 0, width = 12) {
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  const filled = Math.round((clamped / 100) * width);
+  const empty = width - filled;
+
+  let color = c.brightGreen;
+  if (clamped > 80) color = c.brightRed;
+  else if (clamped > 50) color = c.brightYellow;
+
+  const bar = `${color}${"█".repeat(filled)}${c.dim}${"░".repeat(empty)}${c.reset}`;
+  return `${bar} ${color}${clamped}%${c.reset}`;
+}
+
+/**
+ * Format relative countdown and human-readable time from a Unix timestamp (seconds).
+ */
+export function formatResetTime(resetsAtSeconds) {
+  if (!resetsAtSeconds) return "N/A";
+  const nowSec = Math.floor(Date.now() / 1000);
+  const diffSec = resetsAtSeconds - nowSec;
+
+  const dateStr = new Date(resetsAtSeconds * 1000).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  if (diffSec <= 0) {
+    return `Reset due now (${dateStr})`;
+  }
+
+  const days = Math.floor(diffSec / 86400);
+  const hours = Math.floor((diffSec % 86400) / 3600);
+  const minutes = Math.floor((diffSec % 3600) / 60);
+
+  let countdown = "";
+  if (days > 0) {
+    countdown = `${days}d ${hours}h`;
+  } else if (hours > 0) {
+    countdown = `${hours}h ${minutes}m`;
+  } else {
+    countdown = `${minutes}m`;
+  }
+
+  return `in ${countdown} (${dateStr})`;
+}
+
+/**
+ * Format plan type into formal human-readable label.
+ */
+export function formatPlanType(planType) {
+  if (!planType) return "Unknown Tier";
+  const p = planType.toLowerCase();
+  if (p === "go" || p === "plus") return "ChatGPT Plus";
+  if (p === "pro") return "ChatGPT Pro";
+  if (p === "team") return "ChatGPT Team";
+  if (p === "enterprise") return "ChatGPT Enterprise";
+  return planType.toUpperCase();
 }

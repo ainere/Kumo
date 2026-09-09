@@ -21,17 +21,34 @@ const MAX_OUTPUT_BYTES = 1024 * 1024;
  */
 let detectedBin = null;
 
-/**
- * Determine which binary to invoke: AGY_BIN env, or 'agy', or 'gemini'.
- * @returns {string}
- */
+import { execSync } from "node:child_process";
+
 export function getCliBinary() {
   if (process.env.AGY_BIN) return process.env.AGY_BIN;
   if (process.env.GEMINI_BIN) return process.env.GEMINI_BIN;
   if (detectedBin) return detectedBin;
 
-  // Default to agy (Antigravity CLI) as primary
-  detectedBin = "agy";
+  // Check if agy is available in PATH
+  try {
+    const cmd = process.platform === "win32" ? "where.exe agy" : "which agy";
+    execSync(cmd, { stdio: "ignore" });
+    detectedBin = "agy";
+    return detectedBin;
+  } catch {
+    /* agy not found */
+  }
+
+  // Fallback to gemini CLI
+  try {
+    const cmd = process.platform === "win32" ? "where.exe gemini" : "which gemini";
+    execSync(cmd, { stdio: "ignore" });
+    detectedBin = "gemini";
+    return detectedBin;
+  } catch {
+    /* neither found */
+  }
+
+  detectedBin = "gemini";
   return detectedBin;
 }
 
@@ -125,12 +142,15 @@ export async function runAgy(opts) {
       GEMINI_CLI_TRUST_WORKSPACE: "true",
     };
 
-    const proc = spawn(bin, args, {
+    const isWin = process.platform === "win32";
+    const spawnBin = isWin ? "cmd.exe" : bin;
+    const spawnArgs = isWin ? ["/d", "/s", "/c", bin, ...args] : args;
+
+    const proc = spawn(spawnBin, spawnArgs, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
       env: childEnv,
-      // Windows command resolution (.cmd / .bat)
-      shell: process.platform === "win32",
+      shell: false,
     });
 
     proc.stdout?.on("data", (chunk) => {

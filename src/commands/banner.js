@@ -7,7 +7,7 @@ import { BANNER_DESIGNS, getBanner, c, badge, separator } from "../utils/ui.js";
 
 export function bannerCommand(targetStyle) {
   const config = loadConfig();
-  const currentStyle = config.bannerStyle || "block";
+  const currentStyle = config.bannerStyle || "cloud";
 
   // If style name is provided, switch to it
   if (targetStyle && targetStyle !== "list" && targetStyle !== "show") {
@@ -26,7 +26,7 @@ export function bannerCommand(targetStyle) {
   }
 
   // Otherwise, showcase all available styles with preview
-  console.log(`\n${c.bold}KUMO Banner Showcase & Selection${c.reset}`);
+  console.log(`\n${c.bold}KUMO Cloud Banner Showcase & Selection${c.reset}`);
   console.log(`${c.dim}Current active style:${c.reset} ${c.brightGreen}${currentStyle}${c.reset}\n`);
 
   for (const [key, design] of Object.entries(BANNER_DESIGNS)) {
@@ -41,5 +41,5 @@ export function bannerCommand(targetStyle) {
 
   console.log(separator(60));
   console.log(`\n${c.bold}To select a design:${c.reset}`);
-  console.log(`  ${c.dim}kumo banner <style-name>${c.reset}    (e.g., kumo banner slant, kumo banner kanji, kumo banner minimal)\n`);
+  console.log(`  ${c.dim}kumo banner <style-name>${c.reset}    (e.g., kumo banner cloud, kumo banner cloud-cumulus, kumo banner cloud-kanji)\n`);
 }
