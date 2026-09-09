@@ -40,12 +40,12 @@ export const DEFAULT_SUBTITLE = "Frontier Reasoning ◄───[MCP]───�
 export const BANNER_DESIGNS = {
   cloud: {
     name: "Cloud Cumulus (雲)",
-    description: "Atmospheric cloud cluster with traditional 雲 kanji centered inside the primary cloud",
+    description: "Atmospheric cloud cumulus cluster with KUMO (雲) title badge",
     render: (v = "1.0.0", sub = DEFAULT_SUBTITLE) => {
-      const l1 = `${c.brightCyan}         .---.                ${c.reset}`;
-      const l2 = `${c.brightCyan}      .-(     ).    ${c.cyan}.---.     ${c.reset}  ${c.bold}${c.white}KUMO${c.reset} ${c.dim}v${v}${c.reset}`;
-      const l3 = `${c.cyan}    .(    ${c.bold}${c.white}雲${c.reset}${c.cyan}    ).-(     ).   ${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
-      const l4 = `${c.blue}   (____.__.__.____)(____)    ${c.reset}  ${c.dim}${sub}${c.reset}`;
+      const l1 = `${c.brightCyan}         .---.                    ${c.reset}`;
+      const l2 = `${c.brightCyan}      .-(     ).    ${c.cyan}.---.         ${c.reset}  ${c.bold}${c.white}KUMO${c.reset} ${c.brightCyan}(雲)${c.reset} ${c.dim}v${v}${c.reset}`;
+      const l3 = `${c.cyan}    .(          ).-(     ).       ${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
+      const l4 = `${c.brightBlue}   (____.__.__.____)(____)        ${c.reset}  ${c.dim}${sub}${c.reset}`;
       return `${l1}\n${l2}\n${l3}\n${l4}`;
     },
   },
