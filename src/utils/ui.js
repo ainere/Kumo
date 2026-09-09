@@ -35,7 +35,7 @@ export const DEFAULT_SUBTITLE = "Frontier Reasoning ◄───[MCP]───�
 
 /**
  * Cloud banner design implementation.
- * Refined Cloud Cumulus with the traditional Japanese 雲 (Kumo) kanji centered in the primary cloud.
+ * Refined Cloud Cumulus with KUMO (雲) title badge.
  */
 export const BANNER_DESIGNS = {
   cloud: {
@@ -72,15 +72,21 @@ export const badge = {
 };
 
 /**
- * Horizontal separator line
+ * Horizontal separator line with cyan-to-blue gradient
  */
 export function separator(length = 64) {
-  return `${c.dim}${"─".repeat(length)}${c.reset}`;
+  const steps = [c.cyan, c.brightCyan, c.brightBlue, c.blue];
+  let res = "";
+  for (let i = 0; i < length; i++) {
+    const idx = Math.floor((i / length) * steps.length);
+    res += steps[idx] + "─";
+  }
+  return res + c.reset;
 }
 
 /**
  * Render a visual ASCII progress bar for remaining percentages (0 - 100).
- * Full / high values are green; low values turn yellow and red.
+ * Always standardizes to 14 blocks for consistent alignment across all quotas.
  */
 export function progressBar(percent = 100, width = 14) {
   const clamped = Math.max(0, Math.min(100, Math.round(percent)));
@@ -132,6 +138,7 @@ export function formatResetTime(resetsAtSeconds) {
 
 /**
  * Format relative countdown from an ISO 8601 string (e.g. 2026-09-16T19:53:54Z).
+ * Shows both exact calendar date/time and relative countdown.
  */
 export function formatIsoResetTime(isoStr) {
   if (!isoStr) return "N/A";
@@ -171,7 +178,6 @@ export function formatIsoResetTime(isoStr) {
 
 /**
  * Format plan type into formal human-readable label.
- * Specifically distinguishes ChatGPT Go from ChatGPT Plus.
  */
 export function formatPlanType(planType) {
   if (!planType) return "Unknown Tier";

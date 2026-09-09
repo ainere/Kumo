@@ -233,10 +233,16 @@ export async function getAgyUsage() {
       const usage = {
         geminiWeeklyPercent: null,
         geminiWeeklyResetFormatted: null,
+        geminiWeeklyResetIso: null,
         gemini5HourPercent: null,
         gemini5HourResetFormatted: null,
+        gemini5HourResetIso: null,
         claudeGptWeeklyPercent: null,
+        claudeGptWeeklyResetFormatted: null,
+        claudeGptWeeklyResetIso: null,
         claudeGpt5HourPercent: null,
+        claudeGpt5HourResetFormatted: null,
+        claudeGpt5HourResetIso: null,
         rawItems: [],
       };
 
@@ -255,15 +261,21 @@ export async function getAgyUsage() {
             if (metric.toLowerCase().includes("weekly")) {
               usage.geminiWeeklyPercent = percent;
               usage.geminiWeeklyResetFormatted = formatIsoResetTime(resetIso);
+              usage.geminiWeeklyResetIso = resetIso;
             } else if (metric.toLowerCase().includes("five hour") || metric.toLowerCase().includes("5-hour") || metric.toLowerCase().includes("5 hour")) {
               usage.gemini5HourPercent = percent;
               usage.gemini5HourResetFormatted = formatIsoResetTime(resetIso);
+              usage.gemini5HourResetIso = resetIso;
             }
           } else if (group.toLowerCase().includes("claude") || group.toLowerCase().includes("gpt")) {
             if (metric.toLowerCase().includes("weekly")) {
               usage.claudeGptWeeklyPercent = percent;
+              usage.claudeGptWeeklyResetFormatted = formatIsoResetTime(resetIso);
+              usage.claudeGptWeeklyResetIso = resetIso;
             } else {
               usage.claudeGpt5HourPercent = percent;
+              usage.claudeGpt5HourResetFormatted = formatIsoResetTime(resetIso);
+              usage.claudeGpt5HourResetIso = resetIso;
             }
           }
         }

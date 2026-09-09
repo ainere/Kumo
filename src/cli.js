@@ -8,7 +8,7 @@ import { runCommand } from "./commands/run.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { configCommand } from "./commands/config.js";
 import { initCommand } from "./commands/init.js";
-import { modelCommand } from "./commands/model.js";
+import { modelCommand, effortCommand } from "./commands/model.js";
 import { bannerCommand } from "./commands/banner.js";
 import { statusCommand } from "./commands/status.js";
 
@@ -80,6 +80,22 @@ export function createCli() {
     .description("Inspect or switch orchestrator and worker models (e.g. kumo model, kumo model orchestrator <m>, kumo model worker <m>)")
     .action((action, target, value, extra) => {
       modelCommand(action, target, value, extra);
+    });
+
+  // Effort command (inspect or set reasoning effort)
+  program
+    .command("effort [level]")
+    .description("Inspect or set reasoning effort for orchestrator (low, medium, high, max)")
+    .action((level) => {
+      effortCommand(level);
+    });
+
+  // Reasoning alias
+  program
+    .command("reasoning [level]")
+    .description("Inspect or set reasoning effort for orchestrator (alias for effort)")
+    .action((level) => {
+      effortCommand(level);
     });
 
   // Doctor command
