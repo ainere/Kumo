@@ -1,14 +1,18 @@
 /**
  * agy-runner.js — Manages Antigravity / Gemini CLI subprocess lifecycle.
  *
- * Spawns `agy` (or `gemini` CLI) in non-interactive mode, captures output,
- * enforces timeouts, and returns structured results to the bridge server.
+ * Spawns `agy` CLI in non-interactive print mode, captures output,
+ * enforces timeouts, and exposes live quota metrics to Kumo.
  *
  * Authentication: relies on the user's active Google AI Pro subscription login.
  * No API keys are read or stored.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { formatIsoResetTime } from "../src/utils/ui.js";
+
 /** Default timeout per invocation (5 minutes). */
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.GEMINI_TIMEOUT_MS || "300000", 10);
 
@@ -16,39 +20,44 @@ const DEFAULT_TIMEOUT_MS = parseInt(process.env.GEMINI_TIMEOUT_MS || "300000", 1
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 
 /**
- * Cached binary name once detected.
+ * Cached binary path once detected.
  * @type {string | null}
  */
 let detectedBin = null;
 
-import { execSync } from "node:child_process";
-
+/**
+ * Determine which binary to invoke. Checks local AppData agy.exe first,
+ * then PATH, then environment overrides.
+ * @returns {string}
+ */
 export function getCliBinary() {
-  if (process.env.AGY_BIN) return process.env.AGY_BIN;
-  if (process.env.GEMINI_BIN) return process.env.GEMINI_BIN;
+  if (process.env.AGY_BIN && fs.existsSync(process.env.AGY_BIN)) return process.env.AGY_BIN;
   if (detectedBin) return detectedBin;
 
-  // Check if agy is available in PATH
+  // 1. Check local AppData agy installation (standard Antigravity CLI path)
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || "", "AppData", "Local");
+    const candidate = path.join(localAppData, "agy", "bin", "agy.exe");
+    if (fs.existsSync(candidate)) {
+      detectedBin = candidate;
+      return detectedBin;
+    }
+  }
+
+  // 2. Check if agy is in system PATH
   try {
     const cmd = process.platform === "win32" ? "where.exe agy" : "which agy";
-    execSync(cmd, { stdio: "ignore" });
-    detectedBin = "agy";
-    return detectedBin;
+    const found = execSync(cmd, { stdio: ["ignore", "pipe", "ignore"], encoding: "utf-8" }).trim().split("\r\n")[0];
+    if (found && fs.existsSync(found)) {
+      detectedBin = found;
+      return detectedBin;
+    }
   } catch {
-    /* agy not found */
+    /* not in PATH */
   }
 
-  // Fallback to gemini CLI
-  try {
-    const cmd = process.platform === "win32" ? "where.exe gemini" : "which gemini";
-    execSync(cmd, { stdio: "ignore" });
-    detectedBin = "gemini";
-    return detectedBin;
-  } catch {
-    /* neither found */
-  }
-
-  detectedBin = "gemini";
+  // 3. Fallback to 'agy' command or GEMINI_BIN
+  detectedBin = process.env.GEMINI_BIN || "agy";
   return detectedBin;
 }
 
@@ -62,11 +71,12 @@ export function getCliBinary() {
  */
 
 /**
- * Spawn an `agy` or `gemini` process with the given arguments and return its output.
+ * Spawn an `agy` process with the given arguments and return its output.
  *
  * @param {Object}   opts
  * @param {string}   opts.prompt       — The task prompt to send to Gemini
  * @param {string}   [opts.model]      — Model override (default: gemini-3.8-flash)
+ * @param {string}   [opts.effort]     — Reasoning effort (low|medium|high, default: low)
  * @param {string}   [opts.mode]       — Sandbox mode: "read-only" | "workspace-write"
  * @param {string[]} [opts.files]      — Files to include as context
  * @param {string}   [opts.cwd]        — Working directory (defaults to process.cwd())
@@ -78,6 +88,7 @@ export async function runAgy(opts) {
   const {
     prompt,
     model = process.env.GEMINI_MODEL || "gemini-3.8-flash",
+    effort = "low",
     mode = "read-only",
     files = [],
     cwd = process.cwd(),
@@ -86,7 +97,6 @@ export async function runAgy(opts) {
   } = opts;
 
   const bin = getCliBinary();
-  const isGeminiCli = bin.toLowerCase().includes("gemini");
   const args = [];
 
   // Compose full prompt if system prompt or files are provided
@@ -99,36 +109,18 @@ export async function runAgy(opts) {
   }
   compositePrompt += `[Task]\n${prompt}`;
 
-  if (isGeminiCli) {
-    // Flag format for Gemini CLI
-    args.push("-p", compositePrompt);
-    args.push("-m", model);
-    args.push("--skip-trust");
-    if (mode === "workspace-write") {
-      args.push("-y");
-      args.push("--approval-mode", "yolo");
-    } else {
-      args.push("--approval-mode", "plan");
-    }
+  // agy CLI native flags
+  args.push("-p", compositePrompt);
+  args.push("--model", model);
+  if (effort) {
+    args.push("--effort", effort);
+  }
+  args.push("--dangerously-skip-permissions");
+
+  if (mode === "workspace-write") {
+    args.push("--mode", "accept-edits");
   } else {
-    // Flag format for Antigravity CLI (agy)
-    args.push("--non-interactive");
-    args.push("--model", model);
-    if (mode === "read-only") {
-      args.push("--sandbox", "read-only");
-    } else if (mode === "workspace-write") {
-      args.push("--sandbox", "workspace-write");
-    }
-
-    if (systemPrompt) {
-      args.push("--system-prompt", systemPrompt);
-    }
-
-    for (const f of files) {
-      args.push("--file", f);
-    }
-
-    args.push("--prompt", prompt);
+    args.push("--mode", "plan");
   }
 
   return new Promise((resolve) => {
@@ -142,11 +134,7 @@ export async function runAgy(opts) {
       GEMINI_CLI_TRUST_WORKSPACE: "true",
     };
 
-    const isWin = process.platform === "win32";
-    const spawnBin = isWin ? "cmd.exe" : bin;
-    const spawnArgs = isWin ? ["/d", "/s", "/c", bin, ...args] : args;
-
-    const proc = spawn(spawnBin, spawnArgs, {
+    const proc = spawn(bin, args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
       env: childEnv,
@@ -200,7 +188,7 @@ export async function runAgy(opts) {
         ok: false,
         code: 1,
         stdout: "",
-        stderr: `Failed to spawn CLI binary '${bin}': ${err.message}. Ensure '${bin}' is installed and in PATH, or set AGY_BIN.`,
+        stderr: `Failed to spawn Antigravity CLI '${bin}': ${err.message}. Ensure Antigravity is installed or set AGY_BIN.`,
         timedOut: false,
       });
     });
@@ -208,7 +196,91 @@ export async function runAgy(opts) {
 }
 
 /**
- * Health check — verify CLI is installed and can be invoked.
+ * Query live Antigravity / Gemini usage limits via `agy -p /usage`.
+ *
+ * @returns {Promise<Object | null>}
+ */
+export async function getAgyUsage() {
+  const bin = getCliBinary();
+
+  return new Promise((resolve) => {
+    let stdout = "";
+    const proc = spawn(bin, ["-p", "/usage"], {
+      stdio: ["ignore", "pipe", "ignore"],
+      shell: false,
+    });
+
+    const timer = setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        /* ignore */
+      }
+      resolve(null);
+    }, 6000);
+
+    proc.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0 || !stdout.trim()) {
+        return resolve(null);
+      }
+
+      const lines = stdout.trim().split("\n");
+      const usage = {
+        geminiWeeklyPercent: null,
+        geminiWeeklyResetFormatted: null,
+        gemini5HourPercent: null,
+        gemini5HourResetFormatted: null,
+        claudeGptWeeklyPercent: null,
+        claudeGpt5HourPercent: null,
+        rawItems: [],
+      };
+
+      for (const line of lines) {
+        const parts = line.split("\t").map((s) => s.trim());
+        if (parts.length >= 3) {
+          const group = parts[0];
+          const metric = parts[1];
+          const percentStr = parts[2].replace("%", "");
+          const percent = parseInt(percentStr, 10);
+          const resetIso = parts[3] || null;
+
+          usage.rawItems.push({ group, metric, percent, resetIso });
+
+          if (group.toLowerCase().includes("gemini")) {
+            if (metric.toLowerCase().includes("weekly")) {
+              usage.geminiWeeklyPercent = percent;
+              usage.geminiWeeklyResetFormatted = formatIsoResetTime(resetIso);
+            } else if (metric.toLowerCase().includes("five hour") || metric.toLowerCase().includes("5-hour") || metric.toLowerCase().includes("5 hour")) {
+              usage.gemini5HourPercent = percent;
+              usage.gemini5HourResetFormatted = formatIsoResetTime(resetIso);
+            }
+          } else if (group.toLowerCase().includes("claude") || group.toLowerCase().includes("gpt")) {
+            if (metric.toLowerCase().includes("weekly")) {
+              usage.claudeGptWeeklyPercent = percent;
+            } else {
+              usage.claudeGpt5HourPercent = percent;
+            }
+          }
+        }
+      }
+
+      resolve(usage);
+    });
+
+    proc.on("error", () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+  });
+}
+
+/**
+ * Health check — verify Antigravity CLI is installed and can be invoked.
  * @returns {Promise<{installed: boolean, authenticated: boolean, binary: string, error?: string}>}
  */
 export async function checkAgyHealth() {
@@ -217,6 +289,7 @@ export async function checkAgyHealth() {
     const result = await runAgy({
       prompt: "Reply with 'PONG' and nothing else.",
       model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
+      effort: "low",
       mode: "read-only",
       timeoutMs: 15_000,
     });

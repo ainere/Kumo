@@ -1,6 +1,6 @@
 /**
  * ui.js — Formal terminal styling utilities, ANSI color coding,
- * cloud-themed banner designs, and rate limit formatters for KUMO.
+ * cloud cumulus kanji banner design, and live rate limit formatters for KUMO.
  */
 
 // ANSI Color and Style Codes
@@ -34,51 +34,19 @@ export const c = {
 export const DEFAULT_SUBTITLE = "Frontier Reasoning ◄───[MCP]───► High-Speed Execution";
 
 /**
- * Cloud banner design implementations.
- * Focus exclusively on refined Cloud (雲) aesthetics.
+ * Cloud banner design implementation.
+ * Refined Cloud Cumulus with the traditional Japanese 雲 (Kumo) kanji centered in the primary cloud.
  */
 export const BANNER_DESIGNS = {
   cloud: {
-    name: "Cloud (Classic Puffy 雲)",
-    description: "Refined ASCII puffy cloud with balanced typography and gradient depth",
-    render: (v = "1.0.0", sub = DEFAULT_SUBTITLE) => {
-      const c1 = `${c.brightCyan}       .--.       ${c.reset}  ${c.bold}${c.white}KUMO (雲)${c.reset} ${c.dim}v${v}${c.reset}`;
-      const c2 = `${c.cyan}    .-(    ).     ${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
-      const c3 = `${c.blue}   (___.__)__)    ${c.reset}  ${c.dim}${sub}${c.reset}`;
-      return `${c1}\n${c2}\n${c3}`;
-    },
-  },
-
-  "cloud-cumulus": {
-    name: "Cloud Cumulus (Atmospheric Multi-Tier)",
-    description: "Expanded atmospheric cloud cluster with volumetric shaded borders",
+    name: "Cloud Cumulus (雲)",
+    description: "Atmospheric cloud cluster with traditional 雲 kanji centered inside the primary cloud",
     render: (v = "1.0.0", sub = DEFAULT_SUBTITLE) => {
       const l1 = `${c.brightCyan}         .---.                ${c.reset}`;
       const l2 = `${c.brightCyan}      .-(     ).    ${c.cyan}.---.     ${c.reset}  ${c.bold}${c.white}KUMO${c.reset} ${c.dim}v${v}${c.reset}`;
-      const l3 = `${c.cyan}    .(          ).-(     ).   ${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
+      const l3 = `${c.cyan}    .(    ${c.bold}${c.white}雲${c.reset}${c.cyan}    ).-(     ).   ${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
       const l4 = `${c.blue}   (____.__.__.____)(____)    ${c.reset}  ${c.dim}${sub}${c.reset}`;
       return `${l1}\n${l2}\n${l3}\n${l4}`;
-    },
-  },
-
-  "cloud-kanji": {
-    name: "Cloud Kanji (雲 Crest)",
-    description: "Artistic cloud enclosure surrounding the traditional Japanese 雲 kanji",
-    render: (v = "1.0.0", sub = DEFAULT_SUBTITLE) => {
-      const k1 = `${c.brightCyan}     ╭─── 雲 ───╮     ${c.reset}  ${c.bold}${c.white}KUMO (雲)${c.reset} ${c.dim}v${v}${c.reset}`;
-      const k2 = `${c.cyan}    -(   KUMO   )-    ${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
-      const k3 = `${c.blue}     ╰──────────╯     ${c.reset}  ${c.dim}${sub}${c.reset}`;
-      return `${k1}\n${k2}\n${k3}`;
-    },
-  },
-
-  "cloud-minimal": {
-    name: "Cloud Minimal (Developer Header)",
-    description: "Streamlined single/double-line compact cloud glyph for high-density terminals",
-    render: (v = "1.0.0", sub = DEFAULT_SUBTITLE) => {
-      const m1 = `${c.cyan} ☁  ${c.bold}${c.white}KUMO${c.reset} ${c.dim}v${v}${c.reset}  ${c.dim}│${c.reset}  ${c.dim}Cross-Provider AI Orchestrator${c.reset}`;
-      const m2 = `    ${c.dim}${sub}${c.reset}`;
-      return `${m1}\n${m2}`;
     },
   },
 };
@@ -111,16 +79,17 @@ export function separator(length = 64) {
 }
 
 /**
- * Render a visual ASCII progress bar for percentages (0 - 100).
+ * Render a visual ASCII progress bar for remaining percentages (0 - 100).
+ * Full / high values are green; low values turn yellow and red.
  */
-export function progressBar(percent = 0, width = 12) {
+export function progressBar(percent = 100, width = 14) {
   const clamped = Math.max(0, Math.min(100, Math.round(percent)));
   const filled = Math.round((clamped / 100) * width);
   const empty = width - filled;
 
   let color = c.brightGreen;
-  if (clamped > 80) color = c.brightRed;
-  else if (clamped > 50) color = c.brightYellow;
+  if (clamped <= 15) color = c.brightRed;
+  else if (clamped <= 40) color = c.brightYellow;
 
   const bar = `${color}${"█".repeat(filled)}${c.dim}${"░".repeat(empty)}${c.reset}`;
   return `${bar} ${color}${clamped}%${c.reset}`;
@@ -162,12 +131,53 @@ export function formatResetTime(resetsAtSeconds) {
 }
 
 /**
+ * Format relative countdown from an ISO 8601 string (e.g. 2026-09-16T19:53:54Z).
+ */
+export function formatIsoResetTime(isoStr) {
+  if (!isoStr) return "N/A";
+  try {
+    const targetMs = new Date(isoStr).getTime();
+    if (isNaN(targetMs)) return isoStr;
+    const nowMs = Date.now();
+    const diffSec = Math.floor((targetMs - nowMs) / 1000);
+
+    const dateStr = new Date(targetMs).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+    if (diffSec <= 0) return `Reset due now (${dateStr})`;
+
+    const days = Math.floor(diffSec / 86400);
+    const hours = Math.floor((diffSec % 86400) / 3600);
+    const minutes = Math.floor((diffSec % 3600) / 60);
+
+    let countdown = "";
+    if (days > 0) {
+      countdown = `${days}d ${hours}h`;
+    } else if (hours > 0) {
+      countdown = `${hours}h ${minutes}m`;
+    } else {
+      countdown = `${minutes}m`;
+    }
+
+    return `in ${countdown} (${dateStr})`;
+  } catch {
+    return isoStr;
+  }
+}
+
+/**
  * Format plan type into formal human-readable label.
+ * Specifically distinguishes ChatGPT Go from ChatGPT Plus.
  */
 export function formatPlanType(planType) {
   if (!planType) return "Unknown Tier";
   const p = planType.toLowerCase();
-  if (p === "go" || p === "plus") return "ChatGPT Plus";
+  if (p === "go") return "ChatGPT Go";
+  if (p === "plus") return "ChatGPT Plus";
   if (p === "pro") return "ChatGPT Pro";
   if (p === "team") return "ChatGPT Team";
   if (p === "enterprise") return "ChatGPT Enterprise";
