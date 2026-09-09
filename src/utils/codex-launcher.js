@@ -94,10 +94,12 @@ export function buildCodexInvocation(opts) {
   args.push("-a", policy);
 
   // Dynamic MCP bridge server registration
+  const workerModel = config.workerModel || "gemini-3.8-flash";
+  const workerEffort = config.workerEffort || "medium";
   args.push("-c", "mcp_servers.gemini-bridge.command='node'");
   args.push(
     "-c",
-    `mcp_servers.gemini-bridge.args=['${bridgeScript}','--workspace','${normalizedWorkspace}']`
+    `mcp_servers.gemini-bridge.args=['${bridgeScript}','--workspace','${normalizedWorkspace}','--model','${workerModel}','--effort','${workerEffort}']`
   );
 
   if (opts.nonInteractive && opts.prompt) {

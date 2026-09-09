@@ -82,20 +82,20 @@ export function createCli() {
       modelCommand(action, target, value, extra);
     });
 
-  // Effort command (inspect or set reasoning effort)
+  // Effort command (inspect or set reasoning effort for orchestrator or worker)
   program
-    .command("effort [level]")
-    .description("Inspect or set reasoning effort for orchestrator (low, medium, high, max)")
-    .action((level) => {
-      effortCommand(level);
+    .command("effort [target] [value]")
+    .description("Inspect or set reasoning effort for orchestrator (low, medium, high, max) or worker (e.g. kumo effort worker low)")
+    .action((target, value) => {
+      effortCommand(target, value);
     });
 
   // Reasoning alias
   program
-    .command("reasoning [level]")
-    .description("Inspect or set reasoning effort for orchestrator (alias for effort)")
-    .action((level) => {
-      effortCommand(level);
+    .command("reasoning [target] [value]")
+    .description("Inspect or set reasoning effort (alias for effort)")
+    .action((target, value) => {
+      effortCommand(target, value);
     });
 
   // Doctor command

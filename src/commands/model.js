@@ -11,12 +11,35 @@ import {
 } from "../config/settings.js";
 import { c, badge, separator } from "../utils/ui.js";
 
-export function effortCommand(level) {
+export function effortCommand(target, value) {
   const config = loadConfig();
+
+  // Handle kumo effort worker <level>
+  if (target === "worker") {
+    if (!value || value === "show" || value === "get") {
+      console.log(`\n  ${c.dim}Current worker reasoning effort:${c.reset} ${c.brightBlue}${config.workerEffort || "medium"}${c.reset}`);
+      console.log(`  ${c.dim}Available options:${c.reset} low, medium, high`);
+      console.log(`  ${c.dim}Usage:${c.reset} kumo effort worker <low|medium|high>\n`);
+      return;
+    }
+    const effortLevel = value.toLowerCase();
+    const validEfforts = ["low", "medium", "high"];
+    if (!validEfforts.includes(effortLevel)) {
+      console.error(`${badge.fail} Invalid worker reasoning effort '${value}'. Supported levels: ${validEfforts.join(", ")}`);
+      process.exit(1);
+    }
+    setConfigValue("workerEffort", effortLevel);
+    console.log(`${badge.ok} Worker reasoning effort set to '${effortLevel}'`);
+    return;
+  }
+
+  // Orchestrator effort
+  const level = target;
   if (!level || level === "show" || level === "status" || level === "get") {
-    console.log(`\n  ${c.dim}Current reasoning effort:${c.reset} ${c.brightCyan}${config.reasoningEffort || "low"}${c.reset}`);
-    console.log(`  ${c.dim}Available options:${c.reset} low, medium, high, max`);
-    console.log(`  ${c.dim}Usage:${c.reset} kumo effort <low|medium|high|max>\n`);
+    console.log(`\n  ${c.dim}Current orchestrator reasoning effort:${c.reset} ${c.brightCyan}${config.reasoningEffort || "low"}${c.reset}`);
+    console.log(`  ${c.dim}Current worker reasoning effort:${c.reset}       ${c.brightBlue}${config.workerEffort || "medium"}${c.reset}`);
+    console.log(`  ${c.dim}Usage:${c.reset} kumo effort <low|medium|high|max>`);
+    console.log(`         kumo effort worker <low|medium|high>\n`);
     return;
   }
 
@@ -38,27 +61,30 @@ export function modelCommand(action, target, value, extra) {
   if (!action || action === "show" || action === "status" || action === "list") {
     console.log(`\n${c.bold}KUMO Model Configuration${c.reset}`);
     console.log(separator(50));
-    console.log(`  ${c.dim}Orchestrator:${c.reset}  ${c.brightCyan}${config.orchestratorModel}${c.reset} (Provider: ${config.orchestratorProvider || 'codex'})`);
-    console.log(`  ${c.dim}Reasoning:${c.reset}     ${config.reasoningEffort || 'low'}`);
-    console.log(`  ${c.dim}Worker:${c.reset}        ${c.brightBlue}${config.workerModel}${c.reset} (Provider: ${config.workerProvider || 'gemini'})`);
-    console.log(`  ${c.dim}CLI Binary:${c.reset}    ${config.cliBinary || 'gemini'}`);
+    console.log(`  ${c.dim}Orchestrator:${c.reset}      ${c.brightCyan}${config.orchestratorModel}${c.reset} (Provider: ${config.orchestratorProvider || 'codex'})`);
+    console.log(`  ${c.dim}Reasoning:${c.reset}         ${config.reasoningEffort || 'low'}`);
+    console.log(`  ${c.dim}Worker:${c.reset}            ${c.brightBlue}${config.workerModel}${c.reset} (Provider: ${config.workerProvider || 'gemini'})`);
+    console.log(`  ${c.dim}Worker Reasoning:${c.reset}  ${config.workerEffort || 'medium'}`);
+    console.log(`  ${c.dim}CLI Binary:${c.reset}        ${config.cliBinary || 'gemini'}`);
 
     console.log(`\n${c.bold}Available Presets:${c.reset}`);
     for (const [key, preset] of Object.entries(PRESETS)) {
       const isCurrent =
         config.orchestratorModel === preset.config.orchestratorModel &&
         config.workerModel === preset.config.workerModel &&
-        config.reasoningEffort === preset.config.reasoningEffort;
+        config.reasoningEffort === preset.config.reasoningEffort &&
+        config.workerEffort === preset.config.workerEffort;
       const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
-      console.log(`  ${marker}${c.bold}${key.padEnd(10)}${c.reset} ${badge.arrow} ${preset.name} (${preset.description})`);
+      console.log(`  ${marker}${c.bold}${key.padEnd(12)}${c.reset} ${badge.arrow} ${preset.name} (${preset.description})`);
     }
 
     console.log(`\n${c.bold}Commands:${c.reset}`);
     console.log(`  ${c.dim}kumo model <model>                       ${c.reset}  Set orchestrator model`);
     console.log(`  ${c.dim}kumo model orchestrator <model> [effort]${c.reset}  Set orchestrator model and effort`);
-    console.log(`  ${c.dim}kumo model worker <model>                ${c.reset}  Set worker model`);
-    console.log(`  ${c.dim}kumo effort <low|medium|high|max>        ${c.reset}  Set reasoning effort`);
-    console.log(`  ${c.dim}kumo model use <preset>                  ${c.reset}  Apply preset (e.g. kumo model use pro)\n`);
+    console.log(`  ${c.dim}kumo model worker <model> [effort]       ${c.reset}  Set worker model and effort`);
+    console.log(`  ${c.dim}kumo effort <low|medium|high|max>        ${c.reset}  Set orchestrator reasoning effort`);
+    console.log(`  ${c.dim}kumo effort worker <low|medium|high>     ${c.reset}  Set worker reasoning effort`);
+    console.log(`  ${c.dim}kumo model use <preset>                  ${c.reset}  Apply preset (e.g. kumo model use test)\n`);
     return;
   }
 
@@ -105,16 +131,20 @@ export function modelCommand(action, target, value, extra) {
     return;
   }
 
-  // Handle setting worker model: kumo model worker <model>
+  // Handle setting worker model: kumo model worker <model> [effort]
   if (action === "worker") {
     const model = target;
+    const effort = value;
     if (!model) {
-      console.log(`Current worker: ${config.workerModel}`);
-      console.log("Usage: kumo model worker <model>");
+      console.log(`Current worker: ${config.workerModel} (reasoning: ${config.workerEffort || 'medium'})`);
+      console.log("Usage: kumo model worker <model> [effort]");
       return;
     }
     setConfigValue("workerModel", model);
-    console.log(`${badge.ok} Worker model set to '${model}'`);
+    if (effort) {
+      setConfigValue("workerEffort", effort);
+    }
+    console.log(`${badge.ok} Worker model set to '${model}'${effort ? ` with reasoning effort '${effort}'` : ''}`);
     return;
   }
 
