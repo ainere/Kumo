@@ -7,10 +7,10 @@ import assert from "node:assert";
 import { loadConfig, setConfigValue, applyPreset, PRESETS } from "../src/config/settings.js";
 import { effortCommand, modelCommand } from "../src/commands/model.js";
 
-test("PRESETS includes go preset with gpt-5.5 and low effort for quota preservation", () => {
-  assert.ok(PRESETS.go, "Expected 'go' preset to exist");
-  assert.strictEqual(PRESETS.go.config.orchestratorModel, "gpt-5.5");
-  assert.strictEqual(PRESETS.go.config.reasoningEffort, "low");
+test("PRESETS includes test preset with gpt-5.5 and low effort for quota preservation", () => {
+  assert.ok(PRESETS.test, "Expected 'test' preset to exist");
+  assert.strictEqual(PRESETS.test.config.orchestratorModel, "gpt-5.5");
+  assert.strictEqual(PRESETS.test.config.reasoningEffort, "low");
 });
 
 test("effortCommand updates reasoningEffort setting in config", () => {

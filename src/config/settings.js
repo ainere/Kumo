@@ -16,7 +16,7 @@ const LEGACY_FILE = path.join(LEGACY_DIR, "config.json");
 
 export const DEFAULT_CONFIG = {
   orchestratorProvider: "codex",
-  orchestratorModel: "gpt-5.5",
+  orchestratorModel: "chatgpt-6-astra",
   reasoningEffort: "low",
   workerProvider: "gemini",
   workerModel: "gemini-3.8-flash",
@@ -28,44 +28,33 @@ export const DEFAULT_CONFIG = {
 
 export const PRESETS = {
   default: {
-    name: "Default (ChatGPT Go + Google AI Pro)",
-    description: "GPT-5.5 Low reasoning for quota conservation + Gemini 3.8 Flash worker",
+    name: "Default (ChatGPT Plus + Google AI Pro)",
+    description: "Astra Low reasoning for quota conservation + Gemini 3.8 Flash worker",
     config: {
       orchestratorProvider: "codex",
-      orchestratorModel: "gpt-5.5",
+      orchestratorModel: "chatgpt-6-astra",
       reasoningEffort: "low",
       workerProvider: "gemini",
       workerModel: "gemini-3.8-flash",
     },
   },
-  go: {
-    name: "ChatGPT Go (Maximum Quota Savings)",
-    description: "GPT-5.5 Low reasoning for maximum quota preservation + Gemini 3.8 Flash worker",
+  pro: {
+    name: "ChatGPT Pro (Higher Quota)",
+    description: "Astra Medium reasoning + Gemini 3.8 Flash worker",
     config: {
       orchestratorProvider: "codex",
-      orchestratorModel: "gpt-5.5",
-      reasoningEffort: "low",
+      orchestratorModel: "chatgpt-6-astra",
+      reasoningEffort: "medium",
       workerProvider: "gemini",
       workerModel: "gemini-3.8-flash",
     },
   },
-  luna: {
-    name: "GPT-5.6 Luna (Fast & Affordable)",
-    description: "GPT-5.6 Luna Low reasoning + Gemini 3.8 Flash worker",
+  speed: {
+    name: "High Speed (Sol + Flash)",
+    description: "ChatGPT 5.6 Sol + Gemini 3.8 Flash worker",
     config: {
       orchestratorProvider: "codex",
-      orchestratorModel: "gpt-5.6-luna",
-      reasoningEffort: "low",
-      workerProvider: "gemini",
-      workerModel: "gemini-3.8-flash",
-    },
-  },
-  terra: {
-    name: "GPT-5.6 Terra (Balanced)",
-    description: "GPT-5.6 Terra Low reasoning + Gemini 3.8 Flash worker",
-    config: {
-      orchestratorProvider: "codex",
-      orchestratorModel: "gpt-5.6-terra",
+      orchestratorModel: "chatgpt-5.6-sol",
       reasoningEffort: "low",
       workerProvider: "gemini",
       workerModel: "gemini-3.8-flash",
@@ -73,13 +62,24 @@ export const PRESETS = {
   },
   "gemini-3.7": {
     name: "Gemini 3.7 Fallback",
-    description: "GPT-5.5 Low + Gemini 3.7 Flash worker",
+    description: "Astra Low + Gemini 3.7 Flash worker",
+    config: {
+      orchestratorProvider: "codex",
+      orchestratorModel: "chatgpt-6-astra",
+      reasoningEffort: "low",
+      workerProvider: "gemini",
+      workerModel: "gemini-3.7-flash",
+    },
+  },
+  test: {
+    name: "Testing / Lowest Quota (GPT-5.5 Low)",
+    description: "GPT-5.5 Low reasoning + Gemini 3.8 Flash worker (cheapest model for tests)",
     config: {
       orchestratorProvider: "codex",
       orchestratorModel: "gpt-5.5",
       reasoningEffort: "low",
       workerProvider: "gemini",
-      workerModel: "gemini-3.7-flash",
+      workerModel: "gemini-3.8-flash",
     },
   },
 };
