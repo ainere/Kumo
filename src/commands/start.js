@@ -1,7 +1,7 @@
 /**
  * start.js — Independent interactive terminal UI (REPL) for KUMO.
  * Runs Codex and Antigravity purely in the background via hidden channels,
- * providing clean streaming output, live dual-provider quotas, and custom commands.
+ * providing clean streaming output, live dual-provider quotas, and 30-second banner refreshes.
  */
 
 import path from "node:path";
@@ -22,22 +22,22 @@ import {
  * Render the startup header with cloud cumulus kanji banner and live dual-provider quotas.
  */
 function renderHeader(workspace, config, codexLimits = null, agyUsage = null) {
-  const sub = `${config.orchestratorModel} ◄───[MCP]───► ${config.workerModel}`;
+  const sub = `${c.brightCyan}${config.orchestratorModel}${c.reset} ${c.dim}◄───[MCP]───►${c.reset} ${c.brightBlue}${config.workerModel}${c.reset}`;
 
   console.log("\n" + getBanner("1.0.0", "cloud", sub));
   console.log(separator(64));
-  console.log(`  ${c.dim}Workspace:${c.reset}    ${workspace}`);
+  console.log(`  ${c.dim}Workspace:${c.reset}     ${workspace}`);
   console.log(
-    `  ${c.dim}Orchestrator:${c.reset} ${c.brightCyan}${config.orchestratorModel}${c.reset} (${config.orchestratorProvider || "codex"}, reasoning: ${config.reasoningEffort})`
+    `  ${c.dim}Orchestrator:${c.reset}  ${c.brightCyan}${config.orchestratorModel}${c.reset} (${config.orchestratorProvider || "codex"}, reasoning: ${config.reasoningEffort})`
   );
   console.log(
-    `  ${c.dim}Worker:${c.reset}       ${c.brightBlue}${config.workerModel}${c.reset} (antigravity via MCP Bridge)`
+    `  ${c.dim}Worker:${c.reset}        ${c.brightBlue}${config.workerModel}${c.reset} (antigravity via MCP Bridge)`
   );
 
   if (codexLimits) {
     const bar = progressBar(codexLimits.remainingPercent, 12);
     console.log(
-      `  ${c.dim}Quota (Codex):${c.reset} ${bar} ${c.dim}• Resets ${codexLimits.resetFormatted} (${codexLimits.planType})${c.reset}`
+      `  ${c.dim}Quota (Codex):${c.reset}  ${bar} ${c.dim}• Resets ${codexLimits.resetFormatted} (${codexLimits.planType})${c.reset}`
     );
   }
 
@@ -45,11 +45,11 @@ function renderHeader(workspace, config, codexLimits = null, agyUsage = null) {
     const wBar = progressBar(agyUsage.geminiWeeklyPercent, 8);
     const hBar = progressBar(agyUsage.gemini5HourPercent ?? 100, 8);
     console.log(
-      `  ${c.dim}Quota (Gemini):${c.reset}${wBar} ${c.dim}weekly •${c.reset} ${hBar} ${c.dim}5-hour (Google AI Pro)${c.reset}`
+      `  ${c.dim}Quota (Gemini):${c.reset} ${wBar} ${c.dim}weekly •${c.reset} ${hBar} ${c.dim}5-hour (Google AI Pro)${c.reset}`
     );
   }
 
-  console.log(`  ${c.dim}Auth:${c.reset}         Subscription credentials (Zero API keys)`);
+  console.log(`  ${c.dim}Auth:${c.reset}          Subscription credentials (Zero API keys)`);
   console.log(separator(64));
   console.log(
     `  ${c.dim}Type a prompt to begin, or ${c.cyan}/help${c.dim}, ${c.cyan}/status${c.dim}, ${c.cyan}/clear${c.dim}, ${c.cyan}/exit${c.reset}`
@@ -107,6 +107,44 @@ export async function startCommand(opts = {}) {
 
   let isTurnActive = false;
   let activeToolName = null;
+  let quotaInterval = null;
+
+  /**
+   * Start periodic 30-second banner quota refresh once user submits their first prompt.
+   */
+  function ensureQuotaRefresher() {
+    if (quotaInterval) return;
+
+    quotaInterval = setInterval(async () => {
+      try {
+        const [newCodex, newAgy] = await Promise.all([
+          client.getRateLimits().catch(() => null),
+          getAgyUsage().catch(() => null),
+        ]);
+        if (newCodex) codexLimits = newCodex;
+        if (newAgy) agyUsage = newAgy;
+
+        // Update terminal title with live percentages
+        if (process.stdout.isTTY) {
+          const cP = codexLimits ? `${codexLimits.remainingPercent}%` : "";
+          const gP = agyUsage?.geminiWeeklyPercent !== null ? `${agyUsage.geminiWeeklyPercent}%` : "";
+          process.stdout.write(
+            `\x1b]0;Kumo [Codex: ${cP} | Gemini: ${gP}] — ${path.basename(workspace)}\x07`
+          );
+        }
+
+        // If turn is idle at prompt, refresh the screen banner
+        if (!isTurnActive) {
+          console.clear();
+          renderHeader(workspace, config, codexLimits, agyUsage);
+          rl.prompt(true);
+        }
+      } catch {
+        /* ignore background refresh errors */
+      }
+    }, 30000);
+    quotaInterval.unref();
+  }
 
   // Set up event listeners on Codex client
   client.on("delta", (chunk) => {
@@ -231,6 +269,7 @@ export async function startCommand(opts = {}) {
         case "quit":
         case "q":
           console.log(`\n${badge.info} Exiting Kumo session.`);
+          if (quotaInterval) clearInterval(quotaInterval);
           await client.stop();
           process.exit(0);
           return;
@@ -242,7 +281,9 @@ export async function startCommand(opts = {}) {
       }
     }
 
-    // Regular task prompt
+    // Regular task prompt: start 30-second quota refresher
+    ensureQuotaRefresher();
+
     isTurnActive = true;
     rl.pause();
     process.stdout.write("\n");
@@ -257,6 +298,12 @@ export async function startCommand(opts = {}) {
         };
         client.on("turn_completed", handler);
       });
+
+      // Refresh quotas post-turn
+      [codexLimits, agyUsage] = await Promise.all([
+        client.getRateLimits().catch(() => null),
+        getAgyUsage().catch(() => null),
+      ]);
     } catch (err) {
       console.error(`\n${badge.fail} Turn failed: ${err.message}`);
     } finally {
@@ -288,12 +335,14 @@ export async function startCommand(opts = {}) {
       }, 2000);
     } else {
       console.log(`\n${badge.info} Goodbye.`);
+      if (quotaInterval) clearInterval(quotaInterval);
       await client.stop();
       process.exit(0);
     }
   });
 
   rl.on("close", async () => {
+    if (quotaInterval) clearInterval(quotaInterval);
     await client.stop();
     process.exit(0);
   });
