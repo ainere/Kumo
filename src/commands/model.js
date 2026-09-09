@@ -9,32 +9,34 @@ import {
   applyPreset,
   PRESETS,
 } from "../config/settings.js";
+import { c, badge, separator } from "../utils/ui.js";
 
 export function modelCommand(action, target, value, extra) {
   const config = loadConfig();
 
   // If no action or 'show' / 'status', print current setup
   if (!action || action === "show" || action === "status" || action === "list") {
-    console.log("\n🕸️  Kumo (雲) Model Configuration\n");
-    console.log(`  🧠 Orchestrator:  ${config.orchestratorModel} (Provider: ${config.orchestratorProvider || 'codex'})`);
-    console.log(`     Reasoning:     ${config.reasoningEffort || 'low'}`);
-    console.log(`  ⚡ Worker:        ${config.workerModel} (Provider: ${config.workerProvider || 'gemini'})`);
-    console.log(`     CLI Binary:    ${config.cliBinary || 'gemini'}`);
+    console.log(`\n${c.bold}KUMO Model Configuration${c.reset}`);
+    console.log(separator(50));
+    console.log(`  ${c.dim}Orchestrator:${c.reset}  ${c.brightCyan}${config.orchestratorModel}${c.reset} (Provider: ${config.orchestratorProvider || 'codex'})`);
+    console.log(`  ${c.dim}Reasoning:${c.reset}     ${config.reasoningEffort || 'low'}`);
+    console.log(`  ${c.dim}Worker:${c.reset}        ${c.brightBlue}${config.workerModel}${c.reset} (Provider: ${config.workerProvider || 'gemini'})`);
+    console.log(`  ${c.dim}CLI Binary:${c.reset}    ${config.cliBinary || 'gemini'}`);
 
-    console.log("\n📦 Available Presets:");
+    console.log(`\n${c.bold}Available Presets:${c.reset}`);
     for (const [key, preset] of Object.entries(PRESETS)) {
       const isCurrent =
         config.orchestratorModel === preset.config.orchestratorModel &&
         config.workerModel === preset.config.workerModel &&
         config.reasoningEffort === preset.config.reasoningEffort;
-      const marker = isCurrent ? "★ " : "  ";
-      console.log(`  ${marker}${key.padEnd(12)} : ${preset.name} (${preset.description})`);
+      const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
+      console.log(`  ${marker}${c.bold}${key.padEnd(10)}${c.reset} ${badge.arrow} ${preset.name} (${preset.description})`);
     }
 
-    console.log("\n💡 Quick Switch Commands:");
-    console.log("  kumo model orchestrator <model> [effort]  # Set orchestrator model");
-    console.log("  kumo model worker <model>                 # Set worker model");
-    console.log("  kumo model use <preset>                   # Apply a preset (e.g. kumo model use pro)\n");
+    console.log(`\n${c.bold}Commands:${c.reset}`);
+    console.log(`  ${c.dim}kumo model orchestrator <model> [effort]${c.reset}  Set orchestrator model`);
+    console.log(`  ${c.dim}kumo model worker <model>                ${c.reset}  Set worker model`);
+    console.log(`  ${c.dim}kumo model use <preset>                  ${c.reset}  Apply preset (e.g. kumo model use pro)\n`);
     return;
   }
 
@@ -48,73 +50,61 @@ export function modelCommand(action, target, value, extra) {
     try {
       applyPreset(presetName);
       const updated = loadConfig();
-      console.log(`✓ Applied preset '${presetName}':`);
-      console.log(`  • Orchestrator: ${updated.orchestratorModel} (effort: ${updated.reasoningEffort})`);
-      console.log(`  • Worker:       ${updated.workerModel}`);
+      console.log(`${badge.ok} Applied preset '${presetName}':`);
+      console.log(`  ${badge.dot} Orchestrator: ${updated.orchestratorModel} (effort: ${updated.reasoningEffort})`);
+      console.log(`  ${badge.dot} Worker:       ${updated.workerModel}`);
     } catch (err) {
-      console.error(`Error: ${err.message}`);
+      console.error(`${badge.fail} ${err.message}`);
       process.exit(1);
     }
     return;
   }
 
-  // Direct switch: kumo model orchestrator <model> [effort]
+  // Handle setting orchestrator model: kumo model orchestrator <model> [effort]
   if (action === "orchestrator") {
     const model = target;
     const effort = value;
     if (!model) {
-      console.error("Error: Please provide a model name. Example: kumo model orchestrator chatgpt-6-astra low");
-      process.exit(1);
+      console.log(`Current orchestrator: ${config.orchestratorModel} (effort: ${config.reasoningEffort})`);
+      console.log("Usage: kumo model orchestrator <model> [effort]");
+      return;
     }
     setConfigValue("orchestratorModel", model);
     if (effort) {
       setConfigValue("reasoningEffort", effort);
     }
-    console.log(`✓ Orchestrator model set to '${model}'${effort ? ` with reasoning effort '${effort}'` : ''}`);
+    console.log(`${badge.ok} Orchestrator model set to '${model}'${effort ? ` with reasoning effort '${effort}'` : ''}`);
     return;
   }
 
-  // Direct switch: kumo model worker <model>
+  // Handle setting worker model: kumo model worker <model>
   if (action === "worker") {
     const model = target;
     if (!model) {
-      console.error("Error: Please provide a model name. Example: kumo model worker gemini-3.8-flash");
-      process.exit(1);
+      console.log(`Current worker: ${config.workerModel}`);
+      console.log("Usage: kumo model worker <model>");
+      return;
     }
     setConfigValue("workerModel", model);
-    console.log(`✓ Worker model set to '${model}'`);
+    console.log(`${badge.ok} Worker model set to '${model}'`);
     return;
   }
 
-  // Generic setter: kumo model set <orchestrator|worker> <model> [effort]
-  if (action === "set") {
-    const role = target?.toLowerCase();
-    const model = value;
-    const effort = extra;
-
-    if (role === "orchestrator") {
-      if (!model) {
-        console.error("Error: Model name required. Example: kumo model set orchestrator chatgpt-6-astra");
-        process.exit(1);
-      }
-      setConfigValue("orchestratorModel", model);
-      if (effort) setConfigValue("reasoningEffort", effort);
-      console.log(`✓ Orchestrator model set to '${model}'${effort ? ` (effort: ${effort})` : ''}`);
-      return;
-    } else if (role === "worker") {
-      if (!model) {
-        console.error("Error: Model name required. Example: kumo model set worker gemini-3.8-flash");
-        process.exit(1);
-      }
-      setConfigValue("workerModel", model);
-      console.log(`✓ Worker model set to '${model}'`);
-      return;
-    } else {
-      console.error("Error: Target must be 'orchestrator' or 'worker'. Example: kumo model set worker gemini-3.8-flash");
-      process.exit(1);
+  // Fallback: custom positional syntax: kumo model <orchestrator> <worker> [effort]
+  if (action && target) {
+    const model = action;
+    const worker = target;
+    const effort = value;
+    setConfigValue("orchestratorModel", model);
+    setConfigValue("workerModel", worker);
+    if (effort) {
+      setConfigValue("reasoningEffort", effort);
     }
+    console.log(`${badge.ok} Orchestrator model set to '${model}'${effort ? ` (effort: ${effort})` : ''}`);
+    console.log(`${badge.ok} Worker model set to '${worker}'`);
+    return;
   }
 
-  console.error(`Error: Unknown action '${action}'. Run 'kumo model' to view options.`);
+  console.error(`${badge.fail} Unknown model command. Run 'kumo model' for usage.`);
   process.exit(1);
 }

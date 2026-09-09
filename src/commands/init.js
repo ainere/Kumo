@@ -4,6 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { c, badge, separator } from "../utils/ui.js";
 
 const AGENTS_TEMPLATE = `# Project Orchestration Rules (Codex × Gemini)
 
@@ -29,30 +30,32 @@ You are running as **Gemini 3.8 Flash** via the MCP bridge server.
 
 export function initCommand(opts = {}) {
   const targetDir = path.resolve(opts.dir || process.cwd());
-  console.log(`\nInitializing cross-provider project rules in: ${targetDir}\n`);
+  console.log(`\n${c.bold}Scaffolding Project Rules${c.reset}`);
+  console.log(separator(50));
+  console.log(`  ${c.dim}Target:${c.reset} ${targetDir}\n`);
 
   const agentsPath = path.join(targetDir, "AGENTS.md");
   const geminiPath = path.join(targetDir, "GEMINI.md");
 
   if (opts.dryRun) {
-    console.log(`[Dry Run] Would create: ${agentsPath}`);
-    console.log(`[Dry Run] Would create: ${geminiPath}`);
+    console.log(`  ${badge.info} [Dry Run] Would create: ${agentsPath}`);
+    console.log(`  ${badge.info} [Dry Run] Would create: ${geminiPath}`);
     return;
   }
 
   if (!fs.existsSync(agentsPath)) {
     fs.writeFileSync(agentsPath, AGENTS_TEMPLATE, "utf-8");
-    console.log(`  ✓ Created ${agentsPath}`);
+    console.log(`  ${badge.ok} Created ${agentsPath}`);
   } else {
-    console.log(`  ℹ ${agentsPath} already exists (skipping)`);
+    console.log(`  ${badge.info} ${agentsPath} already exists (skipping)`);
   }
 
   if (!fs.existsSync(geminiPath)) {
     fs.writeFileSync(geminiPath, GEMINI_TEMPLATE, "utf-8");
-    console.log(`  ✓ Created ${geminiPath}`);
+    console.log(`  ${badge.ok} Created ${geminiPath}`);
   } else {
-    console.log(`  ℹ ${geminiPath} already exists (skipping)`);
+    console.log(`  ${badge.info} ${geminiPath} already exists (skipping)`);
   }
 
-  console.log("\n✨ Initialization complete! Run 'orchestrator' to start an interactive session.\n");
+  console.log(`\n${badge.ok} Initialization complete. Run 'kumo' to start an interactive session.\n`);
 }

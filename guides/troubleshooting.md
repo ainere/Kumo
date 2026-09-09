@@ -24,7 +24,7 @@ Common issues and solutions when running the cross-provider harness.
    ```toml
    [mcp_servers.gemini-bridge]
    command = "node"
-   args = ["bridge/server.js"]
+   args = ["src/bridge/server.js"]
    env = { AGY_BIN = "gemini" }
    ```
 

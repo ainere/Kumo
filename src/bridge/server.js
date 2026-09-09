@@ -28,7 +28,7 @@ function formatResult(result, toolName) {
       content: [
         {
           type: "text",
-          text: `⏱ ${toolName} timed out.\n\nPartial output:\n${result.stdout || "(none)"}`,
+          text: `[TIMEOUT] ${toolName} exceeded execution time limit.\n\nPartial output:\n${result.stdout || "(none)"}`,
         },
       ],
       isError: true,
@@ -40,7 +40,7 @@ function formatResult(result, toolName) {
       content: [
         {
           type: "text",
-          text: `❌ ${toolName} failed (exit code ${result.code}).\n\nstderr:\n${result.stderr || "(none)"}\n\nstdout:\n${result.stdout || "(none)"}`,
+          text: `[ERROR] ${toolName} failed (exit code ${result.code}).\n\nstderr:\n${result.stderr || "(none)"}\n\nstdout:\n${result.stdout || "(none)"}`,
         },
       ],
       isError: true,

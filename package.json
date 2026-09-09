@@ -1,7 +1,7 @@
 {
   "name": "kumo",
   "version": "1.0.0",
-  "description": "Kumo (雲 / 蜘蛛) — Cross-provider AI orchestrator linking ChatGPT, Gemini, Claude, and beyond",
+  "description": "Cross-provider CLI orchestrator pairing frontier reasoning root models with cheap and efficient worker models.",
   "type": "module",
   "bin": {
     "kumo": "./bin/kumo.js",
