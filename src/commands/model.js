@@ -8,8 +8,12 @@ import {
   setConfigValue,
   applyPreset,
   PRESETS,
+  resolveOrchestratorModel,
+  resolveWorkerModel,
 } from "../config/settings.js";
 import { c, badge, separator } from "../utils/ui.js";
+import { openInteractiveModelPicker, DEFAULT_CODEX_MODELS } from "../utils/model-picker.js";
+import { DEFAULT_WORKER_MODELS } from "../../bridge/agy-runner.js";
 
 export function effortCommand(target, value) {
   const config = loadConfig();
@@ -17,9 +21,9 @@ export function effortCommand(target, value) {
   // Handle kumo effort worker <level>
   if (target === "worker") {
     if (!value || value === "show" || value === "get") {
-      console.log(`\n  ${c.dim}Current worker reasoning effort:${c.reset} ${c.brightBlue}${config.workerEffort || "medium"}${c.reset}`);
-      console.log(`  ${c.dim}Available options:${c.reset} low, medium, high`);
-      console.log(`  ${c.dim}Usage:${c.reset} kumo effort worker <low|medium|high>\n`);
+      console.log(`\n  ${c.gray}Current worker reasoning effort:${c.reset} ${c.brightBlue}${config.workerEffort || "medium"}${c.reset}`);
+      console.log(`  ${c.gray}Available options:${c.reset} low, medium, high`);
+      console.log(`  ${c.gray}Usage:${c.reset} kumo effort worker <low|medium|high>\n`);
       return;
     }
     const effortLevel = value.toLowerCase();
@@ -36,9 +40,9 @@ export function effortCommand(target, value) {
   // Orchestrator effort
   const level = target;
   if (!level || level === "show" || level === "status" || level === "get") {
-    console.log(`\n  ${c.dim}Current orchestrator reasoning effort:${c.reset} ${c.brightCyan}${config.reasoningEffort || "low"}${c.reset}`);
-    console.log(`  ${c.dim}Current worker reasoning effort:${c.reset}       ${c.brightBlue}${config.workerEffort || "medium"}${c.reset}`);
-    console.log(`  ${c.dim}Usage:${c.reset} kumo effort <low|medium|high|max>`);
+    console.log(`\n  ${c.gray}Current orchestrator reasoning effort:${c.reset} ${c.brightCyan}${config.reasoningEffort || "low"}${c.reset}`);
+    console.log(`  ${c.gray}Current worker reasoning effort:${c.reset}       ${c.brightBlue}${config.workerEffort || "medium"}${c.reset}`);
+    console.log(`  ${c.gray}Usage:${c.reset} kumo effort <low|medium|high|max>`);
     console.log(`         kumo effort worker <low|medium|high>\n`);
     return;
   }
@@ -54,18 +58,26 @@ export function effortCommand(target, value) {
   console.log(`${badge.ok} Orchestrator reasoning effort set to '${effortLevel}'`);
 }
 
-export function modelCommand(action, target, value, extra) {
+export async function modelCommand(action, target, value, extra) {
   const config = loadConfig();
 
-  // If no action or 'show' / 'status', print current setup
+  // If no action or 'select' in interactive terminal, open arrow-key navigator
+  if (!action || action === "select" || action === "picker" || action === "menu") {
+    if (process.stdout.isTTY && process.stdin.isTTY && !process.env.CI) {
+      await openInteractiveModelPicker();
+      return;
+    }
+  }
+
+  // If 'list' or non-interactive 'show' / 'status', print comprehensive model & preset list
   if (!action || action === "show" || action === "status" || action === "list") {
-    console.log(`\n${c.bold}KUMO Model Configuration${c.reset}`);
-    console.log(separator(50));
-    console.log(`  ${c.dim}Orchestrator:${c.reset}      ${c.brightCyan}${config.orchestratorModel}${c.reset} (Provider: ${config.orchestratorProvider || 'codex'})`);
-    console.log(`  ${c.dim}Reasoning:${c.reset}         ${config.reasoningEffort || 'low'}`);
-    console.log(`  ${c.dim}Worker:${c.reset}            ${c.brightBlue}${config.workerModel}${c.reset} (Provider: ${config.workerProvider || 'gemini'})`);
-    console.log(`  ${c.dim}Worker Reasoning:${c.reset}  ${config.workerEffort || 'medium'}`);
-    console.log(`  ${c.dim}CLI Binary:${c.reset}        ${config.cliBinary || 'gemini'}`);
+    console.log(`\n${c.bold}${c.brightCyan}KUMO Model Configuration & Available Models${c.reset}`);
+    console.log(separator(60));
+    const orchModelFull = config.reasoningEffort ? `${config.orchestratorModel}-${config.reasoningEffort}` : config.orchestratorModel;
+    const workerModelFull = config.workerEffort ? `${config.workerModel}-${config.workerEffort}` : config.workerModel;
+    console.log(`  ${c.gray}Orchestrator:${c.reset}      ${c.brightCyan}${orchModelFull}${c.reset} (${config.orchestratorProvider === 'codex' ? 'ChatGPT Plus' : config.orchestratorProvider})`);
+    console.log(`  ${c.gray}Worker:${c.reset}            ${c.brightBlue}${workerModelFull}${c.reset} (${config.workerProvider === 'gemini' ? 'Google AI Pro' : config.workerProvider})`);
+    console.log(`  ${c.gray}CLI Binary:${c.reset}        ${config.cliBinary || 'gemini'}`);
 
     console.log(`\n${c.bold}Available Presets:${c.reset}`);
     for (const [key, preset] of Object.entries(PRESETS)) {
@@ -75,16 +87,32 @@ export function modelCommand(action, target, value, extra) {
         config.reasoningEffort === preset.config.reasoningEffort &&
         config.workerEffort === preset.config.workerEffort;
       const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
-      console.log(`  ${marker}${c.bold}${key.padEnd(12)}${c.reset} ${badge.arrow} ${preset.name} (${preset.description})`);
+      console.log(`  ${marker}${c.bold}${key.padEnd(12)}${c.reset} ${badge.arrow} ${preset.name}`);
+      console.log(`     ${c.skyBlue}${preset.description}${c.reset}`);
     }
 
-    console.log(`\n${c.bold}Commands:${c.reset}`);
-    console.log(`  ${c.dim}kumo model <model>                       ${c.reset}  Set orchestrator model`);
-    console.log(`  ${c.dim}kumo model orchestrator <model> [effort]${c.reset}  Set orchestrator model and effort`);
-    console.log(`  ${c.dim}kumo model worker <model> [effort]       ${c.reset}  Set worker model and effort`);
-    console.log(`  ${c.dim}kumo effort <low|medium|high|max>        ${c.reset}  Set orchestrator reasoning effort`);
-    console.log(`  ${c.dim}kumo effort worker <low|medium|high>     ${c.reset}  Set worker reasoning effort`);
-    console.log(`  ${c.dim}kumo model use <preset>                  ${c.reset}  Apply preset (e.g. kumo model use test)\n`);
+    console.log(`\n${c.bold}Available Orchestrator Models (Codex):${c.reset}`);
+    for (const m of DEFAULT_CODEX_MODELS) {
+      const isCurrent = config.orchestratorModel === m.id;
+      const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
+      console.log(`  ${marker}${c.brightCyan}${m.id.padEnd(20)}${c.reset} ${m.name} ${c.gray}— ${m.desc}${c.reset}`);
+    }
+
+    console.log(`\n${c.bold}Available Worker Models (Antigravity):${c.reset}`);
+    for (const m of DEFAULT_WORKER_MODELS) {
+      const isCurrent = config.workerModel === m.id;
+      const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
+      console.log(`  ${marker}${c.brightBlue}${m.id.padEnd(25)}${c.reset} ${m.name}${c.reset}`);
+    }
+
+    console.log(`\n${c.bold}Commands & Arrow Navigation:${c.reset}`);
+    console.log(`  ${c.gray}kumo model${c.reset}                               Launch interactive arrow-key selector`);
+    console.log(`  ${c.gray}kumo model <model>${c.reset}                       Set orchestrator model`);
+    console.log(`  ${c.gray}kumo model orchestrator <model> [effort]${c.reset}  Set orchestrator model and effort`);
+    console.log(`  ${c.gray}kumo model worker <model> [effort]${c.reset}        Set worker model and effort`);
+    console.log(`  ${c.gray}kumo effort <low|medium|high|max>${c.reset}         Set orchestrator reasoning effort`);
+    console.log(`  ${c.gray}kumo effort worker <low|medium|high>${c.reset}      Set worker reasoning effort`);
+    console.log(`  ${c.gray}kumo model use <preset>${c.reset}                   Apply preset (e.g. kumo model use test)\n`);
     return;
   }
 
@@ -105,8 +133,8 @@ export function modelCommand(action, target, value, extra) {
       applyPreset(presetName);
       const updated = loadConfig();
       console.log(`${badge.ok} Applied preset '${presetName}':`);
-      console.log(`  ${badge.dot} Orchestrator: ${updated.orchestratorModel} (effort: ${updated.reasoningEffort})`);
-      console.log(`  ${badge.dot} Worker:       ${updated.workerModel}`);
+      console.log(`  ${badge.dot} Orchestrator: ${updated.orchestratorModel}-${updated.reasoningEffort}`);
+      console.log(`  ${badge.dot} Worker:       ${updated.workerModel}-${updated.workerEffort || 'medium'}`);
     } catch (err) {
       console.error(`${badge.fail} ${err.message}`);
       process.exit(1);
@@ -116,50 +144,55 @@ export function modelCommand(action, target, value, extra) {
 
   // Handle setting orchestrator model: kumo model orchestrator <model> [effort]
   if (action === "orchestrator") {
-    const model = target;
+    const raw = target;
     const effort = value;
-    if (!model) {
-      console.log(`Current orchestrator: ${config.orchestratorModel} (effort: ${config.reasoningEffort})`);
+    if (!raw) {
+      console.log(`Current orchestrator: ${config.orchestratorModel}-${config.reasoningEffort}`);
       console.log("Usage: kumo model orchestrator <model> [effort]");
       return;
     }
+    const model = resolveOrchestratorModel(raw);
     setConfigValue("orchestratorModel", model);
     if (effort) {
       setConfigValue("reasoningEffort", effort);
     }
-    console.log(`${badge.ok} Orchestrator model set to '${model}'${effort ? ` with reasoning effort '${effort}'` : ''}`);
+    const finalEffort = effort || config.reasoningEffort || "low";
+    console.log(`${badge.ok} Orchestrator model set to '${model}-${finalEffort}'`);
     return;
   }
 
   // Handle setting worker model: kumo model worker <model> [effort]
   if (action === "worker") {
-    const model = target;
+    const raw = target;
     const effort = value;
-    if (!model) {
-      console.log(`Current worker: ${config.workerModel} (reasoning: ${config.workerEffort || 'medium'})`);
+    if (!raw) {
+      console.log(`Current worker: ${config.workerModel}-${config.workerEffort || 'medium'}`);
       console.log("Usage: kumo model worker <model> [effort]");
       return;
     }
+    const model = resolveWorkerModel(raw);
     setConfigValue("workerModel", model);
     if (effort) {
       setConfigValue("workerEffort", effort);
     }
-    console.log(`${badge.ok} Worker model set to '${model}'${effort ? ` with reasoning effort '${effort}'` : ''}`);
+    const finalEffort = effort || config.workerEffort || "medium";
+    console.log(`${badge.ok} Worker model set to '${model}-${finalEffort}'`);
     return;
   }
 
   // Fallback 1: custom positional syntax: kumo model <orchestrator> <worker> [effort]
   if (action && target) {
-    const model = action;
-    const worker = target;
+    const model = resolveOrchestratorModel(action);
+    const worker = resolveWorkerModel(target);
     const effort = value;
     setConfigValue("orchestratorModel", model);
     setConfigValue("workerModel", worker);
     if (effort) {
       setConfigValue("reasoningEffort", effort);
     }
-    console.log(`${badge.ok} Orchestrator model set to '${model}'${effort ? ` (effort: ${effort})` : ''}`);
-    console.log(`${badge.ok} Worker model set to '${worker}'`);
+    const finalEffort = effort || config.reasoningEffort || "low";
+    console.log(`${badge.ok} Orchestrator model set to '${model}-${finalEffort}'`);
+    console.log(`${badge.ok} Worker model set to '${worker}-${config.workerEffort || 'medium'}'`);
     return;
   }
 
@@ -169,13 +202,13 @@ export function modelCommand(action, target, value, extra) {
       applyPreset(action);
       const updated = loadConfig();
       console.log(`${badge.ok} Applied preset '${action}':`);
-      console.log(`  ${badge.dot} Orchestrator: ${updated.orchestratorModel} (effort: ${updated.reasoningEffort})`);
-      console.log(`  ${badge.dot} Worker:       ${updated.workerModel}`);
+      console.log(`  ${badge.dot} Orchestrator: ${updated.orchestratorModel}-${updated.reasoningEffort}`);
+      console.log(`  ${badge.dot} Worker:       ${updated.workerModel}-${updated.workerEffort || 'medium'}`);
       return;
     }
-
-    setConfigValue("orchestratorModel", action);
-    console.log(`${badge.ok} Orchestrator model set to '${action}'`);
+    const model = resolveOrchestratorModel(action);
+    setConfigValue("orchestratorModel", model);
+    console.log(`${badge.ok} Orchestrator model set to '${model}-${config.reasoningEffort || 'low'}'`);
     return;
   }
 

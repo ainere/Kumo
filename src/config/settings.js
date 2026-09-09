@@ -29,8 +29,8 @@ export const DEFAULT_CONFIG = {
 
 export const PRESETS = {
   default: {
-    name: "Default (ChatGPT Plus + Google AI Pro)",
-    description: "Astra Low reasoning + Gemini 3.8 Flash worker (medium effort)",
+    name: "Astra Low + Gemini 3.8 Medium",
+    description: "Everyday development (ChatGPT Plus + Google AI Pro)",
     config: {
       orchestratorProvider: "codex",
       orchestratorModel: "chatgpt-6-astra",
@@ -41,8 +41,8 @@ export const PRESETS = {
     },
   },
   pro: {
-    name: "ChatGPT Pro (Higher Quota)",
-    description: "Astra Medium reasoning + Gemini 3.8 Flash worker (high effort)",
+    name: "Astra Medium + Gemini 3.8 High",
+    description: "Complex architecture and deeper reasoning (ChatGPT Pro)",
     config: {
       orchestratorProvider: "codex",
       orchestratorModel: "chatgpt-6-astra",
@@ -53,8 +53,8 @@ export const PRESETS = {
     },
   },
   speed: {
-    name: "High Speed (Sol + Flash)",
-    description: "ChatGPT 5.6 Sol + Gemini 3.8 Flash worker (low effort)",
+    name: "Sol Low + Gemini 3.8 Low",
+    description: "High-speed iteration and fast turnaround",
     config: {
       orchestratorProvider: "codex",
       orchestratorModel: "chatgpt-5.6-sol",
@@ -65,8 +65,8 @@ export const PRESETS = {
     },
   },
   "gemini-3.7": {
-    name: "Gemini 3.7 Fallback",
-    description: "Astra Low + Gemini 3.7 Flash worker (medium effort)",
+    name: "Astra Low + Gemini 3.7 Medium",
+    description: "Fallback compatibility worker",
     config: {
       orchestratorProvider: "codex",
       orchestratorModel: "chatgpt-6-astra",
@@ -77,8 +77,8 @@ export const PRESETS = {
     },
   },
   test: {
-    name: "Testing / Lowest Quota (GPT-5.5 Low + Gemini 3.6 Low)",
-    description: "GPT-5.5 Low reasoning + Gemini 3.6 Flash (low effort) (cheapest models for tests)",
+    name: "GPT-5.5 Low + Gemini 3.6 Low",
+    description: "Lowest quota verification (ChatGPT Go safe)",
     config: {
       orchestratorProvider: "codex",
       orchestratorModel: "gpt-5.5",
@@ -177,4 +177,31 @@ export function resetConfig() {
 
 export function getConfigPath() {
   return CONFIG_FILE;
+}
+
+/**
+ * Resolve friendly or shorthand model names to canonical model IDs.
+ */
+export function resolveOrchestratorModel(input) {
+  if (!input) return input;
+  const norm = input.toLowerCase().trim();
+  if (norm === "astra" || norm === "chatgpt-6" || norm === "6-astra") return "chatgpt-6-astra";
+  if (norm === "sol" || norm === "5.6-sol" || norm === "chatgpt-sol") return "chatgpt-5.6-sol";
+  if (norm === "terra" || norm === "5.6-terra") return "gpt-5.6-terra";
+  if (norm === "luna" || norm === "5.6-luna") return "gpt-5.6-luna";
+  if (norm === "gpt-5" || norm === "5.5" || norm === "gpt5") return "gpt-5.5";
+  return input;
+}
+
+export function resolveWorkerModel(input) {
+  if (!input) return input;
+  const norm = input.toLowerCase().trim();
+  if (norm === "opus" || norm === "opus-4.6" || norm === "claude-opus" || norm === "opus-thinking") return "claude-opus-4-6-thinking";
+  if (norm === "sonnet" || norm === "sonnet-4.6" || norm === "claude-sonnet") return "claude-sonnet-4-6";
+  if (norm === "flash" || norm === "3.8" || norm === "3.8-flash" || norm === "gemini-3.8") return "gemini-3.8-flash";
+  if (norm === "3.7" || norm === "3.7-flash" || norm === "gemini-3.7") return "gemini-3.7-flash";
+  if (norm === "3.6" || norm === "3.6-flash" || norm === "gemini-3.6") return "gemini-3.6-flash";
+  if (norm === "pro" || norm === "3.1" || norm === "3.1-pro" || norm === "gemini-3.1") return "gemini-3.1-pro";
+  if (norm === "oss" || norm === "120b" || norm === "gpt-oss") return "gpt-oss-120b";
+  return input;
 }
