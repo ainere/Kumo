@@ -23,7 +23,7 @@ export const DEFAULT_CONFIG = {
   timeoutMs: 300000,
   cliBinary: "gemini",
   approvalPolicy: "on-request",
-  bannerStyle: "block",
+  bannerStyle: "cloud",
 };
 
 export const PRESETS = {
