@@ -93,10 +93,10 @@ export function buildInvocation(opts = {}) {
   args.push("-a", policy);
 
   // Dynamic MCP bridge server registration
-  args.push("-c", 'mcp_servers.gemini-bridge.command="node"');
+  args.push("-c", "mcp_servers.gemini-bridge.command='node'");
   args.push(
     "-c",
-    `mcp_servers.gemini-bridge.args=["${bridgeScript}","--workspace","${normalizedWorkspace}"]`
+    `mcp_servers.gemini-bridge.args=['${bridgeScript}','--workspace','${normalizedWorkspace}']`
   );
 
   if (opts.nonInteractive && opts.prompt) {
@@ -123,7 +123,7 @@ export async function launch(opts = {}) {
       cwd: opts.workspace || process.cwd(),
       stdio: "inherit",
       env,
-      shell: process.platform === "win32",
+      shell: false,
     });
 
     proc.on("close", (code) => {
