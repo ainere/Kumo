@@ -11,7 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { loadConfig, getConfigPath } from "../config/settings.js";
 import { getCliBinary } from "../bridge/agy-runner.js";
-import { findCodexBinary } from "./codex-launcher.js";
+import { findCodexBinary } from "../providers/orchestrators/codex.js";
 
 const execAsync = promisify(exec);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -77,7 +77,7 @@ export async function runDiagnostics() {
     if (fallbackCheck.ok) {
       results.gemini.installed = true;
       results.gemini.ok = true;
-      results.gemini.details = `Found fallback '${fallback}' (${fallbackCheck.output}). Run: orchestrator config set cliBinary ${fallback}`;
+      results.gemini.details = `Found fallback '${fallback}' (${fallbackCheck.output}). Run: kumo config set cliBinary ${fallback}`;
     } else {
       results.gemini.installed = false;
       results.gemini.ok = false;

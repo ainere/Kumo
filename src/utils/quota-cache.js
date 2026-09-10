@@ -20,21 +20,8 @@ export function getCachedQuotas() {
     /* ignore read errors */
   }
 
-  // Sensible defaults
-  return {
-    codex: {
-      remainingPercent: 91,
-      resetFormatted: "in 29d (Oct 10)",
-      planType: "ChatGPT Go",
-      creditsAvailable: 1,
-    },
-    agy: {
-      geminiWeeklyPercent: 95,
-      geminiWeeklyResetFormatted: "in 6d 22h",
-      gemini5HourPercent: 68,
-      gemini5HourResetFormatted: "in 3h 53m",
-    },
-  };
+  // Defaults when no cache exists
+  return { codex: null, agy: null };
 }
 
 export function saveCachedQuotas(codexLimits, agyUsage) {

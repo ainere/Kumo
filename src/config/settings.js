@@ -180,6 +180,21 @@ export function getConfigPath() {
 }
 
 /**
+ * Check if a given model or provider configuration corresponds to Codex.
+ * Returns true if provider is 'codex' or the model is a known Codex/OpenAI model.
+ */
+export function isCodexModel(model, provider = null) {
+  if (provider === "codex") return true;
+  if (provider === "antigravity" || provider === "gemini") return false;
+  if (!model) return false;
+  const norm = model.toLowerCase().trim();
+  if (norm.startsWith("gemini-") || norm.startsWith("claude-") || norm.includes("gpt-oss")) {
+    return false;
+  }
+  return /^(chatgpt|gpt-5\b|gpt-5\.)|astra|sol|terra|luna/i.test(norm);
+}
+
+/**
  * Resolve friendly or shorthand model names to canonical model IDs.
  */
 export function resolveOrchestratorModel(input) {
@@ -196,6 +211,13 @@ export function resolveOrchestratorModel(input) {
 export function resolveWorkerModel(input) {
   if (!input) return input;
   const norm = input.toLowerCase().trim();
+  // Codex models
+  if (norm === "astra" || norm === "chatgpt-6" || norm === "6-astra") return "chatgpt-6-astra";
+  if (norm === "sol" || norm === "5.6-sol" || norm === "chatgpt-sol") return "chatgpt-5.6-sol";
+  if (norm === "terra" || norm === "5.6-terra") return "gpt-5.6-terra";
+  if (norm === "luna" || norm === "5.6-luna") return "gpt-5.6-luna";
+  if (norm === "gpt-5" || norm === "5.5" || norm === "gpt5") return "gpt-5.5";
+  // Antigravity models
   if (norm === "opus" || norm === "opus-4.6" || norm === "claude-opus" || norm === "opus-thinking") return "claude-opus-4-6-thinking";
   if (norm === "sonnet" || norm === "sonnet-4.6" || norm === "claude-sonnet") return "claude-sonnet-4-6";
   if (norm === "flash" || norm === "3.8" || norm === "3.8-flash" || norm === "gemini-3.8") return "gemini-3.8-flash";
@@ -205,3 +227,4 @@ export function resolveWorkerModel(input) {
   if (norm === "oss" || norm === "120b" || norm === "gpt-oss") return "gpt-oss-120b";
   return input;
 }
+

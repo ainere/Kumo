@@ -3,7 +3,7 @@
  * and closes the old calling terminal to keep the workspace clean.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -57,15 +57,23 @@ export function launchInNewWindow(opts = {}) {
     );
     child.unref();
 
-    // Close the old calling CMD or PowerShell window
+    // Close the old calling CMD window only if it is safe
     const ppid = process.ppid;
     if (ppid && ppid > 1) {
       setTimeout(() => {
         try {
-          spawn("taskkill.exe", ["/F", "/PID", String(ppid)], {
-            detached: true,
-            stdio: "ignore",
-          }).unref();
+          const parentName = execSync(
+            `wmic process where ProcessId=${ppid} get Name /format:value`,
+            { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }
+          ).trim();
+
+          const safeToKill = /cmd\.exe|conhost\.exe/i.test(parentName);
+          if (safeToKill) {
+            spawn("taskkill.exe", ["/F", "/PID", String(ppid)], {
+              detached: true,
+              stdio: "ignore",
+            }).unref();
+          }
         } catch {
           /* ignore */
         }

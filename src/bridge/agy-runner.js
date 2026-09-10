@@ -63,7 +63,7 @@ export async function runAgy(opts) {
     model = process.env.GEMINI_MODEL || config.workerModel || "gemini-3.8-flash",
     mode = "read-only",
     files = [],
-    workspace = process.env.ORCHESTRATOR_WORKSPACE || process.cwd(),
+    workspace = process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd(),
     timeoutMs = parseInt(process.env.GEMINI_TIMEOUT_MS || String(config.timeoutMs || 300000), 10),
     systemPrompt,
   } = opts;

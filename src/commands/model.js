@@ -10,6 +10,7 @@ import {
   PRESETS,
   resolveOrchestratorModel,
   resolveWorkerModel,
+  isCodexModel,
 } from "../config/settings.js";
 import { c, badge, separator } from "../utils/ui.js";
 import { openInteractiveModelPicker, DEFAULT_CODEX_MODELS } from "../utils/model-picker.js";
@@ -118,7 +119,7 @@ export async function modelCommand(action, target, value, extra) {
 
   // Handle effort delegation: kumo model effort <level> or kumo model reasoning <level>
   if (action === "effort" || action === "reasoning") {
-    effortCommand(target);
+    effortCommand(target, value);
     return;
   }
 
@@ -153,6 +154,7 @@ export async function modelCommand(action, target, value, extra) {
     }
     const model = resolveOrchestratorModel(raw);
     setConfigValue("orchestratorModel", model);
+    setConfigValue("orchestratorProvider", isCodexModel(model) ? "codex" : "gemini");
     if (effort) {
       setConfigValue("reasoningEffort", effort);
     }
@@ -172,6 +174,7 @@ export async function modelCommand(action, target, value, extra) {
     }
     const model = resolveWorkerModel(raw);
     setConfigValue("workerModel", model);
+    setConfigValue("workerProvider", isCodexModel(model) ? "codex" : "gemini");
     if (effort) {
       setConfigValue("workerEffort", effort);
     }
@@ -186,7 +189,9 @@ export async function modelCommand(action, target, value, extra) {
     const worker = resolveWorkerModel(target);
     const effort = value;
     setConfigValue("orchestratorModel", model);
+    setConfigValue("orchestratorProvider", isCodexModel(model) ? "codex" : "gemini");
     setConfigValue("workerModel", worker);
+    setConfigValue("workerProvider", isCodexModel(worker) ? "codex" : "gemini");
     if (effort) {
       setConfigValue("reasoningEffort", effort);
     }
