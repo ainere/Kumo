@@ -11,6 +11,7 @@ import { initCommand } from "./commands/init.js";
 import { modelCommand, effortCommand } from "./commands/model.js";
 import { bannerCommand } from "./commands/banner.js";
 import { statusCommand } from "./commands/status.js";
+import { graphCommand } from "./commands/graph.js";
 
 export function createCli() {
   const program = new Command();
@@ -130,6 +131,16 @@ export function createCli() {
     .description("Display the KUMO Cloud Cumulus banner")
     .action(() => {
       bannerCommand();
+    });
+
+  // Graph command
+  program
+    .command("graph")
+    .description("Inspect Graphify knowledge graph freshness and lifecycle status")
+    .option("-d, --dir <path>", "Target workspace directory")
+    .option("--json", "Output status as JSON")
+    .action(async (opts) => {
+      await graphCommand(opts);
     });
 
   return program;

@@ -70,5 +70,5 @@ A single model reviewing its own generated code has natural confirmation bias. W
 - Discrepancies between worker output and project specifications are caught prior to user presentation.
 
 ### 5. Knowledge Graph & Durable Memory
-- **Graphify**: Code structure, god nodes, and cross-module call paths are tracked in `graphify-out/` (`GRAPH_REPORT.md`, `graph.json`).
-- **Obsidian Shared Knowledge Vault**: Durable cross-session state, architectural decisions, and reusable procedures are maintained in `C:\Users\xenob\Documents\Obsidian\Agent-Workspace`.
+- **Graphify**: Code structure, god nodes, and cross-module call paths are tracked in `graphify-out/` (`GRAPH_REPORT.md`, `graph.json`). Workers verify active symbols against current source code to prevent stale misdirection.
+- **Obsidian Shared Knowledge Vault**: Durable cross-session state, architectural decisions, and reusable procedures are maintained in the configured Obsidian vault (configured via `$KUMO_OBSIDIAN_VAULT` or `kumo config set obsidianVault <path>`).

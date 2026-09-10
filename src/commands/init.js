@@ -5,12 +5,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import { c, badge, separator } from "../utils/ui.js";
+import { getObsidianVaultPath } from "../config/settings.js";
 
-const AGENTS_TEMPLATE = `# Project Orchestration Rules (Cross-Provider Harness)
+function getAgentsTemplate(vaultPath) {
+  const vaultNote = vaultPath
+    ? `- **Obsidian**: Consult and update the Obsidian knowledge vault (\`${vaultPath}\`) for durable project state.`
+    : `- **Obsidian**: If configured via \`$KUMO_OBSIDIAN_VAULT\` or \`kumo config set obsidianVault <path>\`, consult and update the Obsidian knowledge vault for durable project state.`;
+
+  return `# Project Orchestration Rules (Cross-Provider Harness)
 
 This project coordinates a frontier reasoning model as the **Root Orchestrator** and a high-throughput execution model as the **Worker**.
 - **Root Orchestrator**: Frontier reasoning model (default: ChatGPT 6 Astra via Codex CLI)
-- **Execution Worker**: High-throughput worker (default: Gemini 3.8 Flash via Antigravity / MCP bridge)
+- **Execution Worker**: High-throughput worker (Gemini 3.8 Flash, Claude 3.7/Opus/Sonnet, or GPT-OSS via Antigravity / MCP bridge)
 - **Reviewer**: Orchestrator subagent for deep cross-model review
 
 ## Delegation Gate
@@ -30,10 +36,11 @@ Classify tasks before substantive repository work:
 - Partition work into disjoint file sets or execute sequentially.
 
 ## Knowledge & Documentation Integrity
-- **Graphify**: Always consult \`graphify-out/\` (\`GRAPH_REPORT.md\`, \`graph.json\`) first for codebase relationships.
-- **Obsidian**: Consult and update the Obsidian knowledge vault (\`C:\\Users\\xenob\\Documents\\Obsidian\\Agent-Workspace\`) for durable project state.
+- **Graphify**: When exploring codebase structure, consult \`graphify-out/\` (\`GRAPH_REPORT.md\`, \`graph.json\`) when available for high-level cluster maps. Always verify active symbols against current source code; do not treat a stale graph as ground truth.
+${vaultNote}
 - **README Maintenance**: Whenever a major change is made (features, CLI commands, configs, architecture), update \`README.md\` immediately.
 `;
+}
 
 const WORKER_TEMPLATE = `# Execution Worker Rules
 
@@ -43,7 +50,7 @@ You are running as the **Execution Worker** via the MCP bridge server dispatched
 - Never edit files when called as \`explore\`, \`research\`, or \`review\`.
 - If a task becomes ambiguous, stop and report the blocker back to the orchestrator.
 - Return structured reports matching the required format.
-- Always consult \`graphify-out/\` when exploring repository structure.
+- When exploring codebase structure, use \`graphify-out/\` as a structural starting point if present, and verify active symbols against current source files.
 `;
 
 export function initCommand(opts = {}) {
@@ -61,8 +68,11 @@ export function initCommand(opts = {}) {
     return;
   }
 
+  const vaultPath = getObsidianVaultPath();
+  const agentsContent = getAgentsTemplate(vaultPath);
+
   if (!fs.existsSync(agentsPath)) {
-    fs.writeFileSync(agentsPath, AGENTS_TEMPLATE, "utf-8");
+    fs.writeFileSync(agentsPath, agentsContent, "utf-8");
     console.log(`  ${badge.ok} Created ${agentsPath}`);
   } else {
     console.log(`  ${badge.info} ${agentsPath} already exists (skipping)`);

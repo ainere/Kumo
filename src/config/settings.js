@@ -26,7 +26,22 @@ export const DEFAULT_CONFIG = {
   cliBinary: "gemini",
   approvalPolicy: "on-request",
   bannerStyle: "cloud",
+  safetyMode: "autonomous",
+  trustWorkspace: true,
+  obsidianVault: "",
 };
+
+/**
+ * Resolve configured Obsidian knowledge vault path.
+ * Priority: KUMO_OBSIDIAN_VAULT env var > config.obsidianVault > null
+ */
+export function getObsidianVaultPath(config = null) {
+  if (process.env.KUMO_OBSIDIAN_VAULT) {
+    return process.env.KUMO_OBSIDIAN_VAULT;
+  }
+  const cfg = config || loadConfig();
+  return cfg.obsidianVault || null;
+}
 
 export const PRESETS = {
   default: {

@@ -6,16 +6,19 @@
  * ORCHESTRATOR_WORKSPACE environment variable to target any project folder.
  */
 
+import { execSync } from "node:child_process";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { runAgy } from "./agy-runner.js";
 import { SYSTEM_PROMPTS, getSystemPrompt } from "./prompts.js";
+import { loadConfig } from "../config/settings.js";
 
 // Parse CLI flags
 let workspaceDir = process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd();
 let modelOverride = process.env.GEMINI_MODEL || null;
 let effortOverride = null;
+let safetyModeOverride = process.env.KUMO_SAFETY_MODE || null;
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--workspace" && args[i + 1]) {
@@ -27,7 +30,100 @@ for (let i = 0; i < args.length; i++) {
   } else if (args[i] === "--effort" && args[i + 1]) {
     effortOverride = args[i + 1];
     i++;
+  } else if (args[i] === "--safety-mode" && args[i + 1]) {
+    safetyModeOverride = args[i + 1];
+    i++;
   }
+}
+
+// In-memory cache for pending diff previews
+export const pendingPreviews = new Map();
+
+/**
+ * Capture current git porcelain status (modified and untracked files).
+ */
+export function getGitStatus(cwd) {
+  try {
+    const out = execSync("git status --porcelain", {
+      cwd,
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf-8",
+    }).trim();
+    if (!out) return [];
+    return out
+      .split("\n")
+      .map((l) => l.trim().split(/\s+/)[1])
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Capture git diff stat summary.
+ */
+export function getGitDiffStat(cwd) {
+  try {
+    const out = execSync("git diff --stat", {
+      cwd,
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf-8",
+    }).trim();
+    return out || "(no unstaged git diff)";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Extract target file paths mentioned in a unified diff or file header preview.
+ */
+export function extractPreviewFiles(previewText) {
+  if (!previewText) return [];
+  const files = new Set();
+  const diffRegex = /(?:---|\+\+\+)\s+[ab]\/([^\s]+)/g;
+  let match;
+  while ((match = diffRegex.exec(previewText)) !== null) {
+    if (match[1] && match[1] !== "dev/null") {
+      files.add(match[1]);
+    }
+  }
+  const fileHeaderRegex = /(?:\[FILE:\s*|File:\s*|modified:\s*)([^\s\],]+)/gi;
+  while ((match = fileHeaderRegex.exec(previewText)) !== null) {
+    if (match[1]) {
+      files.add(match[1]);
+    }
+  }
+  return Array.from(files);
+}
+
+/**
+ * Sanity-check actual modified files against what was previewed in Phase 1.
+ */
+export function checkDiffFidelity(previewText, actualModifiedFiles) {
+  if (!previewText || !actualModifiedFiles || actualModifiedFiles.length === 0) return null;
+  const previewFiles = extractPreviewFiles(previewText);
+  if (previewFiles.length === 0) return null;
+
+  const unexpectedFiles = actualModifiedFiles.filter(
+    (af) => !previewFiles.some((pf) => pf.endsWith(af) || af.endsWith(pf))
+  );
+  const missingFiles = previewFiles.filter(
+    (pf) => !actualModifiedFiles.some((af) => pf.endsWith(af) || af.endsWith(pf))
+  );
+
+  if (unexpectedFiles.length > 0 || missingFiles.length > 0) {
+    const notes = [];
+    if (unexpectedFiles.length > 0) {
+      notes.push(`Unexpected files modified: ${unexpectedFiles.join(", ")}`);
+    }
+    if (missingFiles.length > 0) {
+      notes.push(`Previewed files that were not modified: ${missingFiles.join(", ")}`);
+    }
+    return `\n\n[NOTE: Preview and applied changes diverge; review carefully!]\n- ${notes.join("\n- ")}`;
+  }
+
+  return null;
 }
 
 function formatResult(result, toolName) {
@@ -68,7 +164,7 @@ function formatResult(result, toolName) {
 const server = new McpServer({
   name: "codex-gemini-bridge",
   version: "1.0.0",
-  description: "Bridges Codex CLI to execution worker with dynamic workspace resolution.",
+  description: "Bridges frontier orchestrators to execution workers with dynamic workspace resolution and safety guardrails.",
 });
 
 // Handler implementations
@@ -85,30 +181,127 @@ async function handleExplore({ task, files }) {
   return formatResult(result, "worker_explore");
 }
 
-async function handleImplement({ task, files }) {
+async function handleImplement({ task, files, confirm }) {
+  const config = loadConfig();
+  const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
+
+  // If in diff-review mode and confirmation has not been provided
+  if (safetyMode === "diff-review" && !confirm) {
+    const result = await runAgy({
+      prompt: task,
+      mode: "read-only",
+      previewDiff: true,
+      safetyMode: "diff-review",
+      files: files || [],
+      workspace: workspaceDir,
+      model: modelOverride || undefined,
+      effort: effortOverride || undefined,
+      systemPrompt: getSystemPrompt("implement", { workerModel: modelOverride, workerEffort: effortOverride }),
+    });
+
+    const formatted = formatResult(result, "worker_implement");
+    if (result.ok && result.stdout) {
+      pendingPreviews.set(task, result.stdout);
+      if (formatted.content && formatted.content[0]) {
+        formatted.content[0].text += `\n\n---\n[STATUS: PENDING_CONFIRMATION]\nSafety mode is 'diff-review'. The worker generated a proposed change preview without modifying files on disk.\nTo review and apply these changes, call worker_implement again with confirm: true.`;
+      }
+    }
+    return formatted;
+  }
+
+  const preFiles = getGitStatus(workspaceDir);
+
   const result = await runAgy({
     prompt: task,
     mode: "workspace-write",
+    safetyMode: "autonomous",
     files: files || [],
     workspace: workspaceDir,
     model: modelOverride || undefined,
     effort: effortOverride || undefined,
     systemPrompt: getSystemPrompt("implement", { workerModel: modelOverride, workerEffort: effortOverride }),
   });
-  return formatResult(result, "worker_implement");
+
+  const formatted = formatResult(result, "worker_implement");
+  const postFiles = getGitStatus(workspaceDir);
+  const diffStat = getGitDiffStat(workspaceDir);
+
+  if (formatted.content && formatted.content[0]) {
+    const cachedPreview = pendingPreviews.get(task);
+    if (cachedPreview) {
+      pendingPreviews.delete(task);
+      const fidelityWarning = checkDiffFidelity(cachedPreview, postFiles);
+      if (fidelityWarning) {
+        formatted.content[0].text += fidelityWarning;
+      }
+    }
+    if (postFiles.length > 0 || diffStat) {
+      formatted.content[0].text += `\n\n[Applied Files & Diff Summary]\nFiles: ${postFiles.join(", ") || "(none)"}\n${diffStat}`;
+    }
+  }
+
+  return formatted;
 }
 
-async function handleTest({ task, files }) {
+async function handleTest({ task, files, confirm }) {
+  const config = loadConfig();
+  const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
+
+  if (safetyMode === "diff-review" && !confirm) {
+    const result = await runAgy({
+      prompt: task,
+      mode: "read-only",
+      previewDiff: true,
+      safetyMode: "diff-review",
+      files: files || [],
+      workspace: workspaceDir,
+      model: modelOverride || undefined,
+      effort: effortOverride || undefined,
+      systemPrompt: getSystemPrompt("test", { workerModel: modelOverride, workerEffort: effortOverride }),
+    });
+
+    const formatted = formatResult(result, "worker_test");
+    if (result.ok && result.stdout) {
+      pendingPreviews.set(task, result.stdout);
+      if (formatted.content && formatted.content[0]) {
+        formatted.content[0].text += `\n\n---\n[STATUS: PENDING_CONFIRMATION]\nSafety mode is 'diff-review'. The worker generated a test proposal without modifying files on disk.\nTo execute and apply these tests, call worker_test again with confirm: true.`;
+      }
+    }
+    return formatted;
+  }
+
+  const preFiles = getGitStatus(workspaceDir);
+
   const result = await runAgy({
     prompt: task,
     mode: "workspace-write",
+    safetyMode: "autonomous",
     files: files || [],
     workspace: workspaceDir,
     model: modelOverride || undefined,
     effort: effortOverride || undefined,
     systemPrompt: getSystemPrompt("test", { workerModel: modelOverride, workerEffort: effortOverride }),
   });
-  return formatResult(result, "worker_test");
+
+  const formatted = formatResult(result, "worker_test");
+  const postFiles = getGitStatus(workspaceDir);
+  const diffStat = getGitDiffStat(workspaceDir);
+
+  if (formatted.content && formatted.content[0]) {
+    const cachedPreview = pendingPreviews.get(task);
+    if (cachedPreview) {
+      pendingPreviews.delete(task);
+      const fidelityWarning = checkDiffFidelity(cachedPreview, postFiles);
+      if (fidelityWarning) {
+        formatted.content[0].text += fidelityWarning;
+      }
+    }
+    if (postFiles.length > 0 || diffStat) {
+      formatted.content[0].text += `\n\n[Applied Files & Diff Summary]\nFiles: ${postFiles.join(", ") || "(none)"}\n${diffStat}`;
+    }
+  }
+
+  return formatted;
 }
 
 async function handleResearch({ task, files }) {
@@ -145,10 +338,12 @@ const schemas = {
   implement: {
     task: z.string().describe("A bounded implementation task with clear acceptance criteria"),
     files: z.array(z.string()).optional().describe("Optional context file paths"),
+    confirm: z.boolean().optional().describe("When safetyMode is diff-review, set to true to apply approved changes to disk. When omitted or false, generates a proposed diff preview."),
   },
   test: {
     task: z.string().describe("What to test or which test suite to run"),
     files: z.array(z.string()).optional().describe("Optional file paths under test"),
+    confirm: z.boolean().optional().describe("When safetyMode is diff-review, set to true to apply changes on disk."),
   },
   research: {
     task: z.string().describe("The technical research question or documentation lookup"),

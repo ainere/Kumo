@@ -75,12 +75,13 @@ Before performing substantive work, classify the task as either **root-only** or
 ## Knowledge & Documentation Integrity
 
 1. **Graphify Knowledge Graph**:
-   - When exploring codebase structure, relationships, or dependencies, **always consult `graphify-out/`** (`GRAPH_REPORT.md`, `graph.json`) first.
-   - If architectural changes are made, keep graphify updated.
+   - When exploring codebase structure, relationships, or dependencies, consult `graphify-out/` (`GRAPH_REPORT.md`, `graph.json`) when present for high-level cluster maps.
+   - Always verify active symbols against current source files; do not treat a stale graph as ground truth.
+   - Run `kumo graph --check` to verify freshness, or `kumo graph --refresh` to regenerate.
 
 2. **Obsidian Shared Knowledge Vault**:
-   - The shared knowledge vault is located at: `C:\Users\xenob\Documents\Obsidian\Agent-Workspace`.
-   - Before completing tasks that establish durable project state, architectural decisions, reusable procedures, or handoffs, check and update the Obsidian vault.
+   - The shared knowledge vault location is configured via the `$KUMO_OBSIDIAN_VAULT` environment variable or `obsidianVault` in `~/.kumo/config.json`.
+   - Before completing tasks that establish durable project state, architectural decisions, reusable procedures, or handoffs, check and update the Obsidian vault if configured.
 
 3. **Immediate README Updates on Major Changes**:
    - **Whenever a major change is made** (new features, CLI commands, workflow updates, configuration changes, or architectural shifts), **update [README.md](file:///d:/Projects/Kumo/README.md) immediately**. Do not leave documentation out of sync.

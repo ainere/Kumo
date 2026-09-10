@@ -9,9 +9,7 @@
 
 **Kumo** is a modular CLI application that pairs frontier reasoning models with high-throughput execution workers across independent AI ecosystems.
 
-By default, it coordinates **ChatGPT 6 Astra** (via Codex CLI on ChatGPT Plus) as the root orchestrator and **Gemini 3.8 Flash** (via Antigravity / Gemini CLI on Google AI Pro) as the high-throughput worker — utilizing your existing consumer subscriptions with **zero separate API keys**.
-
-The provider architecture is designed for multi-provider extensibility, including future support for Anthropic Claude, OpenAI, and Google workflows.
+It coordinates frontier reasoning orchestrators (**ChatGPT 6 Astra / Sol / Terra / Luna / GPT-5.5** via Codex CLI) with high-throughput execution workers across **Google Gemini** (Gemini 3.8 / 3.7 Flash & Pro), **Anthropic Claude** (Claude 3.7 Sonnet, Claude Opus Thinking), and **open-weight models** (GPT-OSS) via the Antigravity engine — utilizing your existing subscriptions with **zero separate API keys**.
 
 ---
 
@@ -33,8 +31,8 @@ The provider architecture is designed for multi-provider extensibility, includin
        ▼                                                   ▼
 ┌───────────────────────────┐               ┌───────────────────────────┐
 │   Orchestrator Provider   │               │      Worker Provider      │
-│   (Default: OpenAI Codex  │               │  (Default: Google Gemini  │
-│     ChatGPT 6 Astra Low)  │ ◄─── [MCP] ──►│     Gemini 3.8 Flash)     │
+│  (OpenAI Codex / ChatGPT  │               │   (Google Gemini, Claude  │
+│   Astra / Sol / Terra)    │ ◄─── [MCP] ──►│    Opus/Sonnet, GPT-OSS)  │
 │   • Task decomposition    │               │   • File exploration      │
 │   • Architectural design  │               │   • Code implementation   │
 │   • Cross-model review    │               │   • Test generation & runs│
@@ -123,11 +121,22 @@ The orchestrator is forbidden from performing delegated tasks in-thread; actual 
 ## Knowledge & Documentation Integrity
 
 1. **Graphify (`graphify-out/`)**:
-   - Code exploration always consults `graphify-out/` (`GRAPH_REPORT.md`, `graph.json`) first to map god nodes, call hierarchies, and architectural clusters.
+   - Code exploration consults `graphify-out/` (`GRAPH_REPORT.md`, `graph.json`) when present as a structural map of clusters and god nodes. Always verify active symbols against current source code (`kumo graph --check` detects staleness).
 2. **Obsidian Knowledge Vault**:
-   - Lasting architectural decisions, verified multi-step procedures, and project handoffs are recorded in the shared Obsidian workspace (`C:\Users\xenob\Documents\Obsidian\Agent-Workspace`).
+   - Lasting architectural decisions, verified multi-step procedures, and project handoffs are recorded in the shared Obsidian workspace (configured via `$KUMO_OBSIDIAN_VAULT` or `kumo config set obsidianVault <path>`).
 3. **Immediate README Maintenance**:
    - **Whenever a major change is made** (features, commands, configuration, or architecture), **`README.md` must be updated immediately** to preserve documentation synchronization.
+
+---
+
+## Safety Modes & Guardrails
+
+Kumo provides two headless safety modes for worker execution (`kumo config set safetyMode <mode>` or `KUMO_SAFETY_MODE`):
+
+| Safety Mode | Behavior | Use Case |
+|---|---|---|
+| `autonomous` (Default) | Automatically applies approved edits via `worker_implement` and appends verified post-execution `[Applied Files & Diff Summary]` to tool output. | Fast headless execution, prototyping, internal repos. |
+| `diff-review` | Two-phase preview gate: Phase 1 generates a proposed unified diff preview without touching files (`confirm: false`). Phase 2 applies changes when explicitly approved (`confirm: true`), running a diff-fidelity sanity check. | Critical client work, high-stakes codebases, NDA projects. |
 
 ---
 
