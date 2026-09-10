@@ -196,42 +196,6 @@ server.tool(
   handleReview
 );
 
-// Backward-compatible gemini_* aliases
-server.tool(
-  "gemini_explore",
-  "Alias for worker_explore. Read-only codebase exploration via execution worker.",
-  schemas.explore,
-  handleExplore
-);
-
-server.tool(
-  "gemini_implement",
-  "Alias for worker_implement. Execute a bounded coding task via execution worker.",
-  schemas.implement,
-  handleImplement
-);
-
-server.tool(
-  "gemini_test",
-  "Alias for worker_test. Write and/or run tests via execution worker.",
-  schemas.test,
-  handleTest
-);
-
-server.tool(
-  "gemini_research",
-  "Alias for worker_research. Technical research via execution worker.",
-  schemas.research,
-  handleResearch
-);
-
-server.tool(
-  "gemini_review",
-  "Alias for worker_review. Independent code review via execution worker.",
-  schemas.review,
-  handleReview
-);
-
 export async function startServer() {
   const transport = new StdioServerTransport();
   await server.connect(transport);

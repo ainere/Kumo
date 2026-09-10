@@ -29,7 +29,7 @@ The **Model Context Protocol (MCP)** provides an open, standardized RPC protocol
 ┌────────────────────────────────────────────────────────┐
 │ MCP Bridge Server (src/bridge/server.js)               │
 │ - Uses @modelcontextprotocol/sdk                       │
-│ - Exposes worker_* MCP tools (gemini_* aliases)        │
+│ - Exposes 5 specialized worker_* MCP tools             │
 └───────────────────────────┬────────────────────────────┘
                             │ Subprocess spawn
                             ▼
@@ -54,7 +54,6 @@ The **Model Context Protocol (MCP)** provides an open, standardized RPC protocol
 - **Write-Enabled Tools (`worker_implement`, `worker_test`)**:
   - Spawned with `--sandbox workspace-write` (or `--approval-mode yolo`).
   - Allows targeted code generation and test execution within the workspace boundaries.
-- **Backward Compatibility**: `gemini_*` aliases map directly to the corresponding `worker_*` tools.
 
 ### 3. Rate Limit Optimization for Frontier Models
 - Frontier orchestrators enforce message caps per rolling window.
