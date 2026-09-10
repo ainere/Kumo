@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { syncAgentConfigs } from "./sync.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".kumo");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
@@ -150,6 +151,7 @@ export function setConfigValue(key, value) {
 
   current[key] = value;
   saveConfig(current);
+  syncAgentConfigs(process.cwd(), current);
   return current;
 }
 
@@ -164,6 +166,7 @@ export function applyPreset(presetName) {
   const current = loadConfig();
   const updated = { ...current, ...preset.config };
   saveConfig(updated);
+  syncAgentConfigs(process.cwd(), updated);
   return updated;
 }
 
@@ -172,6 +175,7 @@ export function applyPreset(presetName) {
  */
 export function resetConfig() {
   saveConfig(DEFAULT_CONFIG);
+  syncAgentConfigs(process.cwd(), DEFAULT_CONFIG);
   return { ...DEFAULT_CONFIG };
 }
 

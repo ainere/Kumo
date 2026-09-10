@@ -1,4 +1,4 @@
-# Troubleshooting Guide: Codex × Gemini Orchestrator
+# Troubleshooting Guide: Cross-Provider Orchestrator
 
 Common issues and solutions when running the cross-provider harness.
 
@@ -33,7 +33,7 @@ Common issues and solutions when running the cross-provider harness.
 ## 2. Authentication Errors
 
 ### Symptom:
-Gemini tool returns: `Error authenticating: IneligibleTierError` or `Session expired`.
+Worker tool returns: `Error authenticating: IneligibleTierError` or `Session expired`.
 
 ### Solution:
 1. For Google AI Pro / Antigravity:
@@ -60,7 +60,7 @@ gemini --skip-trust
 ## 4. Subprocess Timeout
 
 ### Symptom:
-`⏱ gemini_implement timed out after 300s.`
+`⏱ worker_implement timed out after 300s.` (or `gemini_implement`)
 
 ### Solution:
 1. By default, tasks have a 5-minute timeout.

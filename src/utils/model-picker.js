@@ -7,7 +7,7 @@
 import readline from "node:readline";
 import { c, badge, separator } from "./ui.js";
 import { loadConfig, setConfigValue, applyPreset, PRESETS } from "../config/settings.js";
-import { getAgyModels } from "../../bridge/agy-runner.js";
+import { getAgyModels } from "../bridge/agy-runner.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
 
 /** Default known orchestrator models (Codex) */

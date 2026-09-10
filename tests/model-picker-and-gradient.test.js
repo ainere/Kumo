@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import { progressBar, BLUEISH_GRADIENT } from "../src/utils/ui.js";
-import { getAgyModels, DEFAULT_WORKER_MODELS } from "../bridge/agy-runner.js";
+import { getAgyModels, DEFAULT_WORKER_MODELS } from "../src/bridge/agy-runner.js";
 import { getOrchestratorModels, DEFAULT_CODEX_MODELS } from "../src/utils/model-picker.js";
 import { modelCommand } from "../src/commands/model.js";
 

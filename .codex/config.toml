@@ -1,37 +1,17 @@
-# Codex × Gemini Cross-Provider Orchestrator
-#
-# Root agent: ChatGPT 6 Astra (orchestator, architecture, integration)
-# Workers:    Gemini 3.8 Flash via MCP bridge (all grunt work)
-# Reviewer:   ChatGPT 6 Astra subagent (independent cross-model review)
-#
-# Authentication: ChatGPT Plus subscription (codex login). No API keys.
-#
-# Main knobs:
-#   model / model_reasoning_effort  — root orchestrator
-#   agents.max_concurrent_threads   — parallel cap
-#   GEMINI_MODEL env var            — override the Gemini model in the bridge
-#
-# This is project-scoped. Place at: <repo>/.codex/config.toml
+# Kumo Cross-Provider Orchestrator Configuration
+# Automatically synchronized with active user settings.
+# Active Orchestrator: chatgpt-6-astra (low)
+# Active Worker:       gpt-5.6-luna (medium)
 
-# ─── Root / orchestrator ─────────────────────────────────────────────────────
 model = "chatgpt-6-astra"
 model_reasoning_effort = "low"
 
-# Safe interactive defaults
 approval_policy = "on-request"
 
-# ─── Subagent defaults ───────────────────────────────────────────────────────
-# The only Codex subagent is the reviewer (Astra).
-# All other work goes to Gemini 3.8 Flash via MCP tools directly.
 [agents]
 enabled = true
 max_concurrent_threads_per_session = 4
 
-# ─── MCP: Gemini bridge ─────────────────────────────────────────────────────
-# Exposes gemini_explore, gemini_implement, gemini_test, gemini_research,
-# and gemini_review as tools the orchestrator can call directly.
-# The bridge spawns agy (Antigravity CLI) subprocesses authenticated
-# via your Google AI Pro subscription.
 [mcp_servers.gemini-bridge]
 command = "node"
 args = ["src/bridge/server.js"]

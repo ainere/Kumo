@@ -24,7 +24,7 @@
     └──────────┬──────────┘         └──────────┬──────────┘
                │                               │
                └────────► [MCP Stdio Bridge] ◄─┘
-                          bridge/server.js
+                          src/bridge/server.js
 ```
 
 ### Key Modules:
@@ -36,8 +36,9 @@
 - **`src/utils/window-launcher.js`**: Spawns Kumo in a dedicated PowerShell window using `-NoProfile -NoExit -ExecutionPolicy Bypass` and closes the calling terminal.
 - **`src/utils/quota-cache.js`**: Local disk cache (`~/.kumo/quota_cache.json`) enabling `<5ms` instant menu and banner rendering upon window launch.
 - **`src/utils/ui.js`**: ANSI styling tokens, Cloud Cumulus (雲) banner, cyan-to-blue gradient rules (`brightCyan` → `cyan` → `brightBlue` → `blue`), standardized 14-block progress bars (`progressBar(percent, 14)`), and relative/calendar date formatters (`formatResetTime`, `formatIsoResetTime`).
-- **`bridge/agy-runner.js`**: Low-level executor for `agy.exe`. Resolves binary path, manages timeouts, parses live tab-separated quotas via `agy -p /usage`, and sets `--dangerously-skip-permissions` with mode `accept-edits` or `plan`.
-- **`bridge/server.js`**: MCP stdio bridge exposing 5 tools (`gemini_explore`, `gemini_implement`, `gemini_test`, `gemini_research`, `gemini_review`) to Codex. Forwards worker model and reasoning effort.
+- **`src/bridge/agy-runner.js`**: Low-level executor for `agy.exe`. Resolves binary path, manages timeouts with hard-capped output buffers, parses live tab-separated quotas via `agy -p /usage`, and sets `--dangerously-skip-permissions` with mode `accept-edits` or `plan`.
+- **`src/bridge/server.js`**: MCP stdio bridge exposing 5 primary worker tools (`worker_explore`, `worker_implement`, `worker_test`, `worker_research`, `worker_review`, plus backward-compatible `gemini_*` aliases) to Codex. Forwards worker model and reasoning effort.
+- **`src/config/sync.js`**: Standalone synchronization module that mirrors active orchestrator and worker models to `.codex/agents/reviewer.toml` and `.codex/config.toml`.
 - **`src/config/settings.js`**: Global configuration stored in `~/.kumo/config.json`. Manages presets, custom model strings, and dual-provider reasoning efforts.
 
 ---
@@ -127,9 +128,9 @@ When inside the session (`kumo ›`):
    - Refactoring: *"Refactor bridge error handling to support automatic reconnection"*
    - Bug fixing: *"Run tests, locate why status bars clip, and fix the root cause"*
 2. **Orchestrator Plans & Delegates**:
-   - **ChatGPT 6 Astra** (or your selected orchestrator) evaluates requirements, decomposes steps, and issues targeted commands to the worker via MCP stdio bridge tools (`gemini_explore`, `gemini_implement`, `gemini_test`, `gemini_research`, `gemini_review`).
-3. **Grunt Worker Executes**:
-   - **Gemini 3.8 Flash** executes the heavy file inspection, refactoring, and test execution using its 1M context window and fast inference speed.
+   - The **Orchestrator** (default: **ChatGPT 6 Astra**, or dynamically configured model) evaluates requirements, decomposes steps, and issues targeted commands to the worker via MCP stdio bridge tools (`worker_explore`, `worker_implement`, `worker_test`, `worker_research`, `worker_review`).
+3. **Execution Worker Executes**:
+   - The **Worker** (default: **Gemini 3.8 Flash**, or dynamically configured model) executes the heavy file inspection, refactoring, and test execution using its high speed and large context window.
    - **Quota Preservation**: Codex never bloats its ChatGPT Plus quota reading large codebase files directly.
 4. **Review & Verification**:
    - The orchestrator inspects the generated diffs, verifies test results, and presents a concise summary to the user.

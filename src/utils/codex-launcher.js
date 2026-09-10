@@ -8,6 +8,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../config/settings.js";
+import { syncAgentConfigs } from "../config/sync.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -29,6 +30,13 @@ export function buildCodexInvocation(opts) {
   const workspace = path.resolve(opts.workspace || process.cwd());
   const bridgeScript = path.resolve(__dirname, "../bridge/server.js").replace(/\\/g, "/");
   const normalizedWorkspace = workspace.replace(/\\/g, "/");
+
+  // Dynamically sync reviewer.toml and config.toml in the workspace
+  try {
+    syncAgentConfigs(workspace, config);
+  } catch {
+    /* fallback */
+  }
 
   const args = [];
 

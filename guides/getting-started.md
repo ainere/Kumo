@@ -63,18 +63,18 @@ Inside `d:\Projects\Kumo`:
    > "Explore the project structure, locate where the bridge server is defined, and create a utility script that validates environment configuration."
 
 ### What happens behind the scenes:
-1. **Astra** receives your request and decides on the task scope.
-2. **Astra** calls `gemini_explore` via MCP to find file paths without bloating Codex context.
-3. The bridge launches `agy` in read-only mode with Gemini 3.8 Flash, captures findings, and returns them to Astra.
-4. **Astra** analyzes the structure and calls `gemini_implement` with precise specifications to write the utility script.
-5. The bridge launches `agy` with workspace write permissions to write the code.
-6. **Astra** (or the `reviewer` subagent) reviews the created diff and reports back to you with a summary of actions taken.
+1. The **Orchestrator** receives your request and decides on the task scope.
+2. The Orchestrator calls `worker_explore` via MCP to find file paths without bloating orchestrator context.
+3. The bridge launches the execution worker in read-only mode, captures structured findings, and returns them to the orchestrator.
+4. The **Orchestrator** analyzes the structure and calls `worker_implement` with precise specifications to write the utility script.
+5. The bridge launches the execution worker with workspace write permissions to write the code.
+6. The **Orchestrator** (or the `reviewer` subagent) reviews the created diff and reports back to you with a summary of actions taken.
 
 ---
 
-## 4. Helpful Tips for ChatGPT Plus Users
+## 4. Helpful Tips for Orchestrator Quota Preservation
 
-- **Avoid manual code dumping**: If you have a question about existing files, ask Astra to inspect them using Gemini rather than pasting large code blocks into the chat.
-- **Let Gemini write tests**: Astra can instruct Gemini to write and execute unit tests in one command via `gemini_test`.
-- **Reviewer Subagent**: To trigger a deep, independent cross-model code review, you can ask Astra:
+- **Avoid manual code dumping**: If you have a question about existing files, ask the orchestrator to inspect them using the worker rather than pasting large code blocks into the chat.
+- **Let the worker write tests**: The orchestrator can instruct the worker to write and execute unit tests in one command via `worker_test`.
+- **Reviewer Subagent**: To trigger a deep, independent cross-model code review, you can ask:
   > "Please have the reviewer subagent inspect the latest changes for edge cases and security issues."

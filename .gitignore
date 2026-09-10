@@ -34,3 +34,7 @@ coverage/
 # Antigravity session & transient IDE directories
 .system_generated/
 scratch/
+
+# Knowledge graph & build artifacts
+graphify-out/
+.graphify*

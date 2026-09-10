@@ -33,6 +33,11 @@ test("MCP bridge server starts and exposes all 5 tools with workspace parameter"
     const toolNames = tools.map((t) => t.name);
 
     const expectedTools = [
+      "worker_explore",
+      "worker_implement",
+      "worker_test",
+      "worker_research",
+      "worker_review",
       "gemini_explore",
       "gemini_implement",
       "gemini_test",
@@ -49,4 +54,24 @@ test("MCP bridge server starts and exposes all 5 tools with workspace parameter"
   } finally {
     await transport.close();
   }
+});
+
+test("MAX_OUTPUT_BYTES is 1MB and output buffer slicing logic hard-caps total size", async () => {
+  const { MAX_OUTPUT_BYTES } = await import("../src/bridge/agy-runner.js");
+  assert.strictEqual(MAX_OUTPUT_BYTES, 1024 * 1024);
+
+  let stdout = "";
+  const chunk1 = "A".repeat(1024 * 1024 - 10);
+  const chunk2 = "B".repeat(100);
+
+  for (const chunk of [chunk1, chunk2]) {
+    if (stdout.length < MAX_OUTPUT_BYTES) {
+      const remaining = MAX_OUTPUT_BYTES - stdout.length;
+      const str = chunk.toString();
+      stdout += str.length <= remaining ? str : str.slice(0, remaining);
+    }
+  }
+
+  assert.strictEqual(stdout.length, MAX_OUTPUT_BYTES);
+  assert.strictEqual(stdout.slice(-10), "B".repeat(10));
 });

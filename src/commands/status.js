@@ -1,7 +1,7 @@
 import path from "node:path";
 import { loadConfig, isCodexModel } from "../config/settings.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
-import { checkAgyHealth, getAgyUsage } from "../../bridge/agy-runner.js";
+import { checkAgyHealth, getAgyUsage } from "../bridge/agy-runner.js";
 import { getCachedQuotas, saveCachedQuotas } from "../utils/quota-cache.js";
 import {
   getBanner,
