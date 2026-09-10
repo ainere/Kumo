@@ -8,6 +8,10 @@ import {
   extractPreviewFiles,
   checkDiffFidelity,
   pendingPreviews,
+  storePendingPreview,
+  consumePendingPreview,
+  pruneExpiredPreviews,
+  PREVIEW_TTL_MS,
 } from "../src/bridge/server.js";
 import { inspectGraph } from "../src/commands/graph.js";
 
@@ -101,4 +105,37 @@ test("inspectGraph detects missing vs existing graphify data", () => {
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test("storePendingPreview and consumePendingPreview key by previewId rather than fragile prose", () => {
+  pendingPreviews.clear();
+  const sampleDiff = "--- a/src/test.js\n+++ b/src/test.js\n@@ -1 +1 @@\n-old\n+new";
+  const previewId = storePendingPreview(sampleDiff);
+
+  assert.ok(previewId.startsWith("prev_"));
+  assert.equal(pendingPreviews.has(previewId), true);
+
+  // Even if caller changes task prose completely, consuming by previewId succeeds
+  const retrieved = consumePendingPreview(previewId);
+  assert.equal(retrieved, sampleDiff);
+
+  // Consumed preview is immediately deleted to prevent memory leaks
+  assert.equal(pendingPreviews.has(previewId), false);
+  assert.equal(consumePendingPreview(previewId), null);
+});
+
+test("pruneExpiredPreviews removes stale entries older than PREVIEW_TTL_MS", () => {
+  pendingPreviews.clear();
+  const id1 = storePendingPreview("diff1");
+  const id2 = storePendingPreview("diff2");
+
+  // Artificially age id1 beyond TTL
+  const entry1 = pendingPreviews.get(id1);
+  entry1.createdAt = Date.now() - (PREVIEW_TTL_MS + 5000);
+
+  pruneExpiredPreviews();
+
+  assert.equal(pendingPreviews.has(id1), false, "Expired entry should be pruned");
+  assert.equal(pendingPreviews.has(id2), true, "Fresh entry should be preserved");
+  pendingPreviews.clear();
 });
