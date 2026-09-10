@@ -13,7 +13,7 @@ import { runAgy } from "./agy-runner.js";
 import { SYSTEM_PROMPTS } from "./prompts.js";
 
 // Parse --workspace flag from args if present
-let workspaceDir = process.env.ORCHESTRATOR_WORKSPACE || process.cwd();
+let workspaceDir = process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd();
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--workspace" && args[i + 1]) {

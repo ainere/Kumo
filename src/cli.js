@@ -78,8 +78,8 @@ export function createCli() {
   program
     .command("model [action] [target] [value] [extra]")
     .description("Inspect or switch orchestrator and worker models (e.g. kumo model, kumo model orchestrator <m>, kumo model worker <m>)")
-    .action((action, target, value, extra) => {
-      modelCommand(action, target, value, extra);
+    .action(async (action, target, value, extra) => {
+      await modelCommand(action, target, value, extra);
     });
 
   // Effort command (inspect or set reasoning effort for orchestrator or worker)

@@ -36,31 +36,27 @@ Both CLIs connect using your existing subscription credentials.
 
 ## 2. Setting Up the Bridge
 
-Inside `d:\Projects\Orchestrator`:
+Inside `d:\Projects\Kumo`:
 
-1. Navigate to the `bridge` directory and ensure packages are installed:
+1. Ensure dependencies are installed:
    ```bash
-   cd bridge
    npm install
    ```
-2. Run the smoke test:
+2. Run the test suite:
    ```bash
    npm test
    ```
-   You should see:
-   ```text
-   ✓ Connected to MCP bridge server successfully.
-   ✓ Registered tools found: [ 'gemini_explore', 'gemini_implement', 'gemini_test', 'gemini_research', 'gemini_review' ]
-   ✓ Bridge server test passed.
-   ```
+   You should see all unit tests passing.
 
 ---
 
 ## 3. Running Your First Orchestrated Task
 
-1. From the repository root (`d:\Projects\Orchestrator`):
+1. From the repository root (`d:\Projects\Kumo`):
    ```bash
-   codex
+   node ./bin/kumo.js
+   # or simply
+   kumo
    ```
 2. You will be greeted by the Codex CLI session running **ChatGPT 6 Astra** (reasoning effort: `low`).
 3. Enter a task request. For example:

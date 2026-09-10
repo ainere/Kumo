@@ -31,6 +31,7 @@ test("buildCodexInvocation correctly targets an external workspace", () => {
   assert.ok(mcpArgs.length >= 2, "Must register mcp_servers.gemini-bridge command and args");
 
   assert.strictEqual(env.ORCHESTRATOR_WORKSPACE, path.resolve(targetDir));
+  assert.strictEqual(env.KUMO_WORKSPACE, path.resolve(targetDir));
 });
 
 test("buildCodexInvocation sets exec subcommand for non-interactive mode", () => {

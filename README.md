@@ -197,12 +197,12 @@ When working inside an interactive Kumo session (`kumo ›`), manage models on t
 ## Architecture & Extensibility
 
 The codebase implements a decoupled provider structure:
-- **Orchestrators** ([`src/providers/orchestrators/`](file:///d:/Projects/Orchestrator/src/providers/orchestrators/)):
+- **Orchestrators** ([`src/providers/orchestrators/`](src/providers/orchestrators/)):
   - `codex.js`: OpenAI Codex CLI adapter with dynamic MCP bridge injection.
   - `registry.js`: Provider registry allowing additional orchestrator adapters.
-- **Workers** ([`src/providers/workers/`](file:///d:/Projects/Orchestrator/src/providers/workers/)):
+- **Workers** ([`src/providers/workers/`](src/providers/workers/)):
   - `gemini.js`: Google Gemini adapter backed by Antigravity / Gemini CLI.
   - `registry.js`: Worker registry supporting future agent execution engines.
-- **MCP Bridge** ([`src/bridge/`](file:///d:/Projects/Orchestrator/src/bridge/)):
+- **MCP Bridge** ([`src/bridge/`](src/bridge/)):
   - `prompts.js`: Role prompts for `explore`, `implement`, `test`, `research`, and `review`.
   - `agy-runner.js`: Subprocess executor enforcing timeout, permission sandboxes, and buffer management.

@@ -80,7 +80,6 @@ gemini --skip-trust
 
 You can test the MCP server in isolation anytime by running:
 ```bash
-cd bridge
-npm test
+node --test tests/bridge.test.js
 ```
 This connects a lightweight client via stdio to verify that all tools register and communication functions without error.
