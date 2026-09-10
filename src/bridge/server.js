@@ -7,6 +7,7 @@
  */
 
 import { execSync } from "node:child_process";
+import crypto from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -36,8 +37,65 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-// In-memory cache for pending diff previews
+export const PREVIEW_TTL_MS = 15 * 60 * 1000; // 15 minutes TTL
+
+// In-memory cache for pending diff previews: Map<string, { previewText: string, createdAt: number }>
 export const pendingPreviews = new Map();
+
+/**
+ * Clean up expired previews from cache.
+ */
+export function pruneExpiredPreviews() {
+  const now = Date.now();
+  for (const [id, entry] of pendingPreviews.entries()) {
+    if (now - entry.createdAt > PREVIEW_TTL_MS) {
+      pendingPreviews.delete(id);
+    }
+  }
+}
+
+/**
+ * Register a new diff preview and return its unique previewId token.
+ */
+export function storePendingPreview(previewText) {
+  pruneExpiredPreviews();
+  const previewId = `prev_${crypto.randomUUID().slice(0, 8)}`;
+  pendingPreviews.set(previewId, {
+    previewText,
+    createdAt: Date.now(),
+  });
+  return previewId;
+}
+
+/**
+ * Retrieve and consume a pending preview by previewId.
+ * Falls back to latest unexpired preview if previewId is omitted.
+ */
+export function consumePendingPreview(previewId) {
+  pruneExpiredPreviews();
+  if (previewId && pendingPreviews.has(previewId)) {
+    const entry = pendingPreviews.get(previewId);
+    pendingPreviews.delete(previewId);
+    return entry.previewText;
+  }
+  // Soft fallback: if previewId wasn't passed, take the most recent preview (if any exist)
+  if (!previewId && pendingPreviews.size > 0) {
+    let latestKey = null;
+    let latestTime = 0;
+    for (const [id, entry] of pendingPreviews.entries()) {
+      if (entry.createdAt > latestTime) {
+        latestTime = entry.createdAt;
+        latestKey = id;
+      }
+    }
+    if (latestKey) {
+      const entry = pendingPreviews.get(latestKey);
+      pendingPreviews.delete(latestKey);
+      return entry.previewText;
+    }
+  }
+  return null;
+}
 
 /**
  * Capture current git porcelain status (modified and untracked files).
@@ -181,7 +239,7 @@ async function handleExplore({ task, files }) {
   return formatResult(result, "worker_explore");
 }
 
-async function handleImplement({ task, files, confirm }) {
+async function handleImplement({ task, files, confirm, previewId }) {
   const config = loadConfig();
   const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
 
@@ -201,9 +259,9 @@ async function handleImplement({ task, files, confirm }) {
 
     const formatted = formatResult(result, "worker_implement");
     if (result.ok && result.stdout) {
-      pendingPreviews.set(task, result.stdout);
+      const generatedId = storePendingPreview(result.stdout);
       if (formatted.content && formatted.content[0]) {
-        formatted.content[0].text += `\n\n---\n[STATUS: PENDING_CONFIRMATION]\nSafety mode is 'diff-review'. The worker generated a proposed change preview without modifying files on disk.\nTo review and apply these changes, call worker_implement again with confirm: true.`;
+        formatted.content[0].text += `\n\n---\n[STATUS: PENDING_CONFIRMATION]\nSafety mode is 'diff-review'. The worker generated a proposed change preview without modifying files on disk.\nPreview ID: "${generatedId}"\nTo review and apply these changes, call worker_implement again with confirm: true and previewId: "${generatedId}".`;
       }
     }
     return formatted;
@@ -227,9 +285,8 @@ async function handleImplement({ task, files, confirm }) {
   const diffStat = getGitDiffStat(workspaceDir);
 
   if (formatted.content && formatted.content[0]) {
-    const cachedPreview = pendingPreviews.get(task);
+    const cachedPreview = consumePendingPreview(previewId);
     if (cachedPreview) {
-      pendingPreviews.delete(task);
       const fidelityWarning = checkDiffFidelity(cachedPreview, postFiles);
       if (fidelityWarning) {
         formatted.content[0].text += fidelityWarning;
@@ -243,7 +300,7 @@ async function handleImplement({ task, files, confirm }) {
   return formatted;
 }
 
-async function handleTest({ task, files, confirm }) {
+async function handleTest({ task, files, confirm, previewId }) {
   const config = loadConfig();
   const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
 
@@ -262,9 +319,9 @@ async function handleTest({ task, files, confirm }) {
 
     const formatted = formatResult(result, "worker_test");
     if (result.ok && result.stdout) {
-      pendingPreviews.set(task, result.stdout);
+      const generatedId = storePendingPreview(result.stdout);
       if (formatted.content && formatted.content[0]) {
-        formatted.content[0].text += `\n\n---\n[STATUS: PENDING_CONFIRMATION]\nSafety mode is 'diff-review'. The worker generated a test proposal without modifying files on disk.\nTo execute and apply these tests, call worker_test again with confirm: true.`;
+        formatted.content[0].text += `\n\n---\n[STATUS: PENDING_CONFIRMATION]\nSafety mode is 'diff-review'. The worker generated a test proposal without modifying files on disk.\nPreview ID: "${generatedId}"\nTo execute and apply these tests, call worker_test again with confirm: true and previewId: "${generatedId}".`;
       }
     }
     return formatted;
@@ -288,9 +345,8 @@ async function handleTest({ task, files, confirm }) {
   const diffStat = getGitDiffStat(workspaceDir);
 
   if (formatted.content && formatted.content[0]) {
-    const cachedPreview = pendingPreviews.get(task);
+    const cachedPreview = consumePendingPreview(previewId);
     if (cachedPreview) {
-      pendingPreviews.delete(task);
       const fidelityWarning = checkDiffFidelity(cachedPreview, postFiles);
       if (fidelityWarning) {
         formatted.content[0].text += fidelityWarning;
@@ -339,11 +395,13 @@ const schemas = {
     task: z.string().describe("A bounded implementation task with clear acceptance criteria"),
     files: z.array(z.string()).optional().describe("Optional context file paths"),
     confirm: z.boolean().optional().describe("When safetyMode is diff-review, set to true to apply approved changes to disk. When omitted or false, generates a proposed diff preview."),
+    previewId: z.string().optional().describe("Unique preview token returned by Phase 1 preview call for diff-fidelity verification upon confirmation."),
   },
   test: {
     task: z.string().describe("What to test or which test suite to run"),
     files: z.array(z.string()).optional().describe("Optional file paths under test"),
     confirm: z.boolean().optional().describe("When safetyMode is diff-review, set to true to apply changes on disk."),
+    previewId: z.string().optional().describe("Unique preview token returned by Phase 1 preview call for diff-fidelity verification upon confirmation."),
   },
   research: {
     task: z.string().describe("The technical research question or documentation lookup"),
