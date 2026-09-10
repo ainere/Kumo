@@ -60,7 +60,7 @@ gemini --skip-trust
 ## 4. Subprocess Timeout
 
 ### Symptom:
-`⏱ worker_implement timed out after 300s.` (or `gemini_implement`)
+`⏱ worker_implement timed out after 300s.`
 
 ### Solution:
 1. By default, tasks have a 5-minute timeout.

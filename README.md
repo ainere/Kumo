@@ -112,11 +112,11 @@ The orchestrator is forbidden from performing delegated tasks in-thread; actual 
 ### Specialized Worker Roles & Schemas
 | Role | Primary Tool | Permissions | Purpose & Schema |
 |---|---|---|---|
-| **Explorer** | `worker_explore` *(alias: `gemini_explore`)* | Read-only | Finds files & symbols, traces call flows. Returns: 1) Relevant files/symbols, 2) Flow, 3) Constraints/risks, 4) Recommended implementation surface. |
-| **Worker** | `worker_implement` *(alias: `gemini_implement`)* | Workspace-write | Executes bounded changes. If scope is ambiguous, stops and escalates. Returns: 1) What changed, 2) Files modified, 3) Validation run, 4) Remaining risks. |
-| **Tester** | `worker_test` *(alias: `gemini_test`)* | Workspace-write | Runs targeted tests, reproduces failures. Never rewrites production code to pass tests. Returns: 1) Commands run, 2) Pass/fail, 3) Output, 4) Gaps, 5) Next action. |
-| **Researcher** | `worker_research` *(alias: `gemini_research`)* | Read-only | Verifies facts against primary documentation. Returns: 1) Verified answer, 2) Version assumptions, 3) Citations, 4) Uncertainties. |
-| **Reviewer** | `worker_review` *(alias: `gemini_review`)* | Read-only | Pre-flight check before synthesis. Prioritizes bugs, security, regressions, and data integrity over style nitpicks. |
+| **Explorer** | `worker_explore` | Read-only | Finds files & symbols, traces call flows. Returns: 1) Relevant files/symbols, 2) Flow, 3) Constraints/risks, 4) Recommended implementation surface. |
+| **Worker** | `worker_implement` | Workspace-write | Executes bounded changes. If scope is ambiguous, stops and escalates. Returns: 1) What changed, 2) Files modified, 3) Validation run, 4) Remaining risks. |
+| **Tester** | `worker_test` | Workspace-write | Runs targeted tests, reproduces failures. Never rewrites production code to pass tests. Returns: 1) Commands run, 2) Pass/fail, 3) Output, 4) Gaps, 5) Next action. |
+| **Researcher** | `worker_research` | Read-only | Verifies facts against primary documentation. Returns: 1) Verified answer, 2) Version assumptions, 3) Citations, 4) Uncertainties. |
+| **Reviewer** | `worker_review` | Read-only | Pre-flight check before synthesis. Prioritizes bugs, security, regressions, and data integrity over style nitpicks. |
 
 ---
 

@@ -38,12 +38,9 @@ test("MCP bridge server starts and exposes all 5 tools with workspace parameter"
       "worker_test",
       "worker_research",
       "worker_review",
-      "gemini_explore",
-      "gemini_implement",
-      "gemini_test",
-      "gemini_research",
-      "gemini_review",
     ];
+
+    assert.strictEqual(toolNames.length, 5, `Expected exactly 5 tools, got ${toolNames.length}`);
 
     for (const exp of expectedTools) {
       assert.ok(

@@ -37,7 +37,7 @@
 - **`src/utils/quota-cache.js`**: Local disk cache (`~/.kumo/quota_cache.json`) enabling `<5ms` instant menu and banner rendering upon window launch.
 - **`src/utils/ui.js`**: ANSI styling tokens, Cloud Cumulus (雲) banner, cyan-to-blue gradient rules (`brightCyan` → `cyan` → `brightBlue` → `blue`), standardized 14-block progress bars (`progressBar(percent, 14)`), and relative/calendar date formatters (`formatResetTime`, `formatIsoResetTime`).
 - **`src/bridge/agy-runner.js`**: Low-level executor for `agy.exe`. Resolves binary path, manages timeouts with hard-capped output buffers, parses live tab-separated quotas via `agy -p /usage`, and sets `--dangerously-skip-permissions` with mode `accept-edits` or `plan`.
-- **`src/bridge/server.js`**: MCP stdio bridge exposing 5 primary worker tools (`worker_explore`, `worker_implement`, `worker_test`, `worker_research`, `worker_review`, plus backward-compatible `gemini_*` aliases) to Codex. Forwards worker model and reasoning effort.
+- **`src/bridge/server.js`**: MCP stdio bridge exposing 5 primary worker tools (`worker_explore`, `worker_implement`, `worker_test`, `worker_research`, `worker_review`) to Codex. Forwards worker model and reasoning effort.
 - **`src/config/sync.js`**: Standalone synchronization module that mirrors active orchestrator and worker models to `.codex/agents/reviewer.toml` and `.codex/config.toml`.
 - **`src/config/settings.js`**: Global configuration stored in `~/.kumo/config.json`. Manages presets, custom model strings, and dual-provider reasoning efforts.
 
