@@ -14,7 +14,7 @@ import {
 } from "../config/settings.js";
 import { c, badge, separator } from "../utils/ui.js";
 import { openInteractiveModelPicker, DEFAULT_CODEX_MODELS } from "../utils/model-picker.js";
-import { DEFAULT_WORKER_MODELS } from "../../bridge/agy-runner.js";
+import { DEFAULT_WORKER_MODELS } from "../bridge/agy-runner.js";
 
 export function effortCommand(target, value) {
   const config = loadConfig();

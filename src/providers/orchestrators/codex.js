@@ -9,6 +9,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../../config/settings.js";
+import { syncAgentConfigs } from "../../config/sync.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -23,39 +24,33 @@ export const PROVIDER_INFO = {
  * Locate the Codex executable on the system.
  */
 export function findCodexBinary() {
-  if (process.env.CODEX_BIN && fs.existsSync(process.env.CODEX_BIN)) {
-    return process.env.CODEX_BIN;
-  }
+  if (process.env.CODEX_BIN) return process.env.CODEX_BIN;
 
-  const codexHomeConfig = path.join(os.homedir(), ".codex", "config.toml");
-  if (fs.existsSync(codexHomeConfig)) {
-    try {
-      const content = fs.readFileSync(codexHomeConfig, "utf-8");
-      const match = content.match(/CODEX_CLI_PATH\s*=\s*['"]([^'"]+)['"]/);
-      if (match && fs.existsSync(match[1])) {
-        return match[1];
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-
+  // Windows: check local AppData, npm global, and PATH
   if (process.platform === "win32") {
-    const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
-    const codexBinDir = path.join(localAppData, "OpenAI", "Codex", "bin");
-    if (fs.existsSync(codexBinDir)) {
-      try {
-        const subdirs = fs.readdirSync(codexBinDir);
-        for (const sub of subdirs) {
-          const candidate = path.join(codexBinDir, sub, "codex.exe");
-          if (fs.existsSync(candidate)) {
-            return candidate;
-          }
-        }
-      } catch {
-        /* ignore */
-      }
+    const localAppData = process.env.LOCALAPPDATA || "";
+    const appData = process.env.APPDATA || "";
+    const candidates = [
+      path.join(localAppData, "Programs", "OpenAI", "Codex", "codex.exe"),
+      path.join(appData, "npm", "codex.cmd"),
+      path.join(localAppData, "npm", "codex.cmd"),
+      path.join(process.env.ProgramFiles || "C:\\Program Files", "Codex", "codex.exe"),
+    ];
+
+    for (const c of candidates) {
+      if (fs.existsSync(c)) return c;
     }
+  }
+
+  // Unix-like fallback
+  const unixCandidates = [
+    "/usr/local/bin/codex",
+    "/opt/homebrew/bin/codex",
+    path.join(os.homedir(), ".npm-global", "bin", "codex"),
+  ];
+
+  for (const c of unixCandidates) {
+    if (fs.existsSync(c)) return c;
   }
 
   return "codex";
@@ -70,6 +65,13 @@ export function buildInvocation(opts = {}) {
   const workspace = path.resolve(opts.workspace || process.cwd());
   const bridgeScript = path.resolve(__dirname, "../../bridge/server.js").replace(/\\/g, "/");
   const normalizedWorkspace = workspace.replace(/\\/g, "/");
+
+  // Dynamically sync reviewer.toml and config.toml in the workspace
+  try {
+    syncAgentConfigs(workspace, config);
+  } catch {
+    /* fallback */
+  }
 
   const args = [];
 
@@ -93,10 +95,12 @@ export function buildInvocation(opts = {}) {
   args.push("-a", policy);
 
   // Dynamic MCP bridge server registration
+  const workerModel = opts.workerModel || config.workerModel || "gemini-3.8-flash";
+  const workerEffort = opts.workerEffort || config.workerEffort || "medium";
   args.push("-c", "mcp_servers.gemini-bridge.command='node'");
   args.push(
     "-c",
-    `mcp_servers.gemini-bridge.args=['${bridgeScript}','--workspace','${normalizedWorkspace}']`
+    `mcp_servers.gemini-bridge.args=['${bridgeScript}','--workspace','${normalizedWorkspace}','--model','${workerModel}','--effort','${workerEffort}']`
   );
 
   if (opts.nonInteractive && opts.prompt) {

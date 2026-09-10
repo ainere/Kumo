@@ -19,7 +19,7 @@ import {
   isCodexModel,
 } from "../config/settings.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
-import { getAgyUsage } from "../../bridge/agy-runner.js";
+import { getAgyUsage } from "../bridge/agy-runner.js";
 import { launchInNewWindow } from "../utils/window-launcher.js";
 import { getCachedQuotas, saveCachedQuotas } from "../utils/quota-cache.js";
 import {

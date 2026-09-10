@@ -12,6 +12,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findCodexBinary } from "./codex.js";
 import { formatPlanType, formatResetTime } from "../../utils/ui.js";
+import { loadConfig } from "../../config/settings.js";
+import { syncAgentConfigs } from "../../config/sync.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -144,20 +146,41 @@ export class CodexAppClient extends EventEmitter {
   }
 
   /**
-   * Initialize a thread with workspace, model, reasoning effort, and Gemini MCP server.
+   * Initialize a thread with workspace, model, reasoning effort, and Worker MCP server.
    */
   async startThread(opts = {}) {
     const workspace = path.resolve(opts.workspace || process.cwd());
     const normalizedWorkspace = workspace.replace(/\\/g, "/");
     const bridgeScript = path.resolve(__dirname, "../../bridge/server.js").replace(/\\/g, "/");
 
+    // Dynamically sync reviewer.toml and config.toml in the workspace
+    syncAgentConfigs(workspace);
+
+    let config = {};
+    try {
+      config = loadConfig();
+    } catch {
+      /* fallback */
+    }
+
+    const workerModel = opts.workerModel || config.workerModel || "gemini-3.8-flash";
+    const workerEffort = opts.workerEffort || config.workerEffort || "medium";
+
     const configOverrides = {
-      model: opts.model || "chatgpt-6-astra",
-      model_reasoning_effort: opts.reasoningEffort || "low",
+      model: opts.model || config.orchestratorModel || "chatgpt-6-astra",
+      model_reasoning_effort: opts.reasoningEffort || config.reasoningEffort || "low",
       mcp_servers: {
         "gemini-bridge": {
           command: "node",
-          args: [bridgeScript, "--workspace", normalizedWorkspace],
+          args: [
+            bridgeScript,
+            "--workspace",
+            normalizedWorkspace,
+            "--model",
+            workerModel,
+            "--effort",
+            workerEffort,
+          ],
         },
       },
     };
