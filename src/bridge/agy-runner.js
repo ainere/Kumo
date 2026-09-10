@@ -117,6 +117,9 @@ export async function runAgy(opts) {
     files = [],
     workspace = opts.cwd || process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd(),
     timeoutMs = parseInt(process.env.GEMINI_TIMEOUT_MS || String(config.timeoutMs || DEFAULT_TIMEOUT_MS), 10),
+    safetyMode = opts.safetyMode || process.env.KUMO_SAFETY_MODE || config.safetyMode || "autonomous",
+    trustWorkspace = opts.trustWorkspace ?? (process.env.KUMO_TRUST_WORKSPACE !== "false" && process.env.KUMO_SKIP_TRUST !== "false" && (config.trustWorkspace !== false)),
+    previewDiff = opts.previewDiff || false,
     systemPrompt,
   } = opts;
 
@@ -132,6 +135,9 @@ export async function runAgy(opts) {
   if (systemPrompt) {
     compositePrompt += `[System Instructions]\n${systemPrompt}\n\n`;
   }
+  if (previewDiff) {
+    compositePrompt += `[DIFF PREVIEW MODE]\nYou are running in read-only diff preview mode. DO NOT modify any files on disk.\nCarefully analyze the workspace and produce a complete unified git diff (--- a/... +++ b/...) of the exact changes you propose to make, followed by an impact summary.\n\n`;
+  }
   if (files && files.length > 0) {
     compositePrompt += `[Relevant Files]\n${files.map((f) => `- ${f}`).join("\n")}\n\n`;
   }
@@ -140,8 +146,10 @@ export async function runAgy(opts) {
   if (isGeminiCli) {
     args.push("-p", compositePrompt);
     args.push("-m", model);
-    args.push("--skip-trust");
-    if (mode === "workspace-write") {
+    if (trustWorkspace) {
+      args.push("--skip-trust");
+    }
+    if (mode === "workspace-write" && safetyMode === "autonomous") {
       args.push("-y");
       args.push("--approval-mode", "yolo");
     } else {
@@ -154,9 +162,11 @@ export async function runAgy(opts) {
     if (effort) {
       args.push("--effort", effort);
     }
-    args.push("--dangerously-skip-permissions");
+    if (safetyMode === "autonomous") {
+      args.push("--dangerously-skip-permissions");
+    }
 
-    if (mode === "workspace-write") {
+    if (mode === "workspace-write" && safetyMode === "autonomous") {
       args.push("--mode", "accept-edits");
     } else {
       args.push("--mode", "plan");
@@ -171,8 +181,10 @@ export async function runAgy(opts) {
 
     const childEnv = {
       ...process.env,
-      GEMINI_CLI_TRUST_WORKSPACE: "true",
     };
+    if (trustWorkspace) {
+      childEnv.GEMINI_CLI_TRUST_WORKSPACE = "true";
+    }
 
     const proc = spawn(bin, args, {
       cwd: workspace,
