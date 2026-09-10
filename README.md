@@ -93,6 +93,20 @@ Inside the interactive session (`kumo ›`):
 
 ---
 
+## Features & Capabilities
+
+- **Zero API Keys**: Connects directly to your logged-in consumer subscriptions (**ChatGPT Plus / Pro** via Codex CLI and **Google AI Pro** via Antigravity / Gemini CLI).
+- **Dual-Provider Architecture**: Frontier reasoning orchestrator breaks down complex architecture and dispatches bounded execution tasks to high-throughput workers via local MCP stdio bridge.
+- **Multi-Chat Session Persistence**: Persistent local conversation index and turn logging under `~/.kumo/sessions/` with instant switching (`/chats`) and Markdown export (`/save`).
+- **Global Project Registry**: Automatically tracks workspaces with quick switching (`/projects` or `/cd <path>`).
+- **Provider-First Model Picker**: Arrow-key dialog (`/model` or `kumo model`) supporting Codex (OpenAI) and Antigravity (Google / Anthropic) with atomic flicker-free redraw and back navigation.
+- **Live Multi-Provider Quota Meters**: Real-time 5-hour, weekly, and monthly quota progress bars that dynamically adapt based on active orchestrator and worker providers.
+- **Prompt History & Smart Filtering**: Persistent command history (`~/.kumo/history.txt`) with automatic slash-command filtering (Up Arrow only cycles actual prompts).
+- **Context-Aware Smart Suggestions**: Project type detection (`package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`) with inline recommended prompt actions.
+- **Live Thinking Spinner & Timer**: Non-blocking animated terminal spinner with elapsed second timer and clean Ctrl+C task interruption.
+
+---
+
 ## Model Configuration & Arrow-Key Navigation
 
 Kumo provides dual-layer model configuration: an interactive arrow-key selector and direct CLI / in-session commands.
@@ -101,13 +115,10 @@ Kumo provides dual-layer model configuration: an interactive arrow-key selector 
 
 Launch the arrow-key menu by running `kumo model` in your terminal or typing `/model` inside an active interactive session:
 
-- **Arrow-Key Navigation**: Navigate options with `↑` / `↓`, press `Enter` to select, or press `Esc` / choose `Cancel` to return to your session without changes.
-- **Contained Terminal Rendering**: Cursor recalculation guarantees that scrolling through choices never erases session history, banners, or tutorial prompts above the menu.
-- **Configurable Areas**:
-  - **Apply Preset Profile**: Rapidly switch between balanced, performance, speed, and test presets.
-  - **Select Orchestrator Model**: Choose from available Codex models (`chatgpt-6-astra`, `gpt-5.6-luna`, `gpt-5.6-terra`, `chatgpt-5.6-sol`, `gpt-5.5`).
-  - **Select Worker Model**: Choose from available Antigravity models (`gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`).
-  - **Set Reasoning Effort**: Adjust reasoning levels independently for both the Orchestrator and Worker.
+- **Arrow-Key Navigation**: Navigate options with `↑` / `↓`, jump with `Home` / `End`, page with `PageUp` / `PageDown`, press `Enter` to select, or press `Left Arrow` / `Esc` to go back.
+- **Provider-First Model Selection**: Choose between **Codex (OpenAI)** and **Antigravity (Google / Anthropic)** for both Orchestrator and Worker models.
+- **Atomic Flicker-Free Redraw**: Uses single-write ANSI buffering so navigating choices never scrolls the terminal or pollutes session history.
+- **Dynamic Quota Synchronization**: The startup header and `/status` command automatically adapt their quota progress bars to reflect the provider chosen for each role.
 
 ### 2. Built-in Presets
 
@@ -147,7 +158,8 @@ kumo effort worker low
 kumo effort worker medium
 
 # Apply a preset profile
-kumo model use default
+kumo preset default
+kumo model use pro
 kumo model use test
 
 # Quick shorthand to set both orchestrator and worker
@@ -156,17 +168,33 @@ kumo model gpt-5.6-luna gemini-3.8-flash low
 
 ### 4. In-Session Slash Commands
 
-When working inside an interactive Kumo session (`kumo ›`), manage models on the fly without exiting:
+Inside an interactive Kumo session (`kumo ›`), manage sessions, workspaces, models, quotas, and history without exiting:
 
-- `/model`: Opens the interactive arrow-key menu
-- `/model <model>`: Switches orchestrator model (e.g. `/model luna`, `/model gpt-5.5`)
-- `/model worker <model> [effort]`: Switches worker model and effort (e.g. `/model worker opus`, `/model worker gemini-3.8-flash high`)
-- `/model use <preset>`: Applies a preset profile (e.g. `/model use pro`, `/model use test`)
-- `/effort <level>`: Sets orchestrator reasoning effort (`low`, `medium`, `high`, `max`)
-- `/effort worker <level>`: Sets worker reasoning effort (`low`, `medium`, `high`)
-- `/status`: Checks live account rate limits, remaining quotas, and provider health
-- `/clear`: Clears the screen and re-renders the header banner with active models
-- `/exit` or `/quit`: Closes the session
+#### Session & Workspaces
+- `/new`: Start a fresh conversation thread in the current workspace.
+- `/chats`: Interactive arrow-key menu to browse and switch previous conversations.
+- `/projects`: Interactive arrow-key menu to browse and switch registered project workspaces.
+- `/cd <path>`: Switch active workspace directory on the fly.
+- `/rename <title>`: Rename the active conversation thread.
+- `/save [file]`: Export conversation transcript to a Markdown document.
+
+#### Models & Reasoning
+- `/model`: Opens the interactive arrow-key model & provider picker.
+- `/model <name>`: Quick-switches orchestrator model (e.g. `/model astra`, `/model sol`, `/model gpt-5.5`).
+- `/model worker <name> [effort]`: Quick-switches worker model and effort (e.g. `/model worker opus`, `/model worker flash high`).
+- `/preset [name]`: Applies a configuration preset (e.g. `/preset pro`, `/preset speed`) or lists available presets.
+- `/effort <level>`: Sets orchestrator reasoning effort (`low`, `medium`, `high`, `max`).
+- `/effort worker <level>`: Sets worker reasoning effort (`low`, `medium`, `high`).
+
+#### Quotas, History & Utilities
+- `/status`, `/quota`: Checks live account rate limits, quota progress bars, and provider health.
+- `/refresh`: Re-fetches live quotas immediately from Codex and Antigravity.
+- `/history`: Displays recent prompt query history.
+- `/history clean`: Strips non-chat commands and settings changes from history file.
+- `/history clear` (or `/clear-history`): Completely wipes prompt history.
+- `/clear` (or `/cls`): Clears screen and re-renders the header banner.
+- `/help`: Displays categorized command reference.
+- `/exit` (or `/quit`): Exits session cleanly.
 
 ---
 
@@ -196,9 +224,10 @@ When working inside an interactive Kumo session (`kumo ›`), manage models on t
 
 ## Architecture & Extensibility
 
-The codebase implements a decoupled provider structure:
+The codebase implements a decoupled provider and data persistence structure:
 - **Orchestrators** ([`src/providers/orchestrators/`](src/providers/orchestrators/)):
   - `codex.js`: OpenAI Codex CLI adapter with dynamic MCP bridge injection.
+  - `codex-client.js`: Hidden-process Codex app client supporting streaming turns and rate-limit extraction.
   - `registry.js`: Provider registry allowing additional orchestrator adapters.
 - **Workers** ([`src/providers/workers/`](src/providers/workers/)):
   - `gemini.js`: Google Gemini adapter backed by Antigravity / Gemini CLI.
@@ -206,3 +235,10 @@ The codebase implements a decoupled provider structure:
 - **MCP Bridge** ([`src/bridge/`](src/bridge/)):
   - `prompts.js`: Role prompts for `explore`, `implement`, `test`, `research`, and `review`.
   - `agy-runner.js`: Subprocess executor enforcing timeout, permission sandboxes, and buffer management.
+  - `server.js`: Standard MCP stdio server with dynamic `--workspace` targeting.
+- **Session Persistence & Projects** ([`src/data/sessions.js`](src/data/sessions.js)):
+  - Project registry (`~/.kumo/projects.json`), multi-chat persistence, append-only turn logs (`~/.kumo/sessions/<hash>/`), and Markdown export.
+- **Terminal UI & Utilities** ([`src/utils/`](src/utils/)):
+  - `model-picker.js`: Interactive arrow-key navigation with atomic flicker-free redraw and provider-first selection.
+  - `history.js`: Readline history manager with slash-command filtering and history clearing.
+  - `spinner.js`: Non-blocking terminal thinking spinner with live elapsed second timer.
