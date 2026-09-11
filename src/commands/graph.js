@@ -4,7 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { c, badge, separator } from "../utils/ui.js";
 
 /**
@@ -43,7 +43,7 @@ export function inspectGraph(targetDir) {
   let latestCommit = null;
   let isStale = false;
   try {
-    const gitOut = execSync("git log -1 --format=%ct|%h|%s", {
+    const gitOut = execFileSync("git", ["log", "-1", "--format=%ct|%h|%s"], {
       cwd: targetDir,
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf-8",
