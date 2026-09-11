@@ -18,6 +18,24 @@ import { safeSpawn } from "../../utils/process.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+function getTaskSignature(item) {
+  if (!item) return "";
+  const raw = item.arguments || item.input || item.tool_input || item.args || item.task;
+  if (!raw) return "";
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed.task || parsed.prompt || parsed.query || raw.trim();
+    } catch {
+      return raw.trim();
+    }
+  }
+  if (typeof raw === "object") {
+    return raw.task || raw.prompt || raw.query || JSON.stringify(raw);
+  }
+  return String(raw);
+}
+
 export class CodexAppClient extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -313,15 +331,23 @@ export class CodexAppClient extends EventEmitter {
         // Tool call or item started
         if (!params.item) params.item = {};
         let itemId = params.item.id || params.item.callId || params.item.call_id;
+        const key = params.item.name || params.item.tool || params.item.type || "item";
+        const signature = getTaskSignature(params.item);
+
         if (!itemId) {
           itemId = randomUUID();
           params.item.id = itemId;
-          const key = params.item.name || params.item.tool || params.item.type || "item";
-          if (!this._pendingItemIds.has(key)) this._pendingItemIds.set(key, []);
-          this._pendingItemIds.get(key).push(itemId);
-        } else {
-          params.item.id = itemId;
         }
+
+        if (!this._pendingItemIds.has(key)) {
+          this._pendingItemIds.set(key, []);
+        }
+        this._pendingItemIds.get(key).push({
+          id: itemId,
+          signature,
+          timestamp: Date.now(),
+        });
+
         if (!params.item.model && this.workerModel) params.item.model = this.workerModel;
         if (!params.item.effort && this.workerEffort) params.item.effort = this.workerEffort;
         this.emit("item_started", params);
@@ -332,18 +358,31 @@ export class CodexAppClient extends EventEmitter {
         // Tool call or item completed
         if (!params.item) params.item = {};
         let itemId = params.item.id || params.item.callId || params.item.call_id;
-        if (!itemId) {
-          const key = params.item.name || params.item.tool || params.item.type || "item";
-          const queue = this._pendingItemIds.get(key);
-          if (queue && queue.length > 0) {
-            itemId = queue.shift();
-          } else {
-            itemId = randomUUID();
-          }
+        const key = params.item.name || params.item.tool || params.item.type || "item";
+        const queue = this._pendingItemIds.get(key) || [];
+        const signature = getTaskSignature(params.item);
+
+        if (itemId) {
+          // Direct ID provided — clean up matching pending record if present
+          const idx = queue.findIndex((entry) => entry.id === itemId);
+          if (idx !== -1) queue.splice(idx, 1);
           params.item.id = itemId;
         } else {
+          // Synthetic fallback path: match by signature first, then FIFO fallback
+          let matched = null;
+          if (signature) {
+            const idx = queue.findIndex((entry) => entry.signature && entry.signature === signature);
+            if (idx !== -1) {
+              matched = queue.splice(idx, 1)[0];
+            }
+          }
+          if (!matched && queue.length > 0) {
+            matched = queue.shift();
+          }
+          itemId = matched ? matched.id : randomUUID();
           params.item.id = itemId;
         }
+
         this.emit("item_completed", params);
         break;
       }
