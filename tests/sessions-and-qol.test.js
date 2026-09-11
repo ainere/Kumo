@@ -18,6 +18,11 @@ import {
   appendTurn,
   loadTurnLog,
   generateChatTitle,
+  getLiveLogDir,
+  getLiveLogPath,
+  setActiveLiveRun,
+  getActiveLiveRun,
+  clearActiveLiveRun,
 } from "../src/data/sessions.js";
 import { createSpinner } from "../src/utils/spinner.js";
 import { loadHistory, saveHistory, cleanHistory, clearHistory } from "../src/utils/history.js";
@@ -193,4 +198,89 @@ test("promptSelect handles non-interactive TTY fallback gracefully", async () =>
   });
   assert.strictEqual(result, null, "In non-TTY test runner, promptSelect must return null");
 });
+
+test("setActiveLiveRun, getActiveLiveRun, and clearActiveLiveRun track concurrent worker runs", () => {
+  const testDir = path.join(os.tmpdir(), "kumo-test-live-" + Date.now());
+  fs.mkdirSync(testDir, { recursive: true });
+
+  try {
+    const liveDir = getLiveLogDir(testDir);
+    assert.ok(fs.existsSync(liveDir), "Live log dir should exist");
+
+    const run1 = { runId: "run-1", tool: "worker_explore", timestamp: 1000 };
+    const run2 = { runId: "run-2", tool: "worker_implement", timestamp: 2000 };
+
+    setActiveLiveRun(testDir, run1);
+    setActiveLiveRun(testDir, run2);
+
+    // Retrieve specific runs
+    const found1 = getActiveLiveRun(testDir, "run-1");
+    assert.strictEqual(found1.tool, "worker_explore");
+
+    const found2 = getActiveLiveRun(testDir, "run-2");
+    assert.strictEqual(found2.tool, "worker_implement");
+
+    // Retrieve default (newest)
+    const newest = getActiveLiveRun(testDir);
+    assert.strictEqual(newest.runId, "run-2");
+
+    // Clear run 1
+    clearActiveLiveRun(testDir, "run-1");
+    assert.strictEqual(getActiveLiveRun(testDir, "run-1"), null);
+    assert.strictEqual(getActiveLiveRun(testDir, "run-2")?.tool, "worker_implement");
+
+    // Clear run 2
+    clearActiveLiveRun(testDir, "run-2");
+    assert.strictEqual(getActiveLiveRun(testDir), null);
+  } finally {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  }
+});
+
+test("live log file supports incremental chunk appending and seek-offset reading", () => {
+  const testDir = path.join(os.tmpdir(), "kumo-test-seek-" + Date.now());
+  fs.mkdirSync(testDir, { recursive: true });
+
+  try {
+    const logPath = getLiveLogPath(testDir, "test-seek-run");
+    assert.ok(logPath.includes("test-seek-run"));
+
+    // Write chunk 1
+    fs.appendFileSync(logPath, "Chunk 1: Starting exploration\n");
+
+    let offset = 0;
+    const readChunks = [];
+
+    // Read chunk 1 using seek offset
+    let stat = fs.statSync(logPath);
+    let bytesToRead = stat.size - offset;
+    let buf = Buffer.alloc(bytesToRead);
+    let fd = fs.openSync(logPath, "r");
+    let readBytes = fs.readSync(fd, buf, 0, bytesToRead, offset);
+    fs.closeSync(fd);
+    offset += readBytes;
+    readChunks.push(buf.toString("utf-8"));
+
+    assert.strictEqual(readChunks[0], "Chunk 1: Starting exploration\n");
+
+    // Write chunk 2
+    fs.appendFileSync(logPath, "Chunk 2: Found 3 files\n");
+
+    // Read chunk 2 using updated offset
+    stat = fs.statSync(logPath);
+    bytesToRead = stat.size - offset;
+    buf = Buffer.alloc(bytesToRead);
+    fd = fs.openSync(logPath, "r");
+    readBytes = fs.readSync(fd, buf, 0, bytesToRead, offset);
+    fs.closeSync(fd);
+    offset += readBytes;
+    readChunks.push(buf.toString("utf-8"));
+
+    assert.strictEqual(readChunks[1], "Chunk 2: Found 3 files\n");
+    assert.strictEqual(readChunks.join(""), "Chunk 1: Starting exploration\nChunk 2: Found 3 files\n");
+  } finally {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  }
+});
+
 

@@ -72,3 +72,29 @@ test("MAX_OUTPUT_BYTES is 1MB and output buffer slicing logic hard-caps total si
   assert.strictEqual(stdout.length, MAX_OUTPUT_BYTES);
   assert.strictEqual(stdout.slice(-10), "B".repeat(10));
 });
+
+test("MCP bridge tools expose optional model and effort schema properties", async () => {
+  const dummyWorkspace = path.resolve(__dirname, "../");
+  const transport = new StdioClientTransport({
+    command: "node",
+    args: [serverPath, "--workspace", dummyWorkspace],
+    cwd: dummyWorkspace,
+  });
+
+  const client = new Client(
+    { name: "test-client", version: "1.0.0" },
+    { capabilities: {} }
+  );
+
+  await client.connect(transport);
+
+  try {
+    const { tools } = await client.listTools();
+    for (const tool of tools) {
+      assert.ok(tool.inputSchema.properties.model, `${tool.name} should accept optional model`);
+      assert.ok(tool.inputSchema.properties.effort, `${tool.name} should accept optional effort`);
+    }
+  } finally {
+    await transport.close();
+  }
+});

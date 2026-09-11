@@ -116,3 +116,95 @@ test("clients do not force hardcoded models and accept custom model strings free
   assert.equal(agyEmpty.activeModel, null);
 });
 
+test("AgyAppClient guarantees stable matching item.id across item_started and item_completed", () => {
+  const client = new AgyAppClient();
+  const started = [];
+  const completed = [];
+
+  client.on("item_started", (p) => started.push(p));
+  client.on("item_completed", (p) => completed.push(p));
+
+  client._handleStreamEvent({
+    event: "step_update",
+    step_update: {
+      step_type: "tool_call",
+      tool_name: "worker_explore",
+      tool_input: { task: "inspect repo" },
+    },
+  });
+
+  client._handleStreamEvent({
+    event: "step_update",
+    step_update: {
+      step_type: "tool_call",
+      tool_name: "worker_explore",
+      state: "DONE",
+    },
+  });
+
+  assert.equal(started.length, 1);
+  assert.equal(completed.length, 1);
+  assert.ok(started[0].item.id, "item_started must carry a truthy item.id");
+  assert.equal(started[0].item.id, completed[0].item.id, "start and completed ids must match");
+});
+
+test("AgyAppClient and activeTools map handle concurrent tool calls without state clobbering", () => {
+  const client = new AgyAppClient();
+  const activeTools = new Map();
+
+  client.on("item_started", (params) => {
+    const item = params.item;
+    activeTools.set(item.id, item);
+  });
+  client.on("item_completed", (params) => {
+    activeTools.delete(params.item.id);
+  });
+
+  // Start tool 1
+  client._handleStreamEvent({
+    event: "step_update",
+    step_update: {
+      step_type: "tool_call",
+      tool_name: "worker_explore",
+      tool_input: { task: "task 1" },
+    },
+  });
+  // Start tool 2 concurrently
+  client._handleStreamEvent({
+    event: "step_update",
+    step_update: {
+      step_type: "tool_call",
+      tool_name: "worker_implement",
+      tool_input: { task: "task 2" },
+    },
+  });
+
+  assert.equal(activeTools.size, 2, "Both concurrent tools must be active simultaneously");
+
+  // Complete tool 1
+  client._handleStreamEvent({
+    event: "step_update",
+    step_update: {
+      step_type: "tool_call",
+      tool_name: "worker_explore",
+      state: "DONE",
+    },
+  });
+
+  assert.equal(activeTools.size, 1, "Tool 2 must remain active after tool 1 completes");
+  const remaining = Array.from(activeTools.values())[0];
+  assert.equal(remaining.name, "worker_implement");
+
+  // Complete tool 2
+  client._handleStreamEvent({
+    event: "step_update",
+    step_update: {
+      step_type: "tool_call",
+      tool_name: "worker_implement",
+      state: "DONE",
+    },
+  });
+
+  assert.equal(activeTools.size, 0, "All tools should be completed");
+});
+
