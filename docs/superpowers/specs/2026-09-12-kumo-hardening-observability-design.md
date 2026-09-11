@@ -82,7 +82,7 @@ A focused stream can continue to show live text while the timeline remains the r
 
 ### `/status`
 
-`/status` should become a unified run/account status screen rather than only a quota command. It should show:
+`/status` becomes a unified run/account status screen rather than only a quota command. It shows:
 
 - active run state or idle state
 - current phase and elapsed duration
@@ -92,24 +92,24 @@ A focused stream can continue to show live text while the timeline remains the r
 - Codex/Antigravity quota information when available
 - workspace and chat identifiers in a human-friendly form
 
-A machine-readable `kumo status --json`/equivalent path should be structured from the same status model where practical.
+A machine-readable `kumo status --json` command is added and derives its payload from the same normalized status model.
 
 ## Safety and diff-review
 
 ### Exact patch approval
 
-Diff-review becomes a true two-phase operation:
+Diff-review becomes a true two-phase operation. Diff-review is supported only for Git workspaces; non-Git workspaces fail with a clear error rather than falling back to prose-based validation.
 
 1. Capture workspace baseline state.
 2. Ask the worker to produce a proposed patch without applying it.
 3. Store the exact patch plus metadata: workspace identity, Git baseline, preview ID, creation time, and patch hash.
 4. Display the proposed patch and require approval.
 5. Before applying, verify the workspace baseline has not changed in a way that invalidates the preview.
-6. Validate the stored patch with `git apply --check` where possible.
-7. Apply the stored patch itself. Do not re-run the natural-language implementation request.
+6. Validate the stored patch with `git apply --check`.
+7. Apply the stored patch itself. Never re-run the natural-language implementation request after approval.
 8. Re-check the resulting workspace state and report the exact applied change.
 
-Expired, consumed, mismatched-workspace, or stale previews must be rejected safely.
+Expired, consumed, mismatched-workspace, or stale previews are rejected safely.
 
 ### Git state model
 
@@ -117,7 +117,7 @@ Replace filename-only snapshots with structured Git state sufficient to calculat
 
 The baseline must include enough information to distinguish Kumo's changes from pre-existing dirty work.
 
-Diff statistics must account for staged and unstaged changes.
+Diff statistics account for staged and unstaged changes.
 
 ## Provider contracts
 
@@ -134,15 +134,15 @@ Introduce a provider metadata/capability contract covering, as applicable:
 - interruption
 - reconnect/restart behavior
 
-The CLI and orchestration layer should consult these capabilities instead of assuming arbitrary CLIs accept provider-specific flags.
+The CLI and orchestration layer consult these capabilities instead of assuming arbitrary CLIs accept provider-specific flags.
 
-Generic providers must define their argument mapping explicitly. Dangerous write flags may only be emitted by adapters that declare support and should not be assumed for arbitrary binaries.
+Generic providers define their argument mapping explicitly. Dangerous write flags may only be emitted by adapters that declare support and are never assumed for arbitrary binaries.
 
-Claude or other providers that ignore a requested capability must either reject the unsupported option or clearly report that it is unavailable; silently accepting and ignoring a setting is not allowed.
+Providers that lack requested capabilities must either reject the unsupported option or clearly report it as unavailable; silently accepting and ignoring a setting is not allowed.
 
 ## Configuration
 
-Configuration is validated through one typed schema. CLI writes must parse booleans, numbers, enums, and strings according to that schema.
+Configuration is validated through one typed schema. CLI writes parse booleans, numbers, enums, and strings according to that schema.
 
 Provider config synchronization becomes read-modify-write:
 
@@ -151,19 +151,19 @@ Provider config synchronization becomes read-modify-write:
 - create files when absent
 - report synchronization failures rather than silently swallowing them
 
-Command resolution must distinguish explicit filesystem paths from commands resolved through `PATH`.
+Command resolution distinguishes explicit filesystem paths from commands resolved through `PATH`.
 
-Workspace identifiers must be platform-aware: case-insensitive normalization on Windows, case-preserving normalization on case-sensitive systems, with realpath behavior defined consistently for symlinks.
+Workspace identifiers are platform-aware: case-insensitive normalization on Windows, case-preserving normalization on case-sensitive systems, and consistent realpath behavior for symlinks.
 
-Version strings must come from the package version source of truth everywhere.
+Version strings come from the package version source of truth everywhere.
 
 ## Turn termination and the abrupt-chat bug
 
-Every started turn must have exactly one terminal outcome: completed, failed, interrupted, disconnected, or timed out.
+Every started turn has exactly one terminal outcome: completed, failed, interrupted, disconnected, or timed out.
 
-The REPL must never wait forever for `turn_completed`.
+The REPL must never wait indefinitely for a `turn_completed` event. The terminal outcome is resolved by the task lifecycle rather than by one provider-specific event.
 
-When any of the following occurs, the task lifecycle must transition to a terminal state and wake the REPL waiter:
+When any of the following occurs, the task lifecycle transitions to a terminal state and wakes the REPL waiter:
 
 - provider process exits
 - provider emits an unrecoverable/server error
@@ -172,11 +172,11 @@ When any of the following occurs, the task lifecycle must transition to a termin
 - stream becomes idle beyond the configured threshold
 - explicit user interrupt
 
-Provider `close` events may trigger one reconnect attempt when safe, but reconnecting must not silently abandon the original run. The original run must end with a clear disconnected/failure state, and the user must regain the prompt. A follow-up retry is a new run.
+Provider `close` events may trigger one reconnect attempt when safe, but reconnecting never silently abandons or retries the original run. The original run ends with a clear disconnected/failure state, the user regains the prompt, and any follow-up retry is a new run.
 
-For streams, track the last received event/data time and expose an idle timeout. Heartbeat/progress events reset the timer. Idle timeout should be configurable and conservative enough for legitimate model reasoning while guaranteeing recovery from silent hangs.
+Streaming clients track the time of the last received stdout/event/heartbeat. The default stream-idle timeout is **120 seconds**, configurable through the typed configuration schema. Any valid progress event resets the timer. On expiry, Kumo emits `stream_idle`, terminates the provider operation when possible, records the run as timed out, and returns control to the REPL.
 
-The UI should distinguish:
+The UI distinguishes:
 
 - completed normally
 - interrupted by user
@@ -184,15 +184,15 @@ The UI should distinguish:
 - provider timed out
 - provider returned an error
 
-A failed or disconnected run must not be recorded as a successful completion.
+A failed or disconnected run is never recorded as a successful completion.
 
 ## Error propagation
 
-Provider clients should normalize errors into structured terminal errors where possible, while retaining raw diagnostics for debug logs.
+Provider clients normalize errors into structured terminal errors where possible while retaining raw diagnostics for debug logs.
 
-Pending JSON-RPC requests must be rejected immediately when their process closes or encounters an unrecoverable error.
+Pending JSON-RPC requests are rejected immediately when their process closes or encounters an unrecoverable error.
 
-Client close/error handlers must be idempotent so the same failure cannot produce duplicate terminal transitions.
+Client close/error handlers are idempotent so the same failure cannot produce duplicate terminal transitions.
 
 ## Persistence and audit
 
@@ -203,7 +203,7 @@ Persist sufficient run metadata for completed/failed turns to support:
 - exported session transcripts
 - postmortem/debugging
 
-The live event stream may be ring-buffered for UI purposes, but terminal run summaries should not depend on an in-memory-only buffer.
+The live event stream may be ring-buffered for UI purposes, but terminal run summaries do not depend on an in-memory-only buffer.
 
 ## Testing strategy
 
@@ -216,6 +216,7 @@ Add unit/integration tests before implementation for:
 - stale preview is rejected
 - preview for another workspace is rejected
 - consumed/expired preview is rejected
+- non-Git diff-review is rejected
 - pre-existing dirty files do not appear as Kumo-created changes
 - staged and unstaged changes are both represented
 - paths with spaces and Unicode survive Git parsing
@@ -239,9 +240,10 @@ Add unit/integration tests before implementation for:
 
 - process close while awaiting a turn wakes the REPL
 - provider server error while awaiting a turn wakes the REPL
+- stdout close while awaiting a turn wakes the REPL
 - RPC pending request is rejected when the process dies
 - stream idle timeout terminates a run
-- provider reconnect does not leave the original run pending
+- provider reconnect does not leave the original run pending or silently retry it
 - interruption produces an explicit interrupted terminal state
 - duplicate close/error/complete signals do not double-finalize a run
 
@@ -251,6 +253,7 @@ Add unit/integration tests before implementation for:
 - worker/tool events maintain stable IDs
 - timeline reflects concurrent worker activity accurately
 - `/status` reflects the same lifecycle state as the live UI
+- `kumo status --json` matches the normalized status model
 - failed turns are not displayed as successful completions
 
 ## Delivery order
@@ -267,4 +270,4 @@ Phase 5: structured event persistence plus live timeline and unified `/status`.
 
 Phase 6: integration testing, failure injection, documentation, and cleanup.
 
-The first implementation milestone should be considered successful when a provider crash, stream hang, or server error can no longer leave the interactive REPL waiting indefinitely, and diff-review approval is guaranteed to apply the reviewed artifact rather than a newly generated implementation.
+The first implementation milestone succeeds when a provider crash, stream hang, or server error can no longer leave the interactive REPL waiting indefinitely, and diff-review approval is guaranteed to apply the reviewed artifact rather than a newly generated implementation.
