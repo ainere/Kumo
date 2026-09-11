@@ -62,6 +62,10 @@ Before performing substantive work, classify the task as either **root-only** or
 4. **Zero API Keys**:
    - Both systems run entirely on existing subscriptions (e.g. `codex login` and Google AI Pro / Antigravity login).
 
+5. **Bounded Scope & Granular Delegation**:
+   - **Never** delegate an open-ended mega-task (e.g. "audit everything and fix all problems") to a single worker tool call.
+   - Decompose complex workflows into bounded, sequential steps (explore specific files -> analyze -> implement focused diff -> run targeted test). Single worker calls should complete in under 60 seconds to avoid gateway and socket timeouts.
+
 ---
 
 ## Dynamic Model Tracking
@@ -84,8 +88,8 @@ Before performing substantive work, classify the task as either **root-only** or
    - Before completing tasks that establish durable project state, architectural decisions, reusable procedures, or handoffs, check and update the Obsidian vault if configured.
 
 3. **Immediate README Updates on Major Changes**:
-   - **Whenever a major change is made** (new features, CLI commands, workflow updates, configuration changes, or architectural shifts), **update [README.md](file:///d:/Projects/Kumo/README.md) immediately**. Do not leave documentation out of sync.
+   - **Whenever a major change is made** (new features, CLI commands, workflow updates, configuration changes, or architectural shifts), **update [README.md](README.md) immediately**. Do not leave documentation out of sync.
 
 ---
 
-For full orchestration strategies, refer to the skill at [.agents/skills/cross-provider-orchestrator/SKILL.md](file:///d:/Projects/Kumo/.agents/skills/cross-provider-orchestrator/SKILL.md).
+For full orchestration strategies, refer to the skill at [.agents/skills/cross-provider-orchestrator/SKILL.md](.agents/skills/cross-provider-orchestrator/SKILL.md).

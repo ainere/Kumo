@@ -8,11 +8,12 @@
  * Authentication: relies on the user's active Google AI Pro subscription login (zero API keys).
  */
 
-import { spawn, execSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { loadConfig } from "../config/settings.js";
+import { loadConfig, supportsEffort } from "../config/settings.js";
 import { formatIsoResetTime } from "../utils/ui.js";
+import { safeSpawn } from "../utils/process.js";
 
 /** Default timeout per invocation (5 minutes). */
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.GEMINI_TIMEOUT_MS || "300000", 10);
@@ -111,8 +112,8 @@ export async function runAgy(opts) {
 
   const {
     prompt,
-    model = process.env.GEMINI_MODEL || config.workerModel || "gemini-3.8-flash",
-    effort = process.env.GEMINI_EFFORT || process.env.WORKER_EFFORT || config.workerEffort || "low",
+    model = opts.model || process.env.GEMINI_MODEL || config.workerModel || null,
+    effort = opts.effort || process.env.GEMINI_EFFORT || process.env.WORKER_EFFORT || config.workerEffort || null,
     mode = "read-only",
     files = [],
     workspace = opts.cwd || process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd(),
@@ -138,6 +139,9 @@ export async function runAgy(opts) {
   if (previewDiff) {
     compositePrompt += `[DIFF PREVIEW MODE]\nYou are running in read-only diff preview mode. DO NOT modify any files on disk.\nCarefully analyze the workspace and produce a complete unified git diff (--- a/... +++ b/...) of the exact changes you propose to make, followed by an impact summary.\n\n`;
   }
+  if (workspace) {
+    compositePrompt += `[Target Workspace]\n${workspace}\nStay strictly inside this workspace directory. Do not explore parent directories or search external drives.\n\n`;
+  }
   if (files && files.length > 0) {
     compositePrompt += `[Relevant Files]\n${files.map((f) => `- ${f}`).join("\n")}\n\n`;
   }
@@ -145,21 +149,23 @@ export async function runAgy(opts) {
 
   if (isGeminiCli) {
     args.push("-p", compositePrompt);
-    args.push("-m", model);
+    if (model) {
+      args.push("-m", model);
+    }
     if (trustWorkspace) {
       args.push("--skip-trust");
     }
     if (mode === "workspace-write" && safetyMode === "autonomous") {
       args.push("-y");
       args.push("--approval-mode", "yolo");
-    } else {
-      args.push("--approval-mode", "plan");
     }
   } else {
     // agy CLI flags
     args.push("-p", compositePrompt);
-    args.push("--model", model);
-    if (effort) {
+    if (model) {
+      args.push("--model", model);
+    }
+    if (effort && supportsEffort(model)) {
       args.push("--effort", effort);
     }
     if (safetyMode === "autonomous") {
@@ -168,88 +174,101 @@ export async function runAgy(opts) {
 
     if (mode === "workspace-write" && safetyMode === "autonomous") {
       args.push("--mode", "accept-edits");
-    } else {
-      args.push("--mode", "plan");
     }
   }
 
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let settled = false;
+  const childEnv = {
+    ...process.env,
+  };
+  if (trustWorkspace) {
+    childEnv.GEMINI_CLI_TRUST_WORKSPACE = "true";
+  }
 
-    const childEnv = {
-      ...process.env,
-    };
-    if (trustWorkspace) {
-      childEnv.GEMINI_CLI_TRUST_WORKSPACE = "true";
+  const isTransientSocketError = (str) =>
+    /wsarecv|connection was forcibly closed|connection reset|ECONNRESET|streamGenerateContent/i.test(str || "");
+
+  const executeOnce = () =>
+    new Promise((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      let settled = false;
+
+      const proc = safeSpawn(bin, args, {
+        cwd: workspace,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: childEnv,
+      });
+
+      // Precise output buffering with hard cap
+      proc.stdout?.on("data", (chunk) => {
+        if (stdout.length < MAX_OUTPUT_BYTES) {
+          const remaining = MAX_OUTPUT_BYTES - stdout.length;
+          const str = chunk.toString();
+          stdout += str.length <= remaining ? str : str.slice(0, remaining);
+        }
+      });
+
+      proc.stderr?.on("data", (chunk) => {
+        if (stderr.length < MAX_OUTPUT_BYTES) {
+          const remaining = MAX_OUTPUT_BYTES - stderr.length;
+          const str = chunk.toString();
+          stderr += str.length <= remaining ? str : str.slice(0, remaining);
+        }
+      });
+
+      const timer = setTimeout(() => {
+        if (!settled) {
+          timedOut = true;
+          proc.kill("SIGTERM");
+          setTimeout(() => {
+            try {
+              proc.kill("SIGKILL");
+            } catch {
+              /* ignore */
+            }
+          }, 5000);
+        }
+      }, timeoutMs);
+
+      proc.on("close", (code) => {
+        settled = true;
+        clearTimeout(timer);
+
+        resolve({
+          ok: code === 0,
+          code: code ?? 1,
+          stdout: stdout.trim(),
+          stderr: stderr.trim(),
+          timedOut,
+        });
+      });
+
+      proc.on("error", (err) => {
+        settled = true;
+        clearTimeout(timer);
+
+        resolve({
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: `Failed to spawn CLI '${bin}': ${err.message}. Ensure '${bin}' is installed or set AGY_BIN.`,
+          timedOut: false,
+        });
+      });
+    });
+
+  let attempts = 0;
+  const maxAttempts = 2;
+  while (attempts < maxAttempts) {
+    attempts++;
+    const res = await executeOnce();
+    if (res.ok || !isTransientSocketError(res.stderr) || attempts >= maxAttempts) {
+      return res;
     }
-
-    const proc = spawn(bin, args, {
-      cwd: workspace,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: childEnv,
-      shell: false,
-    });
-
-    // Precise output buffering with hard cap
-    proc.stdout?.on("data", (chunk) => {
-      if (stdout.length < MAX_OUTPUT_BYTES) {
-        const remaining = MAX_OUTPUT_BYTES - stdout.length;
-        const str = chunk.toString();
-        stdout += str.length <= remaining ? str : str.slice(0, remaining);
-      }
-    });
-
-    proc.stderr?.on("data", (chunk) => {
-      if (stderr.length < MAX_OUTPUT_BYTES) {
-        const remaining = MAX_OUTPUT_BYTES - stderr.length;
-        const str = chunk.toString();
-        stderr += str.length <= remaining ? str : str.slice(0, remaining);
-      }
-    });
-
-    const timer = setTimeout(() => {
-      if (!settled) {
-        timedOut = true;
-        proc.kill("SIGTERM");
-        setTimeout(() => {
-          try {
-            proc.kill("SIGKILL");
-          } catch {
-            /* ignore */
-          }
-        }, 5000);
-      }
-    }, timeoutMs);
-
-    proc.on("close", (code) => {
-      settled = true;
-      clearTimeout(timer);
-
-      resolve({
-        ok: code === 0,
-        code: code ?? 1,
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-        timedOut,
-      });
-    });
-
-    proc.on("error", (err) => {
-      settled = true;
-      clearTimeout(timer);
-
-      resolve({
-        ok: false,
-        code: 1,
-        stdout: "",
-        stderr: `Failed to spawn CLI '${bin}': ${err.message}. Ensure '${bin}' is installed or set AGY_BIN.`,
-        timedOut: false,
-      });
-    });
-  });
+    // Wait briefly before retrying transient connection reset
+    await new Promise((r) => setTimeout(r, 1500));
+  }
 }
 
 /**
@@ -262,9 +281,8 @@ export async function getAgyUsage() {
 
   return new Promise((resolve) => {
     let stdout = "";
-    const proc = spawn(bin, ["-p", "/usage"], {
+    const proc = safeSpawn(bin, ["-p", "/usage"], {
       stdio: ["ignore", "pipe", "ignore"],
-      shell: false,
     });
 
     const timer = setTimeout(() => {
@@ -403,9 +421,8 @@ export async function getAgyModels() {
 
   return new Promise((resolve) => {
     let stdout = "";
-    const proc = spawn(bin, ["models"], {
+    const proc = safeSpawn(bin, ["models"], {
       stdio: ["ignore", "pipe", "ignore"],
-      shell: false,
     });
 
     const timer = setTimeout(() => {

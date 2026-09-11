@@ -16,9 +16,10 @@ import {
   applyPreset,
   resolveOrchestratorModel,
   resolveWorkerModel,
+  detectProviderForModel,
   isCodexModel,
 } from "../config/settings.js";
-import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
+import { createOrchestratorClient } from "../providers/orchestrators/registry.js";
 import { getAgyUsage } from "../bridge/agy-runner.js";
 import { launchInNewWindow } from "../utils/window-launcher.js";
 import { getCachedQuotas, saveCachedQuotas } from "../utils/quota-cache.js";
@@ -43,6 +44,7 @@ import {
   generateChatTitle,
   loadTurnLog,
 } from "../data/sessions.js";
+import { VERSION } from "../cli.js";
 
 function getOrchestratorPeriod(limits) {
   if (!limits) return "Monthly";
@@ -111,7 +113,7 @@ function renderHeader(workspace, config, codexLimits = null, agyUsage = null) {
 
   const sub = `${c.brightCyan}${orchModelFull}${c.reset} ${c.skyBlue}◄───[MCP]───►${c.reset} ${c.brightBlue}${workerModelFull}${c.reset}`;
 
-  console.log("\n" + getBanner("1.0.0", "cloud", sub));
+  console.log("\n" + getBanner(VERSION, "cloud", sub));
   console.log(separator(64));
 
   // Luminous blueish gradient sequence for metadata labels matching the banner & separator
@@ -272,27 +274,117 @@ export async function startCommand(opts = {}) {
   // Render header IMMEDIATELY (<5ms)
   renderHeader(currentWorkspace, config, codexLimits, agyUsage);
 
-  const client = new CodexAppClient({
-    env: {
-      ORCHESTRATOR_WORKSPACE: currentWorkspace,
-      KUMO_WORKSPACE: currentWorkspace,
-    },
-  });
-
+  let client = null;
   let isTurnActive = false;
   let activeToolName = null;
   let quotaInterval = null;
   const spinner = createSpinner("Thinking");
 
+  function attachClientListeners(cl) {
+    cl.on("delta", (chunk) => {
+      spinner.stop();
+      process.stdout.write(chunk);
+    });
+
+    cl.on("reasoning", () => {
+      if (!spinner.isActive()) {
+        spinner.start();
+      }
+    });
+
+    cl.on("turn_completed", () => {
+      spinner.stop();
+    });
+
+    cl.on("item_started", (params) => {
+      const item = params.item || {};
+      if (item.type === "tool_call" || item.type === "dynamic_tool_call" || item.type === "mcp_tool_call") {
+        activeToolName = item.name || item.tool || "tool";
+
+        let taskPreview = "";
+        const args = item.arguments || item.input || {};
+        if (typeof args === "string") {
+          try {
+            const parsed = JSON.parse(args);
+            taskPreview = parsed.task || "";
+          } catch {
+            taskPreview = args;
+          }
+        } else {
+          taskPreview = args.task || "";
+        }
+
+        const truncated = taskPreview.length > 80 ? taskPreview.slice(0, 77) + "..." : taskPreview;
+        const taskDisplay = truncated ? `\n    ${c.dim}${truncated}${c.reset}` : "";
+
+        spinner.stop();
+        process.stdout.write(`\n  ${c.dim}[worker]${c.reset} ${c.brightCyan}${activeToolName}${c.reset}${taskDisplay}\n`);
+      }
+    });
+
+    cl.on("item_completed", () => {
+      if (activeToolName) {
+        activeToolName = null;
+      }
+    });
+
+    cl.on("server_error", (err) => {
+      spinner.stop();
+      console.error(`\n${badge.fail} ${err.message || JSON.stringify(err)}`);
+    });
+
+    cl.on("close", async (code) => {
+      if (isTurnActive) {
+        spinner.stop();
+        isTurnActive = false;
+        console.error(`\n  ${badge.fail} Orchestrator process exited unexpectedly (code ${code}).`);
+        console.log(`  ${c.dim}Attempting to reconnect...${c.reset}`);
+
+        try {
+          await initClient();
+          console.log(`  ${badge.ok} Reconnected.\n`);
+        } catch (e) {
+          console.error(`  ${badge.fail} Reconnection failed: ${e.message}`);
+          console.log(`  ${c.dim}Type any prompt to retry, or /exit to quit.${c.reset}\n`);
+        }
+
+        rl.resume();
+        rl.prompt();
+      }
+    });
+  }
+
+  async function initClient() {
+    if (client) {
+      try {
+        await client.stop();
+      } catch {}
+    }
+
+    client = createOrchestratorClient({
+      provider: config.orchestratorProvider || detectProviderForModel(config.orchestratorModel),
+      model: config.orchestratorModel,
+      effort: config.reasoningEffort,
+      workspace: currentWorkspace,
+      env: {
+        ORCHESTRATOR_WORKSPACE: currentWorkspace,
+        KUMO_WORKSPACE: currentWorkspace,
+      },
+    });
+
+    attachClientListeners(client);
+    await client.start();
+    await client.startThread({
+      workspace: currentWorkspace,
+      model: config.orchestratorModel,
+      reasoningEffort: config.reasoningEffort,
+    });
+  }
+
   // Asynchronously initialize background client and fetch fresh live quotas
   (async () => {
     try {
-      await client.start();
-      await client.startThread({
-        workspace: currentWorkspace,
-        model: config.orchestratorModel,
-        reasoningEffort: config.reasoningEffort,
-      });
+      await initClient();
 
       const [liveCodex, liveAgy] = await Promise.all([
         client.getRateLimits().catch(() => null),
@@ -334,83 +426,7 @@ export async function startCommand(opts = {}) {
     quotaInterval.unref();
   }
 
-  // Set up event listeners on Codex client
-  client.on("delta", (chunk) => {
-    spinner.stop();
-    process.stdout.write(chunk);
-  });
 
-  client.on("reasoning", () => {
-    if (!spinner.isActive()) {
-      spinner.start();
-    }
-  });
-
-  client.on("turn_completed", () => {
-    spinner.stop();
-  });
-
-  client.on("item_started", (params) => {
-    const item = params.item || {};
-    if (item.type === "tool_call" || item.type === "dynamic_tool_call" || item.type === "mcp_tool_call") {
-      activeToolName = item.name || item.tool || "tool";
-
-      let taskPreview = "";
-      const args = item.arguments || item.input || {};
-      if (typeof args === "string") {
-        try {
-          const parsed = JSON.parse(args);
-          taskPreview = parsed.task || "";
-        } catch {
-          taskPreview = args;
-        }
-      } else {
-        taskPreview = args.task || "";
-      }
-
-      const truncated = taskPreview.length > 80 ? taskPreview.slice(0, 77) + "..." : taskPreview;
-      const taskDisplay = truncated ? `\n    ${c.dim}${truncated}${c.reset}` : "";
-
-      spinner.stop();
-      process.stdout.write(`\n  ${c.dim}[worker]${c.reset} ${c.brightCyan}${activeToolName}${c.reset}${taskDisplay}\n`);
-    }
-  });
-
-  client.on("item_completed", () => {
-    if (activeToolName) {
-      activeToolName = null;
-    }
-  });
-
-  client.on("server_error", (err) => {
-    spinner.stop();
-    console.error(`\n${badge.fail} ${err.message || JSON.stringify(err)}`);
-  });
-
-  client.on("close", async (code) => {
-    if (isTurnActive) {
-      spinner.stop();
-      isTurnActive = false;
-      console.error(`\n  ${badge.fail} Orchestrator process exited unexpectedly (code ${code}).`);
-      console.log(`  ${c.dim}Attempting to reconnect...${c.reset}`);
-
-      try {
-        await client.start();
-        await client.startThread({
-          workspace: currentWorkspace,
-          model: config.orchestratorModel,
-          reasoningEffort: config.reasoningEffort,
-        });
-        console.log(`  ${badge.ok} Reconnected.\n`);
-      } catch (e) {
-        console.error(`  ${badge.fail} Reconnection failed: ${e.message}`);
-        console.log(`  ${c.dim}Type any prompt to retry, or /exit to quit.${c.reset}\n`);
-      }
-
-      rl.resume();
-      rl.prompt();
-    }
-  });
 
   // Slash commands for auto-completion
   const SLASH_COMMANDS = [
@@ -887,8 +903,7 @@ export async function startCommand(opts = {}) {
           if (arg1 === "worker" && arg2) {
             const resolvedWorker = resolveWorkerModel(arg2);
             config.workerModel = resolvedWorker;
-            const isCodex = isCodexModel(resolvedWorker);
-            config.workerProvider = isCodex ? "codex" : "gemini";
+            config.workerProvider = detectProviderForModel(resolvedWorker);
             setConfigValue("workerModel", resolvedWorker);
             setConfigValue("workerProvider", config.workerProvider);
             if (parts[3]) {
@@ -898,7 +913,7 @@ export async function startCommand(opts = {}) {
             config = loadConfig();
             console.clear();
             renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-            console.log(`  ${badge.ok} Worker switched to ${c.brightBlue}${resolvedWorker}-${config.workerEffort || 'medium'}${c.reset}\n`);
+            console.log(`  ${badge.ok} Worker switched to ${c.brightBlue}${resolvedWorker}-${config.workerEffort || 'medium'}${c.reset} [${config.workerProvider}]\n`);
             setKumoTitle(currentWorkspace);
             rl.prompt();
             return;
@@ -906,18 +921,23 @@ export async function startCommand(opts = {}) {
 
           const rawTarget = (arg1 === "orchestrator" && arg2) ? arg2 : arg1;
           if (PRESETS[rawTarget]) {
+            const oldOrchProv = config.orchestratorProvider;
             applyPreset(rawTarget);
             config = loadConfig();
             console.clear();
             renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-            console.log(`  ${badge.ok} Applied preset '${rawTarget}': Orchestrator ${c.brightCyan}${config.orchestratorModel}-${config.reasoningEffort}${c.reset} • Worker ${c.brightBlue}${config.workerModel}-${config.workerEffort || "medium"}${c.reset}\n`);
+            console.log(`  ${badge.ok} Applied preset '${rawTarget}': Orchestrator ${c.brightCyan}${config.orchestratorModel}-${config.reasoningEffort}${c.reset} [${config.orchestratorProvider}] • Worker ${c.brightBlue}${config.workerModel}-${config.workerEffort || "medium"}${c.reset} [${config.workerProvider}]\n`);
             setKumoTitle(currentWorkspace);
             try {
-              await client.startThread({
-                workspace: currentWorkspace,
-                model: config.orchestratorModel,
-                reasoningEffort: config.reasoningEffort,
-              });
+              if (oldOrchProv !== config.orchestratorProvider) {
+                await initClient();
+              } else if (client) {
+                await client.startThread({
+                  workspace: currentWorkspace,
+                  model: config.orchestratorModel,
+                  reasoningEffort: config.reasoningEffort,
+                });
+              }
             } catch (e) {
               console.log(`  ${badge.warn} Thread update note: ${e.message}`);
             }
@@ -926,23 +946,28 @@ export async function startCommand(opts = {}) {
           }
 
           const resolvedOrch = resolveOrchestratorModel(rawTarget);
+          const oldOrchProv = config.orchestratorProvider;
+          const newOrchProv = detectProviderForModel(resolvedOrch);
           config.orchestratorModel = resolvedOrch;
-          const isOrch = isCodexModel(resolvedOrch);
-          config.orchestratorProvider = isOrch ? "codex" : "gemini";
+          config.orchestratorProvider = newOrchProv;
           setConfigValue("orchestratorModel", resolvedOrch);
-          setConfigValue("orchestratorProvider", config.orchestratorProvider);
+          setConfigValue("orchestratorProvider", newOrchProv);
           config = loadConfig();
           console.clear();
           renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-          console.log(`  ${badge.ok} Orchestrator switched to ${c.brightCyan}${resolvedOrch}-${config.reasoningEffort}${c.reset}\n`);
+          console.log(`  ${badge.ok} Orchestrator switched to ${c.brightCyan}${resolvedOrch}-${config.reasoningEffort}${c.reset} [${newOrchProv}]\n`);
           setKumoTitle(currentWorkspace);
 
           try {
-            await client.startThread({
-              workspace: currentWorkspace,
-              model: resolvedOrch,
-              reasoningEffort: config.reasoningEffort,
-            });
+            if (oldOrchProv !== newOrchProv) {
+              await initClient();
+            } else if (client) {
+              await client.startThread({
+                workspace: currentWorkspace,
+                model: resolvedOrch,
+                reasoningEffort: config.reasoningEffort,
+              });
+            }
           } catch (e) {
             console.log(`  ${badge.warn} Thread update note: ${e.message}`);
           }

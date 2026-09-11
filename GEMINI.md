@@ -34,3 +34,8 @@ Your role is the **execution worker** performing bounded tasks dispatched by the
    - When exploring repository architecture or symbols, consult `graphify-out/` (`GRAPH_REPORT.md`, `graph.json`) when present for high-level cluster maps.
    - Always verify symbols against active code files; do not treat a stale graph as ground truth.
    - Keep outputs structured, concise, and matching the requested return format.
+
+6. **Direct Thread Execution (No Subagents)**:
+   - NEVER call `invoke_subagent` or spawn background subagents. You are running as a headless execution worker; execute all tool calls directly in this single thread.
+   - Stay strictly within the targeted workspace directory. Do not search external directories or parent folders.
+

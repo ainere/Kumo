@@ -9,7 +9,7 @@
 
 **Kumo** is a modular CLI application that pairs frontier reasoning models with high-throughput execution workers across independent AI ecosystems.
 
-It coordinates frontier reasoning orchestrators (**ChatGPT 6 Astra / Sol / Terra / Luna / GPT-5.5** via Codex CLI) with high-throughput execution workers across **Google Gemini** (Gemini 3.8 / 3.7 Flash & Pro), **Anthropic Claude** (Claude 3.7 Sonnet, Claude Opus Thinking), and **open-weight models** (GPT-OSS) via the Antigravity engine — utilizing your existing subscriptions with **zero separate API keys**.
+It coordinate frontier models across **Anthropic Claude** (Claude Opus 4.6 Thinking, Claude Sonnet 4.6), **OpenAI ChatGPT / Codex** (ChatGPT 6 Astra, Sol, Terra, Luna, GPT-5.5), and **Google Gemini** (Gemini 3.8 / 3.7 Flash & Pro) — allowing **any provider to serve as Orchestrator or Worker** (e.g. Claude Opus Orchestrator + Codex Worker, or Codex Orchestrator + Gemini Worker) utilizing your existing subscriptions with **zero separate API keys**.
 
 ---
 
@@ -27,16 +27,16 @@ It coordinates frontier reasoning orchestrators (**ChatGPT 6 Astra / Sol / Terra
                   │   • Provider Dispatcher     │
                   └──────────────┬──────────────┘
                                  │
-       ┌─────────────────────────┴─────────────────────────┐
-       ▼                                                   ▼
-┌───────────────────────────┐               ┌───────────────────────────┐
-│   Orchestrator Provider   │               │      Worker Provider      │
-│  (OpenAI Codex / ChatGPT  │               │   (Google Gemini, Claude  │
-│   Astra / Sol / Terra)    │ ◄─── [MCP] ──►│    Opus/Sonnet, GPT-OSS)  │
-│   • Task decomposition    │               │   • File exploration      │
-│   • Architectural design  │               │   • Code implementation   │
-│   • Cross-model review    │               │   • Test generation & runs│
-└───────────────────────────┘               └───────────────────────────┘
+        ┌────────────────────────┴────────────────────────┐
+        ▼                                                  ▼
+┌───────────────────────────┐              ┌───────────────────────────┐
+│   Orchestrator Provider   │              │      Worker Provider      │
+│  (Codex, Antigravity, or  │              │  (Antigravity, Codex, or  │
+│       Claude Code)        │ ◄───[MCP]───►│       Claude Code)        │
+│   • Task decomposition    │              │   • File exploration      │
+│   • Architectural design  │              │   • Code implementation   │
+│   • Cross-model review    │              │   • Test generation & runs│
+└───────────────────────────┘              └───────────────────────────┘
 ```
 
 ---
@@ -175,12 +175,14 @@ Launch the arrow-key menu by running `kumo model` in your terminal or typing `/m
 | `default` | `chatgpt-6-astra` | `low` | `gemini-3.8-flash` | `medium` | Everyday development (ChatGPT Plus + Google AI Pro) |
 | `pro` | `chatgpt-6-astra` | `medium` | `gemini-3.8-flash` | `high` | Complex architecture & deep reasoning (ChatGPT Pro) |
 | `speed` | `chatgpt-5.6-sol` | `low` | `gemini-3.8-flash` | `low` | High-speed iteration and rapid turnaround |
+| `opus-astra` | `claude-opus-4-6-thinking` | `high` | `chatgpt-6-astra` | `low` | Inverted harness: Claude Opus Orchestrator + Codex Astra Worker |
+| `opus-flash` | `claude-opus-4-6-thinking` | `high` | `gemini-3.8-flash` | `medium` | Frontier reasoning Orchestrator (Opus) + high-speed Worker (Gemini) |
 | `gemini-3.7` | `chatgpt-6-astra` | `low` | `gemini-3.7-flash` | `medium` | Fallback worker compatibility |
 | `test` | `gpt-5.5` | `low` | `gemini-3.6-flash` | `low` | Lowest quota verification (ChatGPT Go tier safe) |
 
 ### 3. CLI Commands
 
-Configure models and reasoning efforts directly from your shell:
+Configure models, reasoning efforts, and providers directly from your shell:
 
 ```powershell
 # Open interactive arrow-key selector
@@ -189,13 +191,16 @@ kumo model
 # View full model configuration, active providers, and available presets
 kumo model list
 
-# Set orchestrator model and optional reasoning effort (supports aliases like luna, sol, terra, astra)
-kumo model orchestrator chatgpt-6-astra low
+# Set orchestrator model, optional effort, and optional provider
+# (auto-detects provider: e.g. claude-opus-4-6-thinking -> antigravity, chatgpt-6-astra -> codex)
+kumo model orchestrator claude-opus-4-6-thinking
+kumo model orchestrator chatgpt-6-astra low codex
 kumo model orchestrator gpt-5.6-luna medium
 
-# Set worker model and optional reasoning effort (supports aliases like opus, sonnet, flash)
+# Set worker model, optional effort, and optional provider
 kumo model worker gemini-3.8-flash medium
-kumo model worker claude-opus-4-6-thinking high
+kumo model worker chatgpt-6-astra low codex
+kumo model worker claude-opus-4-6-thinking
 
 # Set orchestrator reasoning effort independently (low, medium, high, max)
 kumo effort low
@@ -207,10 +212,13 @@ kumo effort worker medium
 
 # Apply a preset profile
 kumo preset default
+kumo preset opus-astra
+kumo preset opus-flash
 kumo model use pro
 kumo model use test
 
 # Quick shorthand to set both orchestrator and worker
+kumo model claude-opus-4-6-thinking gemini-3.8-flash
 kumo model gpt-5.6-luna gemini-3.8-flash low
 ```
 
@@ -262,6 +270,9 @@ Inside an interactive Kumo session (`kumo ›`), manage sessions, workspaces, mo
 | `kumo effort <level>` | Set orchestrator reasoning effort (`low`, `medium`, `high`, `max`) |
 | `kumo effort worker <level>` | Set worker reasoning effort (`low`, `medium`, `high`) |
 | `kumo model use <preset>` | Apply configuration preset (`default`, `pro`, `speed`, `gemini-3.7`, `test`) |
+| `kumo graph` | Inspect Graphify knowledge graph freshness and lifecycle status |
+| `kumo graph --check` | Verify graph freshness and exit with code 1 if stale (CI-safe) |
+| `kumo graph --refresh` | View instructions to regenerate the knowledge graph |
 | `kumo doctor` | Perform diagnostic check on system environment and logins |
 | `kumo config list` | View global configuration keys and values (`~/.kumo/config.json`) |
 | `kumo config set <key> <val>` | Update a specific configuration property |
@@ -272,21 +283,31 @@ Inside an interactive Kumo session (`kumo ›`), manage sessions, workspaces, mo
 
 ## Architecture & Extensibility
 
-The codebase implements a decoupled provider and data persistence structure:
+The codebase implements a decoupled, unhardcoded provider and data persistence structure:
 - **Orchestrators** ([`src/providers/orchestrators/`](src/providers/orchestrators/)):
-  - `codex.js`: OpenAI Codex CLI adapter with dynamic MCP bridge injection.
-  - `codex-client.js`: Hidden-process Codex app client supporting streaming turns and rate-limit extraction.
-  - `registry.js`: Provider registry allowing additional orchestrator adapters.
+  - `codex-client.js`: OpenAI Codex app-server client supporting streaming turns and live rate limits.
+  - `agy-client.js`: Google Antigravity / Gemini CLI client supporting stream-json turns.
+  - `claude-client.js`: Anthropic Claude Code CLI client supporting print mode turns.
+  - `opencode-client.js`: OpenCode CLI client.
+  - `commandcode-client.js`: CommandCode CLI client.
+  - `generic-client.js`: Universal CLI orchestrator adapter that can drive any arbitrary AI CLI tool without hardcoding.
+  - `registry.js`: Open-ended orchestrator provider registry and factory.
 - **Workers** ([`src/providers/workers/`](src/providers/workers/)):
   - `gemini.js`: Google Gemini adapter backed by Antigravity / Gemini CLI.
-  - `registry.js`: Worker registry supporting future agent execution engines.
+  - `codex.js`: OpenAI Codex execution worker (`codex exec`).
+  - `claude.js`: Anthropic Claude Code execution worker (`claude -p`).
+  - `opencode.js`: OpenCode execution worker.
+  - `commandcode.js`: CommandCode execution worker.
+  - `generic.js`: Universal worker adapter for any arbitrary CLI execution tool.
+  - `registry.js`: Open-ended worker provider registry.
 - **MCP Bridge** ([`src/bridge/`](src/bridge/)):
   - `prompts.js`: Role prompts for `explore`, `implement`, `test`, `research`, and `review`.
-  - `agy-runner.js`: Subprocess executor enforcing timeout, permission sandboxes, and buffer management.
-  - `server.js`: Standard MCP stdio server with dynamic `--workspace` targeting.
+  - `agy-runner.js`: Subprocess executor enforcing timeout, permission sandboxes, and transient socket reset recovery.
+  - `server.js`: Standard MCP stdio server routing requests dynamically to the active worker provider.
 - **Session Persistence & Projects** ([`src/data/sessions.js`](src/data/sessions.js)):
   - Project registry (`~/.kumo/projects.json`), multi-chat persistence, append-only turn logs (`~/.kumo/sessions/<hash>/`), and Markdown export.
 - **Terminal UI & Utilities** ([`src/utils/`](src/utils/)):
+  - `process.js`: Safe child-process execution preventing Node.js `[DEP0190]` security warnings.
   - `model-picker.js`: Interactive arrow-key navigation with atomic flicker-free redraw and provider-first selection.
   - `history.js`: Readline history manager with slash-command filtering and history clearing.
   - `spinner.js`: Non-blocking terminal thinking spinner with live elapsed second timer.

@@ -4,11 +4,12 @@
 
 import { runDiagnostics } from "../utils/diagnostics.js";
 import { getBanner, c, badge, separator } from "../utils/ui.js";
+import { VERSION } from "../cli.js";
 
 export async function doctorCommand() {
   const results = await runDiagnostics();
   const style = results.config.values.bannerStyle || "block";
-  console.log("\n" + getBanner("1.0.0", style));
+  console.log("\n" + getBanner(VERSION, style));
   console.log(separator(64));
   console.log(`  ${c.bold}System & Subscription Diagnostics${c.reset}`);
   console.log(separator(64) + "\n");

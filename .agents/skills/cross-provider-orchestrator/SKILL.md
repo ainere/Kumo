@@ -33,6 +33,10 @@ Both systems run on existing user subscriptions with **no separate API keys**.
    - Always refer to and update Graphify (`graphify-out/`) and Obsidian (`C:\Users\xenob\Documents\Obsidian\Agent-Workspace`).
    - **If a major change is made (features, commands, config, architecture), update `README.md` immediately.**
 
+5. **Keep Worker Invocations Bounded (<60s)**:
+   - **Never** dispatch unbounded, open-ended mega-tasks (e.g. "audit entire repo, find problems, and fix everything") to a worker tool.
+   - The worker runs as a headless single-turn process. Break tasks into granular, focused steps: explore specific modules, apply a bounded diff, or execute targeted tests. Each worker call should finish quickly (under 60s) to prevent gateway and socket timeouts.
+
 ---
 
 ## 2. Delegation Gate

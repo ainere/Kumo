@@ -2,13 +2,13 @@
  * codex-launcher.js — Dispatches Codex CLI targeting any workspace with dynamic MCP bridge.
  */
 
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../config/settings.js";
 import { syncAgentConfigs } from "../config/sync.js";
+import { safeSpawn } from "./process.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -92,11 +92,10 @@ export async function launchCodex(opts) {
   const { bin, args, env } = buildCodexInvocation(opts);
 
   return new Promise((resolve, reject) => {
-    const proc = spawn(bin, args, {
+    const proc = safeSpawn(bin, args, {
       cwd: opts.workspace || process.cwd(),
       stdio: "inherit",
       env,
-      shell: false,
     });
 
     proc.on("close", (code) => {

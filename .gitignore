@@ -1,6 +1,5 @@
 # Node / Dependencies
 node_modules/
-package-lock.json
 
 # Environment variables & secrets
 .env
@@ -34,6 +33,7 @@ coverage/
 # Antigravity session & transient IDE directories
 .system_generated/
 scratch/
+.agents/mcp_config.json
 
 # Knowledge graph & build artifacts
 graphify-out/

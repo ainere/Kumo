@@ -89,6 +89,14 @@ export async function graphCommand(opts = {}) {
 
   const info = inspectGraph(targetDir);
 
+  // --refresh: print regeneration instructions and exit
+  if (opts.refresh) {
+    console.log(`  ${c.cyan}To regenerate the Graphify knowledge graph:${c.reset}`);
+    console.log(`    Run ${c.bold}graphify${c.reset} in the workspace directory if installed.`);
+    console.log(`    This will rebuild ${c.dim}graphify-out/graph.json${c.reset} and ${c.dim}GRAPH_REPORT.md${c.reset}.\n`);
+    return info;
+  }
+
   if (opts.json) {
     console.log(JSON.stringify(info, null, 2));
     return info;
@@ -99,6 +107,8 @@ export async function graphCommand(opts = {}) {
     console.log(`  ${c.dim}Expected: ${info.graphJson}${c.reset}\n`);
     console.log(`  ${c.cyan}To generate a knowledge graph:${c.reset}`);
     console.log(`    Run ${c.bold}graphify${c.reset} in this directory if the toolchain is installed.\n`);
+    // --check: exit 1 if no graph exists
+    if (opts.check) process.exitCode = 1;
     return info;
   }
 
@@ -114,6 +124,8 @@ export async function graphCommand(opts = {}) {
     console.log(`    Commit Date: ${info.latestCommit.date.toLocaleString()}`);
     console.log(`    Message:     ${info.latestCommit.subject}`);
     console.log(`  ${c.dim}Warning: Active symbols or call paths may have changed. Verify against source code.${c.reset}\n`);
+    // --check: exit 1 if stale
+    if (opts.check) process.exitCode = 1;
   } else if (info.latestCommit) {
     console.log(`  ${badge.ok} ${c.green}Graph is FRESH (newer than commit ${info.latestCommit.hash}).${c.reset}\n`);
   } else {

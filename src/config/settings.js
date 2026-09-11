@@ -92,6 +92,30 @@ export const PRESETS = {
       workerEffort: "medium",
     },
   },
+  "opus-astra": {
+    name: "Opus 4.6 Thinking + Astra Low",
+    description: "Inverted harness: Claude Opus Orchestrator (Antigravity) + Codex Astra Worker",
+    config: {
+      orchestratorProvider: "antigravity",
+      orchestratorModel: "claude-opus-4-6-thinking",
+      reasoningEffort: "high",
+      workerProvider: "codex",
+      workerModel: "chatgpt-6-astra",
+      workerEffort: "low",
+    },
+  },
+  "opus-flash": {
+    name: "Opus 4.6 Thinking + Gemini 3.8 Flash",
+    description: "Frontier reasoning Orchestrator (Opus) + high-speed Worker (Gemini)",
+    config: {
+      orchestratorProvider: "antigravity",
+      orchestratorModel: "claude-opus-4-6-thinking",
+      reasoningEffort: "high",
+      workerProvider: "antigravity",
+      workerModel: "gemini-3.8-flash",
+      workerEffort: "medium",
+    },
+  },
   test: {
     name: "GPT-5.5 Low + Gemini 3.6 Low",
     description: "Lowest quota verification (ChatGPT Go safe)",
@@ -204,7 +228,7 @@ export function getConfigPath() {
  */
 export function isCodexModel(model, provider = null) {
   if (provider === "codex") return true;
-  if (provider === "antigravity" || provider === "gemini") return false;
+  if (provider === "antigravity" || provider === "gemini" || provider === "claude") return false;
   if (!model) return false;
   const norm = model.toLowerCase().trim();
   if (norm.startsWith("gemini-") || norm.startsWith("claude-") || norm.includes("gpt-oss")) {
@@ -214,36 +238,108 @@ export function isCodexModel(model, provider = null) {
 }
 
 /**
- * Resolve friendly or shorthand model names to canonical model IDs.
+ * Automatically determine the appropriate provider for a given model identifier.
+ *
+ * @param {string} model
+ * @param {string} [preferredProvider=null]
+ * @returns {string} provider ID ('codex', 'antigravity', 'claude', 'opencode', 'commandcode')
  */
-export function resolveOrchestratorModel(input) {
-  if (!input) return input;
-  const norm = input.toLowerCase().trim();
-  if (norm === "astra" || norm === "chatgpt-6" || norm === "6-astra") return "chatgpt-6-astra";
-  if (norm === "sol" || norm === "5.6-sol" || norm === "chatgpt-sol") return "chatgpt-5.6-sol";
-  if (norm === "terra" || norm === "5.6-terra") return "gpt-5.6-terra";
-  if (norm === "luna" || norm === "5.6-luna") return "gpt-5.6-luna";
-  if (norm === "gpt-5" || norm === "5.5" || norm === "gpt5") return "gpt-5.5";
-  return input;
+export function detectProviderForModel(model, preferredProvider = null) {
+  if (preferredProvider) {
+    const p = preferredProvider.toLowerCase().trim();
+    if (p === "gemini" || p === "agy") return "antigravity";
+    return p;
+  }
+
+  if (!model) return "codex";
+  const norm = model.toLowerCase().trim();
+
+  // OpenAI / Codex models
+  if (/^(chatgpt|gpt-5\b|gpt-5\.)|astra|sol|terra|luna/i.test(norm)) {
+    return "codex";
+  }
+
+  // Google Antigravity models (Gemini + open-weights)
+  if (norm.startsWith("gemini-") || norm.includes("gpt-oss")) {
+    return "antigravity";
+  }
+
+  // Claude models: supported both by Antigravity (Google AI Pro subscription) and Claude Code
+  if (norm.startsWith("claude-") || norm.includes("opus") || norm.includes("sonnet")) {
+    if (preferredProvider === "claude") return "claude";
+    return "antigravity";
+  }
+
+  // OpenCode / CommandCode models
+  if (norm.startsWith("opencode") || norm.startsWith("open-code")) {
+    return "opencode";
+  }
+  if (norm.startsWith("commandcode") || norm.startsWith("command-code")) {
+    return "commandcode";
+  }
+
+  return "codex";
 }
 
-export function resolveWorkerModel(input) {
+/**
+ * Canonical model resolution for any model alias across all providers.
+ */
+export function resolveModel(input) {
   if (!input) return input;
   const norm = input.toLowerCase().trim();
-  // Codex models
+
+  // Codex / OpenAI aliases
   if (norm === "astra" || norm === "chatgpt-6" || norm === "6-astra") return "chatgpt-6-astra";
   if (norm === "sol" || norm === "5.6-sol" || norm === "chatgpt-sol") return "chatgpt-5.6-sol";
   if (norm === "terra" || norm === "5.6-terra") return "gpt-5.6-terra";
   if (norm === "luna" || norm === "5.6-luna") return "gpt-5.6-luna";
   if (norm === "gpt-5" || norm === "5.5" || norm === "gpt5") return "gpt-5.5";
-  // Antigravity models
-  if (norm === "opus" || norm === "opus-4.6" || norm === "claude-opus" || norm === "opus-thinking") return "claude-opus-4-6-thinking";
-  if (norm === "sonnet" || norm === "sonnet-4.6" || norm === "claude-sonnet") return "claude-sonnet-4-6";
+
+  // Anthropic / Claude aliases
+  if (norm === "opus" || norm === "opus-4.6" || norm === "claude-opus" || norm === "opus-thinking" || norm === "claude-opus-4.6") {
+    return "claude-opus-4-6-thinking";
+  }
+  if (norm === "sonnet" || norm === "sonnet-4.6" || norm === "claude-sonnet" || norm === "claude-sonnet-4.6") {
+    return "claude-sonnet-4-6";
+  }
+
+  // Google / Gemini aliases
   if (norm === "flash" || norm === "3.8" || norm === "3.8-flash" || norm === "gemini-3.8") return "gemini-3.8-flash";
   if (norm === "3.7" || norm === "3.7-flash" || norm === "gemini-3.7") return "gemini-3.7-flash";
   if (norm === "3.6" || norm === "3.6-flash" || norm === "gemini-3.6") return "gemini-3.6-flash";
   if (norm === "pro" || norm === "3.1" || norm === "3.1-pro" || norm === "gemini-3.1") return "gemini-3.1-pro";
   if (norm === "oss" || norm === "120b" || norm === "gpt-oss") return "gpt-oss-120b";
+
   return input;
+}
+
+/**
+ * Resolve friendly or shorthand model names to canonical model IDs.
+ */
+export function resolveOrchestratorModel(input) {
+  return resolveModel(input);
+}
+
+export function resolveWorkerModel(input) {
+  return resolveModel(input);
+}
+
+/**
+ * Check whether a model supports the CLI `--effort` flag in Antigravity.
+ * Claude models and models with predefined suffixes do not support `--effort`.
+ *
+ * @param {string} model
+ * @returns {boolean}
+ */
+export function supportsEffort(model) {
+  if (!model) return false;
+  const norm = model.toLowerCase().trim();
+  if (norm.startsWith("claude-") || norm.includes("opus") || norm.includes("sonnet")) {
+    return false;
+  }
+  if (norm.endsWith("-low") || norm.endsWith("-medium") || norm.endsWith("-high")) {
+    return false;
+  }
+  return norm.startsWith("gemini-") || norm.startsWith("chatgpt-") || norm.startsWith("gpt-5");
 }
 

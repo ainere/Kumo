@@ -3,6 +3,9 @@
  */
 
 import { Command } from "commander";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { startCommand } from "./commands/start.js";
 import { runCommand } from "./commands/run.js";
 import { doctorCommand } from "./commands/doctor.js";
@@ -13,13 +16,18 @@ import { bannerCommand } from "./commands/banner.js";
 import { statusCommand } from "./commands/status.js";
 import { graphCommand } from "./commands/graph.js";
 
+// Read version once from package.json — single source of truth
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"));
+export const VERSION = pkg.version;
+
 export function createCli() {
   const program = new Command();
 
   program
     .name("kumo")
     .description("KUMO — Cross-provider CLI orchestrator pairing frontier reasoning models with high-speed execution workers")
-    .version("1.0.0");
+    .version(VERSION);
 
   // Default interactive command (launches new window and closes old CMD by default)
   program
@@ -139,8 +147,18 @@ export function createCli() {
     .description("Inspect Graphify knowledge graph freshness and lifecycle status")
     .option("-d, --dir <path>", "Target workspace directory")
     .option("--json", "Output status as JSON")
+    .option("--check", "Exit with code 1 if graph is stale (useful for CI/scripts)")
+    .option("--refresh", "Print instructions to regenerate the knowledge graph")
     .action(async (opts) => {
       await graphCommand(opts);
+    });
+
+  // Version command (explicit subcommand in addition to -V flag)
+  program
+    .command("version")
+    .description("Print the Kumo version")
+    .action(() => {
+      console.log(VERSION);
     });
 
   return program;

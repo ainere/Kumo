@@ -1,7 +1,7 @@
 # Kumo Cross-Provider Orchestrator Configuration
 # Automatically synchronized with active user settings.
-# Active Orchestrator: chatgpt-6-astra (low)
-# Active Worker:       gpt-5.6-luna (medium)
+# Active Orchestrator: chatgpt-6-astra (low) [codex]
+# Active Worker:       gemini-3.8-flash (medium) [gemini]
 
 model = "chatgpt-6-astra"
 model_reasoning_effort = "low"
@@ -12,7 +12,7 @@ approval_policy = "on-request"
 enabled = true
 max_concurrent_threads_per_session = 4
 
-[mcp_servers.gemini-bridge]
+[mcp_servers.kumo-bridge]
 command = "node"
 args = ["src/bridge/server.js"]
 env = {}

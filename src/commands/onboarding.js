@@ -7,9 +7,10 @@ import { runDiagnostics } from "../utils/diagnostics.js";
 import { PRESETS, applyPreset } from "../config/settings.js";
 import { promptSelect } from "../utils/model-picker.js";
 import { c, badge, separator, getBanner } from "../utils/ui.js";
+import { VERSION } from "../cli.js";
 
 export async function runOnboarding() {
-  console.log("\n" + getBanner("1.0.0", "cloud"));
+  console.log("\n" + getBanner(VERSION, "cloud"));
   console.log(separator(64));
   console.log(`  ${c.bold}${c.brightCyan}Welcome to KUMO (雲)${c.reset} — Cross-Provider AI Orchestrator\n`);
   console.log(`  ${c.dim}First-time setup — checking your environment:${c.reset}\n`);

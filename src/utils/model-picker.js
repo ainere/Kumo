@@ -25,6 +25,8 @@ export const PRESET_SUMMARIES = {
   pro: "Astra Medium + Gemini 3.8 High",
   speed: "Sol Low + Gemini 3.8 Low",
   "gemini-3.7": "Astra Low + Gemini 3.7 Medium",
+  "opus-astra": "Opus 4.6 Thinking + Astra Low",
+  "opus-flash": "Opus 4.6 Thinking + Gemini 3.8 Flash",
   test: "GPT-5.5 Low + Gemini 3.6 Low",
 };
 

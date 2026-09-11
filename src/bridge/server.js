@@ -12,8 +12,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { runAgy } from "./agy-runner.js";
+import { getWorker } from "../providers/workers/registry.js";
 import { SYSTEM_PROMPTS, getSystemPrompt } from "./prompts.js";
-import { loadConfig } from "../config/settings.js";
+import { loadConfig, detectProviderForModel } from "../config/settings.js";
+import { VERSION } from "../cli.js";
 
 // Parse CLI flags
 let workspaceDir = process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd();
@@ -220,21 +222,34 @@ function formatResult(result, toolName) {
 }
 
 const server = new McpServer({
-  name: "codex-gemini-bridge",
-  version: "1.0.0",
-  description: "Bridges frontier orchestrators to execution workers with dynamic workspace resolution and safety guardrails.",
+  name: "kumo-worker-bridge",
+  version: VERSION,
+  description: "Bridges frontier orchestrators to execution workers across providers with dynamic workspace resolution and safety guardrails.",
 });
+
+/**
+ * Dispatch task to configured worker provider (Antigravity, Codex, Claude, etc.).
+ */
+export async function dispatchWorkerTask(opts) {
+  const config = loadConfig();
+  const workerProvider =
+    process.env.KUMO_WORKER_PROVIDER ||
+    config.workerProvider ||
+    detectProviderForModel(opts.model || modelOverride || config.workerModel);
+  const worker = getWorker(workerProvider);
+  return worker.executeTask(opts);
+}
 
 // Handler implementations
 async function handleExplore({ task, files }) {
-  const result = await runAgy({
+  const result = await dispatchWorkerTask({
     prompt: task,
     mode: "read-only",
     files: files || [],
     workspace: workspaceDir,
     model: modelOverride || undefined,
     effort: effortOverride || undefined,
-    systemPrompt: getSystemPrompt("explore", { workerModel: modelOverride, workerEffort: effortOverride }),
+    systemPrompt: getSystemPrompt("explore", { workerModel: modelOverride, workerEffort: effortOverride, workspace: workspaceDir }),
   });
   return formatResult(result, "worker_explore");
 }
@@ -245,7 +260,7 @@ async function handleImplement({ task, files, confirm, previewId }) {
 
   // If in diff-review mode and confirmation has not been provided
   if (safetyMode === "diff-review" && !confirm) {
-    const result = await runAgy({
+    const result = await dispatchWorkerTask({
       prompt: task,
       mode: "read-only",
       previewDiff: true,
@@ -254,7 +269,7 @@ async function handleImplement({ task, files, confirm, previewId }) {
       workspace: workspaceDir,
       model: modelOverride || undefined,
       effort: effortOverride || undefined,
-      systemPrompt: getSystemPrompt("implement", { workerModel: modelOverride, workerEffort: effortOverride }),
+      systemPrompt: getSystemPrompt("implement", { workerModel: modelOverride, workerEffort: effortOverride, workspace: workspaceDir }),
     });
 
     const formatted = formatResult(result, "worker_implement");
@@ -269,7 +284,7 @@ async function handleImplement({ task, files, confirm, previewId }) {
 
   const preFiles = getGitStatus(workspaceDir);
 
-  const result = await runAgy({
+  const result = await dispatchWorkerTask({
     prompt: task,
     mode: "workspace-write",
     safetyMode: "autonomous",
@@ -277,7 +292,7 @@ async function handleImplement({ task, files, confirm, previewId }) {
     workspace: workspaceDir,
     model: modelOverride || undefined,
     effort: effortOverride || undefined,
-    systemPrompt: getSystemPrompt("implement", { workerModel: modelOverride, workerEffort: effortOverride }),
+    systemPrompt: getSystemPrompt("implement", { workerModel: modelOverride, workerEffort: effortOverride, workspace: workspaceDir }),
   });
 
   const formatted = formatResult(result, "worker_implement");
@@ -305,7 +320,7 @@ async function handleTest({ task, files, confirm, previewId }) {
   const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
 
   if (safetyMode === "diff-review" && !confirm) {
-    const result = await runAgy({
+    const result = await dispatchWorkerTask({
       prompt: task,
       mode: "read-only",
       previewDiff: true,
@@ -314,7 +329,7 @@ async function handleTest({ task, files, confirm, previewId }) {
       workspace: workspaceDir,
       model: modelOverride || undefined,
       effort: effortOverride || undefined,
-      systemPrompt: getSystemPrompt("test", { workerModel: modelOverride, workerEffort: effortOverride }),
+      systemPrompt: getSystemPrompt("test", { workerModel: modelOverride, workerEffort: effortOverride, workspace: workspaceDir }),
     });
 
     const formatted = formatResult(result, "worker_test");
@@ -329,7 +344,7 @@ async function handleTest({ task, files, confirm, previewId }) {
 
   const preFiles = getGitStatus(workspaceDir);
 
-  const result = await runAgy({
+  const result = await dispatchWorkerTask({
     prompt: task,
     mode: "workspace-write",
     safetyMode: "autonomous",
@@ -337,7 +352,7 @@ async function handleTest({ task, files, confirm, previewId }) {
     workspace: workspaceDir,
     model: modelOverride || undefined,
     effort: effortOverride || undefined,
-    systemPrompt: getSystemPrompt("test", { workerModel: modelOverride, workerEffort: effortOverride }),
+    systemPrompt: getSystemPrompt("test", { workerModel: modelOverride, workerEffort: effortOverride, workspace: workspaceDir }),
   });
 
   const formatted = formatResult(result, "worker_test");
@@ -361,27 +376,27 @@ async function handleTest({ task, files, confirm, previewId }) {
 }
 
 async function handleResearch({ task, files }) {
-  const result = await runAgy({
+  const result = await dispatchWorkerTask({
     prompt: task,
     mode: "read-only",
     files: files || [],
     workspace: workspaceDir,
     model: modelOverride || undefined,
     effort: effortOverride || undefined,
-    systemPrompt: getSystemPrompt("research", { workerModel: modelOverride, workerEffort: effortOverride }),
+    systemPrompt: getSystemPrompt("research", { workerModel: modelOverride, workerEffort: effortOverride, workspace: workspaceDir }),
   });
   return formatResult(result, "worker_research");
 }
 
 async function handleReview({ task, files }) {
-  const result = await runAgy({
+  const result = await dispatchWorkerTask({
     prompt: task,
     mode: "read-only",
     files: files || [],
     workspace: workspaceDir,
     model: modelOverride || undefined,
     effort: effortOverride || undefined,
-    systemPrompt: getSystemPrompt("review", { workerModel: modelOverride, workerEffort: effortOverride }),
+    systemPrompt: getSystemPrompt("review", { workerModel: modelOverride, workerEffort: effortOverride, workspace: workspaceDir }),
   });
   return formatResult(result, "worker_review");
 }

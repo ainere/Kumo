@@ -23,8 +23,14 @@ export function getWorkerPreamble(opts = {}) {
   const orchEffort = opts.reasoningEffort || config.reasoningEffort || "low";
   const workerModel = opts.workerModel || config.workerModel || "execution worker";
   const workerEffort = opts.workerEffort || config.workerEffort || "medium";
+  const workspace = opts.workspace || config.workspace || "";
 
   return `You are the Execution Worker (running on ${workerModel}, reasoning effort: ${workerEffort}), dispatched by the Root Orchestrator (running on ${orchModel}, reasoning effort: ${orchEffort}). The orchestrator has already handled planning, scoping, and requirements. Focus only on executing the assigned task.
+
+[Critical Execution Rules]
+- NEVER call \`invoke_subagent\` or spawn background subagents. You are running as a headless execution worker; execute all file operations, code edits, and terminal commands directly in this single thread.
+- Stay strictly within the assigned workspace${workspace ? ` (${workspace})` : ""}. Do not search external directories, parent folders, or system drives.
+- Do not engage in open-ended brainstorming, interactive dialogue, or multi-phase surveys. Execute the bounded instructions directly, concisely, and return immediately.
 
 [Superpowers Skills Policy]
 If you have access to the "superpowers" plugin or similar planning skills, the following rules apply because the orchestrator already handles these responsibilities:
