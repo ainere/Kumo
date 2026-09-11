@@ -7,6 +7,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findCodexBinary } from "./codex.js";
@@ -29,6 +30,7 @@ export class CodexAppClient extends EventEmitter {
     this.threadId = null;
     this.activeTurnId = null;
     this.rateLimits = null;
+    this._pendingItemIds = new Map();
   }
 
   /**
@@ -164,6 +166,8 @@ export class CodexAppClient extends EventEmitter {
 
     const workerModel = opts.workerModel || config.workerModel || null;
     const workerEffort = opts.workerEffort || config.workerEffort || null;
+    this.workerModel = workerModel;
+    this.workerEffort = workerEffort;
     const orchModel = opts.model || config.orchestratorModel || null;
     const orchEffort = opts.reasoningEffort || config.reasoningEffort || null;
 
@@ -288,6 +292,10 @@ export class CodexAppClient extends EventEmitter {
     const method = msg.method;
     const params = msg.params || {};
 
+    if (process.env.KUMO_DEBUG) {
+      console.error(`[KUMO_DEBUG] codex-client notification (${method}):`, JSON.stringify(params));
+    }
+
     this.emit("notification", msg);
 
     switch (method) {
@@ -301,15 +309,44 @@ export class CodexAppClient extends EventEmitter {
         this.emit("reasoning", params.delta || "");
         break;
 
-      case "item/started":
+      case "item/started": {
         // Tool call or item started
+        if (!params.item) params.item = {};
+        let itemId = params.item.id || params.item.callId || params.item.call_id;
+        if (!itemId) {
+          itemId = randomUUID();
+          params.item.id = itemId;
+          const key = params.item.name || params.item.tool || params.item.type || "item";
+          if (!this._pendingItemIds.has(key)) this._pendingItemIds.set(key, []);
+          this._pendingItemIds.get(key).push(itemId);
+        } else {
+          params.item.id = itemId;
+        }
+        if (!params.item.model && this.workerModel) params.item.model = this.workerModel;
+        if (!params.item.effort && this.workerEffort) params.item.effort = this.workerEffort;
         this.emit("item_started", params);
         break;
+      }
 
-      case "item/completed":
+      case "item/completed": {
         // Tool call or item completed
+        if (!params.item) params.item = {};
+        let itemId = params.item.id || params.item.callId || params.item.call_id;
+        if (!itemId) {
+          const key = params.item.name || params.item.tool || params.item.type || "item";
+          const queue = this._pendingItemIds.get(key);
+          if (queue && queue.length > 0) {
+            itemId = queue.shift();
+          } else {
+            itemId = randomUUID();
+          }
+          params.item.id = itemId;
+        } else {
+          params.item.id = itemId;
+        }
         this.emit("item_completed", params);
         break;
+      }
 
       case "turn/completed":
         this.activeTurnId = null;

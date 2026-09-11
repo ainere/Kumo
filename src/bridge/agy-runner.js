@@ -122,6 +122,8 @@ export async function runAgy(opts) {
     trustWorkspace = opts.trustWorkspace ?? (process.env.KUMO_TRUST_WORKSPACE !== "false" && process.env.KUMO_SKIP_TRUST !== "false" && (config.trustWorkspace !== false)),
     previewDiff = opts.previewDiff || false,
     systemPrompt,
+    onChunk = opts.onChunk || null,
+    liveLogPath = opts.liveLogPath || null,
   } = opts;
 
   let bin = getCliBinary();
@@ -202,6 +204,12 @@ export async function runAgy(opts) {
 
       // Precise output buffering with hard cap
       proc.stdout?.on("data", (chunk) => {
+        if (onChunk) {
+          try { onChunk("stdout", chunk); } catch {}
+        }
+        if (liveLogPath) {
+          try { fs.appendFileSync(liveLogPath, chunk); } catch {}
+        }
         if (stdout.length < MAX_OUTPUT_BYTES) {
           const remaining = MAX_OUTPUT_BYTES - stdout.length;
           const str = chunk.toString();
@@ -210,6 +218,12 @@ export async function runAgy(opts) {
       });
 
       proc.stderr?.on("data", (chunk) => {
+        if (onChunk) {
+          try { onChunk("stderr", chunk); } catch {}
+        }
+        if (liveLogPath) {
+          try { fs.appendFileSync(liveLogPath, chunk); } catch {}
+        }
         if (stderr.length < MAX_OUTPUT_BYTES) {
           const remaining = MAX_OUTPUT_BYTES - stderr.length;
           const str = chunk.toString();
@@ -265,6 +279,13 @@ export async function runAgy(opts) {
     const res = await executeOnce();
     if (res.ok || !isTransientSocketError(res.stderr) || attempts >= maxAttempts) {
       return res;
+    }
+    const retryMarker = "\n[retrying worker call...]\n";
+    if (onChunk) {
+      try { onChunk("stdout", Buffer.from(retryMarker)); } catch {}
+    }
+    if (liveLogPath) {
+      try { fs.appendFileSync(liveLogPath, retryMarker); } catch {}
     }
     // Wait briefly before retrying transient connection reset
     await new Promise((r) => setTimeout(r, 1500));

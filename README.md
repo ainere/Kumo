@@ -152,6 +152,7 @@ Kumo provides two headless safety modes for worker execution (`kumo config set s
 - **Prompt History & Smart Filtering**: Persistent command history (`~/.kumo/history.txt`) with automatic slash-command filtering (Up Arrow only cycles actual prompts).
 - **Context-Aware Smart Suggestions**: Project type detection (`package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`) with inline recommended prompt actions.
 - **Live Thinking Spinner & Timer**: Non-blocking animated terminal spinner with elapsed second timer and clean Ctrl+C task interruption.
+- **Live Agent Visibility & Focus Switching**: Real-time worker output streaming with side-channel log tailing, model & effort indicators (`gemini-3.8-flash, effort: medium`), dimmed reasoning deltas, ring-buffered streams, and `Tab` key stream focus switching between Orchestrator and active Worker subprocesses.
 
 ---
 

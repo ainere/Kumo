@@ -186,3 +186,88 @@ export function generateChatTitle(firstPrompt) {
   const clean = firstPrompt.replace(/\s+/g, " ").trim();
   return clean.length > 50 ? clean.slice(0, 47) + "..." : clean;
 }
+
+// ── Live Worker Streaming Logs ──
+
+export function getLiveLogDir(workspacePath) {
+  const hash = hashWorkspace(workspacePath);
+  const dir = path.join(DATA_DIR, "sessions", hash, "live");
+  ensureDir(dir);
+  return dir;
+}
+
+export function getLiveLogPath(workspacePath, runId) {
+  const dir = getLiveLogDir(workspacePath);
+  return path.join(dir, `live-${runId}.log`);
+}
+
+export function setActiveLiveRun(workspacePath, info) {
+  try {
+    const dir = getLiveLogDir(workspacePath);
+    const activeFile = path.join(dir, "active.json");
+    let runs = {};
+    if (fs.existsSync(activeFile)) {
+      try {
+        runs = JSON.parse(fs.readFileSync(activeFile, "utf-8"));
+      } catch {}
+    }
+    if (runs.runId && !runs[runs.runId]) {
+      runs = { [runs.runId]: runs };
+    }
+    if (info && info.runId) {
+      runs[info.runId] = info;
+    }
+    fs.writeFileSync(activeFile, JSON.stringify(runs, null, 2), "utf-8");
+  } catch {
+    /* ignore */
+  }
+}
+
+export function getActiveLiveRun(workspacePath, runId) {
+  try {
+    const dir = getLiveLogDir(workspacePath);
+    const activeFile = path.join(dir, "active.json");
+    if (fs.existsSync(activeFile)) {
+      const data = JSON.parse(fs.readFileSync(activeFile, "utf-8"));
+      if (runId) {
+        if (data.runId === runId) return data;
+        return data[runId] || null;
+      }
+      if (data.runId) return data;
+      const keys = Object.keys(data);
+      if (keys.length > 0) {
+        keys.sort((a, b) => (data[b].timestamp || 0) - (data[a].timestamp || 0));
+        return data[keys[0]];
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+export function clearActiveLiveRun(workspacePath, runId) {
+  try {
+    const dir = getLiveLogDir(workspacePath);
+    const activeFile = path.join(dir, "active.json");
+    if (fs.existsSync(activeFile)) {
+      const data = JSON.parse(fs.readFileSync(activeFile, "utf-8"));
+      if (data.runId && (!runId || data.runId === runId)) {
+        fs.unlinkSync(activeFile);
+        return;
+      }
+      if (runId && data[runId]) {
+        delete data[runId];
+      } else if (!runId) {
+        for (const k of Object.keys(data)) delete data[k];
+      }
+      if (Object.keys(data).length === 0) {
+        fs.unlinkSync(activeFile);
+      } else {
+        fs.writeFileSync(activeFile, JSON.stringify(data, null, 2), "utf-8");
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}

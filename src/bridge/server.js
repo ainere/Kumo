@@ -15,6 +15,7 @@ import { runAgy } from "./agy-runner.js";
 import { getWorker } from "../providers/workers/registry.js";
 import { SYSTEM_PROMPTS, getSystemPrompt } from "./prompts.js";
 import { loadConfig, detectProviderForModel } from "../config/settings.js";
+import { getLiveLogPath, setActiveLiveRun, clearActiveLiveRun } from "../data/sessions.js";
 import { VERSION } from "../cli.js";
 
 // Parse CLI flags
@@ -237,39 +238,62 @@ export async function dispatchWorkerTask(opts) {
     config.workerProvider ||
     detectProviderForModel(opts.model || modelOverride || config.workerModel);
   const worker = getWorker(workerProvider);
-  return worker.executeTask(opts);
+
+  const runId = opts.runId || crypto.randomUUID();
+  const liveLogPath = getLiveLogPath(workspaceDir, runId);
+  setActiveLiveRun(workspaceDir, {
+    runId,
+    tool: opts.toolName || "worker_task",
+    timestamp: Date.now(),
+  });
+
+  try {
+    return await worker.executeTask({
+      ...opts,
+      runId,
+      liveLogPath,
+    });
+  } finally {
+    clearActiveLiveRun(workspaceDir, runId);
+  }
 }
 
 // Handler implementations
-async function handleExplore({ task, files }) {
+async function handleExplore({ task, files, model, effort }) {
+  const activeModel = model || modelOverride || undefined;
+  const activeEffort = effort || effortOverride || undefined;
   const result = await dispatchWorkerTask({
+    toolName: "worker_explore",
     prompt: task,
     mode: "read-only",
     files: files || [],
     workspace: workspaceDir,
-    model: modelOverride || undefined,
-    effort: effortOverride || undefined,
-    systemPrompt: getSystemPrompt("explore", { workerModel: modelOverride, workerEffort: effortOverride, workspace: workspaceDir }),
+    model: activeModel,
+    effort: activeEffort,
+    systemPrompt: getSystemPrompt("explore", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
   });
   return formatResult(result, "worker_explore");
 }
 
-async function handleImplement({ task, files, confirm, previewId }) {
+async function handleImplement({ task, files, confirm, previewId, model, effort }) {
   const config = loadConfig();
   const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
+  const activeModel = model || modelOverride || undefined;
+  const activeEffort = effort || effortOverride || undefined;
 
   // If in diff-review mode and confirmation has not been provided
   if (safetyMode === "diff-review" && !confirm) {
     const result = await dispatchWorkerTask({
+      toolName: "worker_implement",
       prompt: task,
       mode: "read-only",
       previewDiff: true,
       safetyMode: "diff-review",
       files: files || [],
       workspace: workspaceDir,
-      model: modelOverride || undefined,
-      effort: effortOverride || undefined,
-      systemPrompt: getSystemPrompt("implement", { workerModel: modelOverride, workerEffort: effortOverride, workspace: workspaceDir }),
+      model: activeModel,
+      effort: activeEffort,
+      systemPrompt: getSystemPrompt("implement", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
     });
 
     const formatted = formatResult(result, "worker_implement");
@@ -285,14 +309,15 @@ async function handleImplement({ task, files, confirm, previewId }) {
   const preFiles = getGitStatus(workspaceDir);
 
   const result = await dispatchWorkerTask({
+    toolName: "worker_implement",
     prompt: task,
     mode: "workspace-write",
     safetyMode: "autonomous",
     files: files || [],
     workspace: workspaceDir,
-    model: modelOverride || undefined,
-    effort: effortOverride || undefined,
-    systemPrompt: getSystemPrompt("implement", { workerModel: modelOverride, workerEffort: effortOverride, workspace: workspaceDir }),
+    model: activeModel,
+    effort: activeEffort,
+    systemPrompt: getSystemPrompt("implement", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
   });
 
   const formatted = formatResult(result, "worker_implement");
@@ -315,21 +340,24 @@ async function handleImplement({ task, files, confirm, previewId }) {
   return formatted;
 }
 
-async function handleTest({ task, files, confirm, previewId }) {
+async function handleTest({ task, files, confirm, previewId, model, effort }) {
   const config = loadConfig();
   const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
+  const activeModel = model || modelOverride || undefined;
+  const activeEffort = effort || effortOverride || undefined;
 
   if (safetyMode === "diff-review" && !confirm) {
     const result = await dispatchWorkerTask({
+      toolName: "worker_test",
       prompt: task,
       mode: "read-only",
       previewDiff: true,
       safetyMode: "diff-review",
       files: files || [],
       workspace: workspaceDir,
-      model: modelOverride || undefined,
-      effort: effortOverride || undefined,
-      systemPrompt: getSystemPrompt("test", { workerModel: modelOverride, workerEffort: effortOverride, workspace: workspaceDir }),
+      model: activeModel,
+      effort: activeEffort,
+      systemPrompt: getSystemPrompt("test", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
     });
 
     const formatted = formatResult(result, "worker_test");
@@ -345,14 +373,15 @@ async function handleTest({ task, files, confirm, previewId }) {
   const preFiles = getGitStatus(workspaceDir);
 
   const result = await dispatchWorkerTask({
+    toolName: "worker_test",
     prompt: task,
     mode: "workspace-write",
     safetyMode: "autonomous",
     files: files || [],
     workspace: workspaceDir,
-    model: modelOverride || undefined,
-    effort: effortOverride || undefined,
-    systemPrompt: getSystemPrompt("test", { workerModel: modelOverride, workerEffort: effortOverride, workspace: workspaceDir }),
+    model: activeModel,
+    effort: activeEffort,
+    systemPrompt: getSystemPrompt("test", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
   });
 
   const formatted = formatResult(result, "worker_test");
@@ -375,28 +404,34 @@ async function handleTest({ task, files, confirm, previewId }) {
   return formatted;
 }
 
-async function handleResearch({ task, files }) {
+async function handleResearch({ task, files, model, effort }) {
+  const activeModel = model || modelOverride || undefined;
+  const activeEffort = effort || effortOverride || undefined;
   const result = await dispatchWorkerTask({
+    toolName: "worker_research",
     prompt: task,
     mode: "read-only",
     files: files || [],
     workspace: workspaceDir,
-    model: modelOverride || undefined,
-    effort: effortOverride || undefined,
-    systemPrompt: getSystemPrompt("research", { workerModel: modelOverride, workerEffort: effortOverride, workspace: workspaceDir }),
+    model: activeModel,
+    effort: activeEffort,
+    systemPrompt: getSystemPrompt("research", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
   });
   return formatResult(result, "worker_research");
 }
 
-async function handleReview({ task, files }) {
+async function handleReview({ task, files, model, effort }) {
+  const activeModel = model || modelOverride || undefined;
+  const activeEffort = effort || effortOverride || undefined;
   const result = await dispatchWorkerTask({
+    toolName: "worker_review",
     prompt: task,
     mode: "read-only",
     files: files || [],
     workspace: workspaceDir,
-    model: modelOverride || undefined,
-    effort: effortOverride || undefined,
-    systemPrompt: getSystemPrompt("review", { workerModel: modelOverride, workerEffort: effortOverride, workspace: workspaceDir }),
+    model: activeModel,
+    effort: activeEffort,
+    systemPrompt: getSystemPrompt("review", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
   });
   return formatResult(result, "worker_review");
 }
@@ -405,26 +440,36 @@ const schemas = {
   explore: {
     task: z.string().describe("What to explore or search for in the codebase"),
     files: z.array(z.string()).optional().describe("Optional file paths to focus on"),
+    model: z.string().optional().describe("Execution worker model"),
+    effort: z.string().optional().describe("Execution worker reasoning effort"),
   },
   implement: {
     task: z.string().describe("A bounded implementation task with clear acceptance criteria"),
     files: z.array(z.string()).optional().describe("Optional context file paths"),
     confirm: z.boolean().optional().describe("When safetyMode is diff-review, set to true to apply approved changes to disk. When omitted or false, generates a proposed diff preview."),
     previewId: z.string().optional().describe("Unique preview token returned by Phase 1 preview call for diff-fidelity verification upon confirmation."),
+    model: z.string().optional().describe("Execution worker model"),
+    effort: z.string().optional().describe("Execution worker reasoning effort"),
   },
   test: {
     task: z.string().describe("What to test or which test suite to run"),
     files: z.array(z.string()).optional().describe("Optional file paths under test"),
     confirm: z.boolean().optional().describe("When safetyMode is diff-review, set to true to apply changes on disk."),
     previewId: z.string().optional().describe("Unique preview token returned by Phase 1 preview call for diff-fidelity verification upon confirmation."),
+    model: z.string().optional().describe("Execution worker model"),
+    effort: z.string().optional().describe("Execution worker reasoning effort"),
   },
   research: {
     task: z.string().describe("The technical research question or documentation lookup"),
     files: z.array(z.string()).optional().describe("Optional context files"),
+    model: z.string().optional().describe("Execution worker model"),
+    effort: z.string().optional().describe("Execution worker reasoning effort"),
   },
   review: {
     task: z.string().describe("What changes or files to review"),
     files: z.array(z.string()).optional().describe("Files to review"),
+    model: z.string().optional().describe("Execution worker model"),
+    effort: z.string().optional().describe("Execution worker reasoning effort"),
   },
 };
 

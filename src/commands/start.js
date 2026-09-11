@@ -9,6 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import { randomUUID } from "node:crypto";
 import {
   loadConfig,
   setConfigValue,
@@ -43,6 +44,9 @@ import {
   listProjects,
   generateChatTitle,
   loadTurnLog,
+  getLiveLogDir,
+  getLiveLogPath,
+  getActiveLiveRun,
 } from "../data/sessions.js";
 import { VERSION } from "../cli.js";
 
@@ -276,30 +280,218 @@ export async function startCommand(opts = {}) {
 
   let client = null;
   let isTurnActive = false;
-  let activeToolName = null;
+  const activeTools = new Map();
+  const streamBuffers = new Map();
+  const tailIntervals = new Map();
+  let focusedStream = "orchestrator";
   let quotaInterval = null;
   const spinner = createSpinner("Thinking");
 
+  const MAX_BUFFER_LINES = 200;
+  function appendToBuffer(streamId, text) {
+    if (!streamBuffers.has(streamId)) {
+      streamBuffers.set(streamId, []);
+    }
+    const buf = streamBuffers.get(streamId);
+    buf.push(text);
+    if (buf.length > MAX_BUFFER_LINES) {
+      buf.splice(0, buf.length - MAX_BUFFER_LINES);
+    }
+  }
+
+  function updateWorkerTitle(toolInfo) {
+    if (!process.stdout.isTTY || !isTurnActive) return;
+    const elapsed = Math.floor((Date.now() - (toolInfo.startedAt || Date.now())) / 1000);
+    const toolModel = toolInfo.model || config.workerModel || "worker";
+    const toolName = toolInfo.name || "worker_task";
+    const focusHint = focusedStream === toolInfo.id ? "focused" : "Tab to focus";
+    process.stdout.write(`\x1b]0;KUMO — [${toolName}: ${toolModel}] ${elapsed}s (${focusHint})\x07`);
+  }
+
+  function startTailing(itemId, toolInfo) {
+    if (tailIntervals.has(itemId)) return;
+    if (!streamBuffers.has(itemId)) {
+      streamBuffers.set(itemId, []);
+    }
+
+    let offset = 0;
+    let fd = null;
+    let resolvedLogPath = null;
+
+    const interval = setInterval(() => {
+      try {
+        if (!resolvedLogPath) {
+          const directPath = getLiveLogPath(currentWorkspace, itemId);
+          if (fs.existsSync(directPath)) {
+            resolvedLogPath = directPath;
+          } else {
+            const activeRun = getActiveLiveRun(currentWorkspace, toolInfo.runId);
+            if (activeRun && activeRun.runId) {
+              toolInfo.runId = activeRun.runId;
+              const activePath = getLiveLogPath(currentWorkspace, activeRun.runId);
+              if (fs.existsSync(activePath)) {
+                resolvedLogPath = activePath;
+              }
+            }
+          }
+        }
+
+        if (!resolvedLogPath || !fs.existsSync(resolvedLogPath)) {
+          updateWorkerTitle(toolInfo);
+          return;
+        }
+
+        const stat = fs.statSync(resolvedLogPath);
+        if (stat.size > offset) {
+          if (fd === null) {
+            fd = fs.openSync(resolvedLogPath, "r");
+          }
+          const bytesToRead = stat.size - offset;
+          const buf = Buffer.alloc(bytesToRead);
+          const bytesRead = fs.readSync(fd, buf, 0, bytesToRead, offset);
+          offset += bytesRead;
+
+          if (bytesRead > 0) {
+            const chunkStr = buf.toString("utf-8", 0, bytesRead);
+            appendToBuffer(itemId, chunkStr);
+            if (focusedStream === itemId) {
+              process.stdout.write(chunkStr);
+            }
+          }
+        }
+
+        updateWorkerTitle(toolInfo);
+      } catch {
+        /* ignore transient tailing errors */
+      }
+    }, 80);
+
+    tailIntervals.set(itemId, {
+      interval,
+      toolInfo,
+      getOffset: () => offset,
+      getFd: () => fd,
+      getLogPath: () => resolvedLogPath,
+      cleanup: () => {
+        clearInterval(interval);
+        if (fd !== null) {
+          try { fs.closeSync(fd); } catch {}
+          fd = null;
+        }
+      },
+    });
+  }
+
+  function stopTailing(itemId) {
+    const tailer = tailIntervals.get(itemId);
+    if (!tailer) return;
+
+    tailIntervals.delete(itemId);
+    tailer.cleanup();
+
+    const logPath = tailer.getLogPath() || getLiveLogPath(currentWorkspace, itemId);
+    if (logPath && fs.existsSync(logPath)) {
+      try {
+        const stat = fs.statSync(logPath);
+        const offset = tailer.getOffset();
+        if (stat.size > offset) {
+          const fd = fs.openSync(logPath, "r");
+          const bytesToRead = stat.size - offset;
+          const buf = Buffer.alloc(bytesToRead);
+          fs.readSync(fd, buf, 0, bytesToRead, offset);
+          fs.closeSync(fd);
+          const chunkStr = buf.toString("utf-8");
+          appendToBuffer(itemId, chunkStr);
+          if (focusedStream === itemId) {
+            process.stdout.write(chunkStr);
+          }
+        }
+        try {
+          fs.unlinkSync(logPath);
+        } catch {}
+      } catch {}
+    }
+
+    if (focusedStream === itemId) {
+      focusedStream = "orchestrator";
+      console.log(`\n  ${badge.ok} ${c.dim}[worker] ${tailer.toolInfo?.name || "tool"} finished${c.reset}`);
+      console.log(`  ${badge.info} ${c.bold}Focus returned to Orchestrator (${config.orchestratorModel})${c.reset}\n`);
+    }
+
+    if (activeTools.size === 0) {
+      setKumoTitle(currentWorkspace);
+    }
+  }
+
+  function cycleStreamFocus() {
+    if (!isTurnActive) return;
+    const streams = ["orchestrator", ...activeTools.keys()];
+    if (streams.length <= 1) return;
+
+    const currentIndex = streams.indexOf(focusedStream);
+    const nextIndex = (currentIndex + 1) % streams.length;
+    focusedStream = streams[nextIndex];
+
+    spinner.stop();
+
+    if (focusedStream === "orchestrator") {
+      const orchModel = config.orchestratorModel;
+      console.log(`\n\n  ${badge.info} ${c.bold}Focused on Orchestrator (${orchModel})${c.reset} ${c.dim}(Tab to switch)${c.reset}\n`);
+      const recent = (streamBuffers.get("orchestrator") || []).slice(-30).join("");
+      if (recent) {
+        process.stdout.write(recent);
+      }
+    } else {
+      const tool = activeTools.get(focusedStream);
+      const toolName = tool?.name || "worker";
+      const toolModel = tool?.model || config.workerModel;
+      console.log(`\n\n  ${badge.info} ${c.bold}Focused on Worker: ${toolName} (${toolModel})${c.reset} ${c.dim}(Tab to switch)${c.reset}\n`);
+      const recent = (streamBuffers.get(focusedStream) || []).slice(-30).join("");
+      if (recent) {
+        process.stdout.write(recent);
+      }
+    }
+  }
+
   function attachClientListeners(cl) {
     cl.on("delta", (chunk) => {
-      spinner.stop();
-      process.stdout.write(chunk);
+      appendToBuffer("orchestrator", chunk);
+      if (focusedStream === "orchestrator") {
+        spinner.stop();
+        process.stdout.write(chunk);
+      }
     });
 
-    cl.on("reasoning", () => {
-      if (!spinner.isActive()) {
+    cl.on("reasoning", (chunk) => {
+      if (chunk) {
+        const formatted = `${c.dim}${chunk}${c.reset}`;
+        appendToBuffer("orchestrator", formatted);
+        if (focusedStream === "orchestrator") {
+          spinner.stop();
+          process.stdout.write(formatted);
+        }
+      } else if (!spinner.isActive() && focusedStream === "orchestrator") {
         spinner.start();
       }
     });
 
     cl.on("turn_completed", () => {
+      for (const itemId of activeTools.keys()) {
+        stopTailing(itemId);
+      }
+      activeTools.clear();
+      tailIntervals.clear();
+      streamBuffers.clear();
+      focusedStream = "orchestrator";
       spinner.stop();
+      setKumoTitle(currentWorkspace);
     });
 
     cl.on("item_started", (params) => {
-      const item = params.item || {};
+      const item = params?.item || {};
+      const itemId = item.id || randomUUID();
       if (item.type === "tool_call" || item.type === "dynamic_tool_call" || item.type === "mcp_tool_call") {
-        activeToolName = item.name || item.tool || "tool";
+        const toolName = item.name || item.tool || "tool";
 
         let taskPreview = "";
         const args = item.arguments || item.input || {};
@@ -314,27 +506,70 @@ export async function startCommand(opts = {}) {
           taskPreview = args.task || "";
         }
 
+        const workerModel = (typeof args === "object" && args?.model) || item.model || config.workerModel;
+        const workerEffort = (typeof args === "object" && args?.effort) || item.effort || config.workerEffort;
+
+        const toolInfo = {
+          id: itemId,
+          name: toolName,
+          task: taskPreview,
+          model: workerModel,
+          effort: workerEffort,
+          startedAt: Date.now(),
+        };
+
+        activeTools.set(itemId, toolInfo);
+
+        let modelDisplay = "";
+        if (workerModel) {
+          const effortPart = workerEffort ? `, effort: ${workerEffort}` : "";
+          modelDisplay = ` ${c.dim}(${workerModel}${effortPart})${c.reset}`;
+        }
+
         const truncated = taskPreview.length > 80 ? taskPreview.slice(0, 77) + "..." : taskPreview;
         const taskDisplay = truncated ? `\n    ${c.dim}${truncated}${c.reset}` : "";
 
         spinner.stop();
-        process.stdout.write(`\n  ${c.dim}[worker]${c.reset} ${c.brightCyan}${activeToolName}${c.reset}${taskDisplay}\n`);
+        const headerText = `\n  ${c.dim}[worker]${c.reset} ${c.brightCyan}${toolName}${c.reset}${modelDisplay}${taskDisplay}\n`;
+        appendToBuffer("orchestrator", headerText);
+        process.stdout.write(headerText);
+
+        startTailing(itemId, toolInfo);
       }
     });
 
-    cl.on("item_completed", () => {
-      if (activeToolName) {
-        activeToolName = null;
+    cl.on("item_completed", (params) => {
+      const item = params?.item || {};
+      let itemId = item.id;
+      if (!itemId && activeTools.size > 0) {
+        itemId = activeTools.keys().next().value;
+      }
+      if (itemId) {
+        stopTailing(itemId);
+        activeTools.delete(itemId);
       }
     });
 
     cl.on("server_error", (err) => {
+      for (const itemId of activeTools.keys()) {
+        stopTailing(itemId);
+      }
+      activeTools.clear();
+      tailIntervals.clear();
+      focusedStream = "orchestrator";
       spinner.stop();
+      setKumoTitle(currentWorkspace);
       console.error(`\n${badge.fail} ${err.message || JSON.stringify(err)}`);
     });
 
     cl.on("close", async (code) => {
       if (isTurnActive) {
+        for (const itemId of activeTools.keys()) {
+          stopTailing(itemId);
+        }
+        activeTools.clear();
+        tailIntervals.clear();
+        focusedStream = "orchestrator";
         spinner.stop();
         isTurnActive = false;
         console.error(`\n  ${badge.fail} Orchestrator process exited unexpectedly (code ${code}).`);
@@ -473,6 +708,26 @@ export async function startCommand(opts = {}) {
     historySize: 500,
     completer,
   });
+
+  if (process.stdin.isTTY) {
+    readline.emitKeypressEvents(process.stdin);
+  }
+
+  const onKeypress = (str, key) => {
+    if (!isTurnActive) return;
+    if ((key?.ctrl && key?.name === "c") || str === "\u0003") {
+      if (isTurnActive) {
+        console.log(`\n  ${badge.warn} Interrupting active task...`);
+        client.interruptTurn().catch(() => {});
+        isTurnActive = false;
+      }
+      return;
+    }
+    if (key?.name === "tab" || str === "\t") {
+      cycleStreamFocus();
+    }
+  };
+  process.stdin.on("keypress", onKeypress);
 
   const saveReplHistory = () => {
     // Only persist actual prompts, not slash commands or settings tweaks
@@ -1125,6 +1380,10 @@ export async function startCommand(opts = {}) {
     const turnStart = Date.now();
     isTurnActive = true;
     rl.pause();
+    if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+    }
     process.stdout.write("\n");
 
     try {
@@ -1151,7 +1410,15 @@ export async function startCommand(opts = {}) {
     } catch (err) {
       console.error(`\n${badge.fail} Turn failed: ${err.message}`);
     } finally {
+      for (const itemId of activeTools.keys()) {
+        stopTailing(itemId);
+      }
+      activeTools.clear();
+      tailIntervals.clear();
+      streamBuffers.clear();
+      focusedStream = "orchestrator";
       spinner.stop();
+      setKumoTitle(currentWorkspace);
       isTurnActive = false;
 
       const elapsed = ((Date.now() - turnStart) / 1000).toFixed(1);
@@ -1210,6 +1477,10 @@ export async function startCommand(opts = {}) {
   });
 
   rl.on("close", async () => {
+    process.stdin.removeListener("keypress", onKeypress);
+    for (const itemId of activeTools.keys()) {
+      stopTailing(itemId);
+    }
     saveReplHistory();
     if (quotaInterval) clearInterval(quotaInterval);
     await client.stop();

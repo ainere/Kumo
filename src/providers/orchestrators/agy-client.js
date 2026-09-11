@@ -10,6 +10,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { getCliBinary, getAgyUsage } from "../../bridge/agy-runner.js";
 import { safeSpawn } from "../../utils/process.js";
@@ -25,8 +26,11 @@ export class AgyAppClient extends EventEmitter {
     this.conversationId = null;
     this.activeModel = options.model || null;
     this.activeEffort = options.effort || null;
+    this.workerModel = options.workerModel || null;
+    this.workerEffort = options.workerEffort || null;
     this.workspace = options.workspace || process.cwd();
     this.isTurnActive = false;
+    this._pendingToolCallIds = new Map();
   }
 
   /**
@@ -95,7 +99,7 @@ export class AgyAppClient extends EventEmitter {
   /**
    * Configure active thread and parameters. Restarts process if model/workspace changed.
    */
-  async startThread({ workspace, model, reasoningEffort } = {}) {
+  async startThread({ workspace, model, reasoningEffort, workerModel, workerEffort } = {}) {
     const modelChanged = Boolean(model && model !== this.activeModel);
     const effortChanged = Boolean(reasoningEffort && reasoningEffort !== this.activeEffort);
     const workspaceChanged = Boolean(workspace && workspace !== this.workspace);
@@ -103,6 +107,8 @@ export class AgyAppClient extends EventEmitter {
     if (workspace) this.workspace = workspace;
     if (model) this.activeModel = model;
     if (reasoningEffort) this.activeEffort = reasoningEffort;
+    if (workerModel) this.workerModel = workerModel;
+    if (workerEffort) this.workerEffort = workerEffort;
 
     if (this.proc && (modelChanged || effortChanged || workspaceChanged)) {
       await this.stop();
@@ -219,26 +225,57 @@ export class AgyAppClient extends EventEmitter {
 
       // 2. Reasoning indicator
       if (update.step_type === "thinking" || update.thinking) {
-        this.emit("reasoning");
+        this.emit("reasoning", update.text_delta || update.thinking || "");
       }
 
       // 3. Tool invocation
-      if (update.step_type === "tool_call" || update.tool_call || update.step_type === "call_mcp_tool") {
+      const isToolEvent = update.step_type === "tool_call" || update.tool_call || update.step_type === "call_mcp_tool";
+      if (isToolEvent && update.state === "DONE") {
         const toolName = update.tool_name || update.tool || update.name || "worker_tool";
-        this.emit("item_started", {
-          item: {
-            type: "mcp_tool_call",
-            name: toolName,
-            arguments: update.tool_input || update.args || {},
-          },
-        });
-      }
+        let callId = update.id || update.call_id;
+        if (!callId) {
+          const queue = this._pendingToolCallIds.get(toolName);
+          if (queue && queue.length > 0) {
+            callId = queue.shift();
+          } else {
+            callId = randomUUID();
+          }
+        }
 
-      if (update.state === "DONE" && (update.step_type === "tool_call" || update.tool_call)) {
+        if (process.env.KUMO_DEBUG) {
+          console.error(`[KUMO_DEBUG] agy-client tool_call completed: ${toolName} (${callId})`);
+        }
+
         this.emit("item_completed", {
           item: {
+            id: callId,
             type: "mcp_tool_call",
-            name: update.tool_name || update.tool || "worker_tool",
+            name: toolName,
+          },
+        });
+      } else if (isToolEvent) {
+        const toolName = update.tool_name || update.tool || update.name || "worker_tool";
+        const callId = update.id || update.call_id || randomUUID();
+        if (!this._pendingToolCallIds.has(toolName)) {
+          this._pendingToolCallIds.set(toolName, []);
+        }
+        this._pendingToolCallIds.get(toolName).push(callId);
+
+        if (process.env.KUMO_DEBUG) {
+          console.error(`[KUMO_DEBUG] agy-client tool_call started: ${toolName} (${callId})`);
+        }
+
+        const workerModel = update.tool_input?.model || this.workerModel || null;
+        const workerEffort = update.tool_input?.effort || this.workerEffort || null;
+
+        this.emit("item_started", {
+          item: {
+            id: callId,
+            type: "mcp_tool_call",
+            name: toolName,
+            model: workerModel,
+            effort: workerEffort,
+            arguments: update.tool_input || update.args || {},
           },
         });
       }
