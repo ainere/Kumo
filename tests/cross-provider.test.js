@@ -208,3 +208,62 @@ test("AgyAppClient and activeTools map handle concurrent tool calls without stat
   assert.equal(activeTools.size, 0, "All tools should be completed");
 });
 
+test("AgyAppClient correctly matches out-of-order completions for identical tool names by task signature", () => {
+  const client = new AgyAppClient();
+  const started = [];
+  const completed = [];
+
+  client.on("item_started", (p) => started.push(p));
+  client.on("item_completed", (p) => completed.push(p));
+
+  // Two concurrent calls of the SAME tool name
+  client._handleStreamEvent({
+    event: "step_update",
+    step_update: {
+      step_type: "tool_call",
+      tool_name: "worker_explore",
+      tool_input: { task: "explore auth flow" },
+    },
+  });
+  client._handleStreamEvent({
+    event: "step_update",
+    step_update: {
+      step_type: "tool_call",
+      tool_name: "worker_explore",
+      tool_input: { task: "explore database schema" },
+    },
+  });
+
+  assert.equal(started.length, 2);
+  const id1 = started[0].item.id;
+  const id2 = started[1].item.id;
+  assert.notEqual(id1, id2, "Must assign distinct IDs");
+
+  // Second tool finishes first
+  client._handleStreamEvent({
+    event: "step_update",
+    step_update: {
+      step_type: "tool_call",
+      tool_name: "worker_explore",
+      tool_input: { task: "explore database schema" },
+      state: "DONE",
+    },
+  });
+
+  // First tool finishes second
+  client._handleStreamEvent({
+    event: "step_update",
+    step_update: {
+      step_type: "tool_call",
+      tool_name: "worker_explore",
+      tool_input: { task: "explore auth flow" },
+      state: "DONE",
+    },
+  });
+
+  assert.equal(completed.length, 2);
+  assert.equal(completed[0].item.id, id2, "First completion must match the second call (database schema)");
+  assert.equal(completed[1].item.id, id1, "Second completion must match the first call (auth flow)");
+});
+
+

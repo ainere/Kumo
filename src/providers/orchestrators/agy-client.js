@@ -16,6 +16,22 @@ import { getCliBinary, getAgyUsage } from "../../bridge/agy-runner.js";
 import { safeSpawn } from "../../utils/process.js";
 import { loadConfig, supportsEffort } from "../../config/settings.js";
 
+function getTaskSignature(raw) {
+  if (!raw) return "";
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed.task || parsed.prompt || parsed.query || raw.trim();
+    } catch {
+      return raw.trim();
+    }
+  }
+  if (typeof raw === "object") {
+    return raw.task || raw.prompt || raw.query || JSON.stringify(raw);
+  }
+  return String(raw);
+}
+
 export class AgyAppClient extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -233,13 +249,24 @@ export class AgyAppClient extends EventEmitter {
       if (isToolEvent && update.state === "DONE") {
         const toolName = update.tool_name || update.tool || update.name || "worker_tool";
         let callId = update.id || update.call_id;
-        if (!callId) {
-          const queue = this._pendingToolCallIds.get(toolName);
-          if (queue && queue.length > 0) {
-            callId = queue.shift();
-          } else {
-            callId = randomUUID();
+        const queue = this._pendingToolCallIds.get(toolName) || [];
+        const signature = getTaskSignature(update.tool_input || update.args);
+
+        if (callId) {
+          const idx = queue.findIndex((entry) => entry.id === callId);
+          if (idx !== -1) queue.splice(idx, 1);
+        } else {
+          let matched = null;
+          if (signature) {
+            const idx = queue.findIndex((entry) => entry.signature && entry.signature === signature);
+            if (idx !== -1) {
+              matched = queue.splice(idx, 1)[0];
+            }
           }
+          if (!matched && queue.length > 0) {
+            matched = queue.shift();
+          }
+          callId = matched ? matched.id : randomUUID();
         }
 
         if (process.env.KUMO_DEBUG) {
@@ -251,15 +278,22 @@ export class AgyAppClient extends EventEmitter {
             id: callId,
             type: "mcp_tool_call",
             name: toolName,
+            arguments: update.tool_input || update.args || {},
           },
         });
       } else if (isToolEvent) {
         const toolName = update.tool_name || update.tool || update.name || "worker_tool";
         const callId = update.id || update.call_id || randomUUID();
+        const signature = getTaskSignature(update.tool_input || update.args);
+
         if (!this._pendingToolCallIds.has(toolName)) {
           this._pendingToolCallIds.set(toolName, []);
         }
-        this._pendingToolCallIds.get(toolName).push(callId);
+        this._pendingToolCallIds.get(toolName).push({
+          id: callId,
+          signature,
+          timestamp: Date.now(),
+        });
 
         if (process.env.KUMO_DEBUG) {
           console.error(`[KUMO_DEBUG] agy-client tool_call started: ${toolName} (${callId})`);

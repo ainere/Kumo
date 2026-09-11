@@ -541,8 +541,31 @@ export async function startCommand(opts = {}) {
     cl.on("item_completed", (params) => {
       const item = params?.item || {};
       let itemId = item.id;
-      if (!itemId && activeTools.size > 0) {
-        itemId = activeTools.keys().next().value;
+      if ((!itemId || !activeTools.has(itemId)) && activeTools.size > 0) {
+        const toolName = item.name || item.tool;
+        const sig = (typeof item.task === "string" ? item.task : "") ||
+          (typeof item.arguments === "object" ? (item.arguments?.task || "") : "") ||
+          (typeof item.input === "object" ? (item.input?.task || "") : "");
+
+        if (sig || toolName) {
+          for (const [id, tool] of activeTools.entries()) {
+            const nameMatch = !toolName || tool.name === toolName;
+            const taskMatch = sig && tool.task && (tool.task === sig || tool.task.includes(sig) || sig.includes(tool.task));
+            if (nameMatch && taskMatch) {
+              itemId = id;
+              break;
+            }
+          }
+          if (!itemId || !activeTools.has(itemId)) {
+            const matchingByName = Array.from(activeTools.entries()).filter(([_, t]) => !toolName || t.name === toolName);
+            if (matchingByName.length === 1) {
+              itemId = matchingByName[0][0];
+            }
+          }
+        }
+        if (!itemId || !activeTools.has(itemId)) {
+          itemId = activeTools.keys().next().value;
+        }
       }
       if (itemId) {
         stopTailing(itemId);

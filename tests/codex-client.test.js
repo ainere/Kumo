@@ -90,3 +90,43 @@ test("CodexAppClient handles concurrent tool calls without ID collisions", () =>
   assert.equal(completed[0].item.id, id2);
   assert.equal(completed[1].item.id, id1);
 });
+
+test("CodexAppClient correctly matches out-of-order completions for identical tool names by task signature", () => {
+  const client = new CodexAppClient();
+  const started = [];
+  const completed = [];
+
+  client.on("item_started", (p) => started.push(p));
+  client.on("item_completed", (p) => completed.push(p));
+
+  // Two concurrent calls of the EXACT SAME tool name
+  client._handleNotification({
+    method: "item/started",
+    params: { item: { type: "tool_call", name: "worker_explore", arguments: { task: "explore auth flow" } } },
+  });
+  client._handleNotification({
+    method: "item/started",
+    params: { item: { type: "tool_call", name: "worker_explore", arguments: { task: "explore database schema" } } },
+  });
+
+  assert.equal(started.length, 2);
+  const id1 = started[0].item.id;
+  const id2 = started[1].item.id;
+  assert.notEqual(id1, id2, "Must assign distinct IDs");
+
+  // Out-of-order completion: second tool finishes first!
+  client._handleNotification({
+    method: "item/completed",
+    params: { item: { type: "tool_call", name: "worker_explore", arguments: { task: "explore database schema" } } },
+  });
+  // First tool finishes second
+  client._handleNotification({
+    method: "item/completed",
+    params: { item: { type: "tool_call", name: "worker_explore", arguments: { task: "explore auth flow" } } },
+  });
+
+  assert.equal(completed.length, 2);
+  assert.equal(completed[0].item.id, id2, "First completion must match the second call (database schema)");
+  assert.equal(completed[1].item.id, id1, "Second completion must match the first call (auth flow)");
+});
+
