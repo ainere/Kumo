@@ -6,7 +6,6 @@
  * live rate limit snapshots, and tool event notifications.
  */
 
-import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +13,7 @@ import { findCodexBinary } from "./codex.js";
 import { formatPlanType, formatResetTime } from "../../utils/ui.js";
 import { loadConfig } from "../../config/settings.js";
 import { syncAgentConfigs } from "../../config/sync.js";
+import { safeSpawn } from "../../utils/process.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -37,9 +37,8 @@ export class CodexAppClient extends EventEmitter {
   async start() {
     return new Promise((resolve, reject) => {
       try {
-        this.proc = spawn(this.bin, ["app-server", "--stdio"], {
+        this.proc = safeSpawn(this.bin, ["app-server", "--stdio"], {
           stdio: ["pipe", "pipe", "pipe"],
-          shell: false,
           env: {
             ...process.env,
             ...this.options.env,
@@ -163,33 +162,38 @@ export class CodexAppClient extends EventEmitter {
       /* fallback */
     }
 
-    const workerModel = opts.workerModel || config.workerModel || "gemini-3.8-flash";
-    const workerEffort = opts.workerEffort || config.workerEffort || "medium";
+    const workerModel = opts.workerModel || config.workerModel || null;
+    const workerEffort = opts.workerEffort || config.workerEffort || null;
+    const orchModel = opts.model || config.orchestratorModel || null;
+    const orchEffort = opts.reasoningEffort || config.reasoningEffort || null;
+
+    const bridgeArgs = [
+      bridgeScript,
+      "--workspace",
+      normalizedWorkspace,
+    ];
+    if (workerModel) bridgeArgs.push("--model", workerModel);
+    if (workerEffort) bridgeArgs.push("--effort", workerEffort);
 
     const configOverrides = {
-      model: opts.model || config.orchestratorModel || "chatgpt-6-astra",
-      model_reasoning_effort: opts.reasoningEffort || config.reasoningEffort || "low",
       mcp_servers: {
-        "gemini-bridge": {
+        "kumo-bridge": {
           command: "node",
-          args: [
-            bridgeScript,
-            "--workspace",
-            normalizedWorkspace,
-            "--model",
-            workerModel,
-            "--effort",
-            workerEffort,
-          ],
+          args: bridgeArgs,
         },
       },
     };
 
-    const res = await this.request("thread/start", {
+    if (orchModel) configOverrides.model = orchModel;
+    if (orchEffort) configOverrides.model_reasoning_effort = orchEffort;
+
+    const threadPayload = {
       cwd: workspace,
-      model: opts.model || "chatgpt-6-astra",
       config: configOverrides,
-    });
+    };
+    if (orchModel) threadPayload.model = orchModel;
+
+    const res = await this.request("thread/start", threadPayload);
 
     this.threadId = res?.thread?.id || res?.threadId;
     return this.threadId;

@@ -10,6 +10,7 @@ import {
   PRESETS,
   resolveOrchestratorModel,
   resolveWorkerModel,
+  detectProviderForModel,
   isCodexModel,
 } from "../config/settings.js";
 import { c, badge, separator } from "../utils/ui.js";
@@ -143,43 +144,47 @@ export async function modelCommand(action, target, value, extra) {
     return;
   }
 
-  // Handle setting orchestrator model: kumo model orchestrator <model> [effort]
+  // Handle setting orchestrator model: kumo model orchestrator <model> [effort] [provider]
   if (action === "orchestrator") {
     const raw = target;
     const effort = value;
+    const customProvider = extra;
     if (!raw) {
-      console.log(`Current orchestrator: ${config.orchestratorModel}-${config.reasoningEffort}`);
-      console.log("Usage: kumo model orchestrator <model> [effort]");
+      console.log(`Current orchestrator: ${config.orchestratorModel}-${config.reasoningEffort} [${config.orchestratorProvider || 'codex'}]`);
+      console.log("Usage: kumo model orchestrator <model> [effort] [provider]");
       return;
     }
     const model = resolveOrchestratorModel(raw);
+    const provider = detectProviderForModel(model, customProvider);
     setConfigValue("orchestratorModel", model);
-    setConfigValue("orchestratorProvider", isCodexModel(model) ? "codex" : "gemini");
+    setConfigValue("orchestratorProvider", provider);
     if (effort) {
       setConfigValue("reasoningEffort", effort);
     }
     const finalEffort = effort || config.reasoningEffort || "low";
-    console.log(`${badge.ok} Orchestrator model set to '${model}-${finalEffort}'`);
+    console.log(`${badge.ok} Orchestrator model set to '${model}-${finalEffort}' (provider: ${provider})`);
     return;
   }
 
-  // Handle setting worker model: kumo model worker <model> [effort]
+  // Handle setting worker model: kumo model worker <model> [effort] [provider]
   if (action === "worker") {
     const raw = target;
     const effort = value;
+    const customProvider = extra;
     if (!raw) {
-      console.log(`Current worker: ${config.workerModel}-${config.workerEffort || 'medium'}`);
-      console.log("Usage: kumo model worker <model> [effort]");
+      console.log(`Current worker: ${config.workerModel}-${config.workerEffort || 'medium'} [${config.workerProvider || 'gemini'}]`);
+      console.log("Usage: kumo model worker <model> [effort] [provider]");
       return;
     }
     const model = resolveWorkerModel(raw);
+    const provider = detectProviderForModel(model, customProvider);
     setConfigValue("workerModel", model);
-    setConfigValue("workerProvider", isCodexModel(model) ? "codex" : "gemini");
+    setConfigValue("workerProvider", provider);
     if (effort) {
       setConfigValue("workerEffort", effort);
     }
     const finalEffort = effort || config.workerEffort || "medium";
-    console.log(`${badge.ok} Worker model set to '${model}-${finalEffort}'`);
+    console.log(`${badge.ok} Worker model set to '${model}-${finalEffort}' (provider: ${provider})`);
     return;
   }
 
@@ -188,16 +193,18 @@ export async function modelCommand(action, target, value, extra) {
     const model = resolveOrchestratorModel(action);
     const worker = resolveWorkerModel(target);
     const effort = value;
+    const orchProvider = detectProviderForModel(model);
+    const workerProvider = detectProviderForModel(worker);
     setConfigValue("orchestratorModel", model);
-    setConfigValue("orchestratorProvider", isCodexModel(model) ? "codex" : "gemini");
+    setConfigValue("orchestratorProvider", orchProvider);
     setConfigValue("workerModel", worker);
-    setConfigValue("workerProvider", isCodexModel(worker) ? "codex" : "gemini");
+    setConfigValue("workerProvider", workerProvider);
     if (effort) {
       setConfigValue("reasoningEffort", effort);
     }
     const finalEffort = effort || config.reasoningEffort || "low";
-    console.log(`${badge.ok} Orchestrator model set to '${model}-${finalEffort}'`);
-    console.log(`${badge.ok} Worker model set to '${worker}-${config.workerEffort || 'medium'}'`);
+    console.log(`${badge.ok} Orchestrator model set to '${model}-${finalEffort}' (provider: ${orchProvider})`);
+    console.log(`${badge.ok} Worker model set to '${worker}-${config.workerEffort || 'medium'}' (provider: ${workerProvider})`);
     return;
   }
 
@@ -207,13 +214,15 @@ export async function modelCommand(action, target, value, extra) {
       applyPreset(action);
       const updated = loadConfig();
       console.log(`${badge.ok} Applied preset '${action}':`);
-      console.log(`  ${badge.dot} Orchestrator: ${updated.orchestratorModel}-${updated.reasoningEffort}`);
-      console.log(`  ${badge.dot} Worker:       ${updated.workerModel}-${updated.workerEffort || 'medium'}`);
+      console.log(`  ${badge.dot} Orchestrator: ${updated.orchestratorModel}-${updated.reasoningEffort} [${updated.orchestratorProvider}]`);
+      console.log(`  ${badge.dot} Worker:       ${updated.workerModel}-${updated.workerEffort || 'medium'} [${updated.workerProvider}]`);
       return;
     }
     const model = resolveOrchestratorModel(action);
+    const provider = detectProviderForModel(model);
     setConfigValue("orchestratorModel", model);
-    console.log(`${badge.ok} Orchestrator model set to '${model}-${config.reasoningEffort || 'low'}'`);
+    setConfigValue("orchestratorProvider", provider);
+    console.log(`${badge.ok} Orchestrator model set to '${model}-${config.reasoningEffort || 'low'}' (provider: ${provider})`);
     return;
   }
 

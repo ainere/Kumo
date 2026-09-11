@@ -7,7 +7,6 @@ import { runAgy, getCliBinary } from "../../bridge/agy-runner.js";
 export const PROVIDER_INFO = {
   id: "gemini",
   name: "Google Gemini (Antigravity / Gemini CLI)",
-  defaultModel: "gemini-3.8-flash",
 };
 
 export async function executeTask(opts) {

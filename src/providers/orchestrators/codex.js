@@ -3,13 +3,13 @@
  * Handles binary discovery, arguments building, and launching Codex with dynamic MCP bridge.
  */
 
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../../config/settings.js";
 import { syncAgentConfigs } from "../../config/sync.js";
+import { safeSpawn } from "../../utils/process.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -123,11 +123,10 @@ export async function launch(opts = {}) {
   const { bin, args, env } = buildInvocation(opts);
 
   return new Promise((resolve, reject) => {
-    const proc = spawn(bin, args, {
+    const proc = safeSpawn(bin, args, {
       cwd: opts.workspace || process.cwd(),
       stdio: "inherit",
       env,
-      shell: false,
     });
 
     proc.on("close", (code) => {
