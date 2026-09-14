@@ -2,10 +2,12 @@
 
 ## 1. Project Overview
 
-**KUMO** is a cross-provider CLI orchestrator pairing frontier reasoning models with high-speed execution workers. It runs on existing subscription logins without requiring third-party API keys:
+**KUMO** is a cross-provider CLI orchestrator pairing frontier reasoning models with high-speed execution workers. Subscriptions are the default; direct API usage (metered keys) is supported per-role or per-call:
+
+- **Subscription CLIs (default, zero keys)**: `codex`, `antigravity`, `claude`, `opencode`, `commandcode`, `copilot`, `cursor`, `gemini-cli`, `ollama`.
+- **Direct API (optional, env keys never stored)**: `openai-api` (`OPENAI_API_KEY`), `anthropic-api` (`ANTHROPIC_API_KEY`), `gemini-api` (`GEMINI_API_KEY`), `compat-api` (`COMPAT_BASE_URL` + optional `COMPAT_API_KEY`).
 
 - **Root Orchestrator**: **ChatGPT 6 Astra** (or **GPT-5.5** for low-cost testing) executed via the **Codex CLI** (`codex.exe`) on a ChatGPT Plus/Go subscription. Handles requirements scoping, architecture design, step decomposition, and final code reviews.
-- **Execution Worker**: **Gemini 3.8 Flash** (or **Gemini 3.6 Flash** for testing) executed via the **Antigravity CLI** (`agy.exe`) on a Google AI Pro subscription. Handles read-only codebase exploration, file editing/refactoring, test writing, and technical research via a dynamic MCP stdio bridge.
 
 ---
 
@@ -172,13 +174,14 @@ Run the test suite from the repository root:
 node --test tests/*.test.js
 ```
 
-All 24 tests pass:
+All 76 tests pass (`node --test tests/*.test.js`):
 - `tests/bridge.test.js`: Validates MCP stdio bridge initialization and tool discovery.
 - `tests/cli.test.js`: Validates CLI command parsing, binary detection, and Codex invocation parameters.
 - `tests/cloud-banners.test.js`: Validates Cloud Cumulus banner rendering, 14-block progress bars, and reset formatters.
-- `tests/codex-client.test.js`: Validates Codex JSON-RPC app client protocol and rate limits querying.
+- `tests/codex-client.test.js`: Validates Codex JSON-RPC app client protocol and rate limits querying (live-binary tests skip when `codex` is absent, e.g. CI runners).
 - `tests/model.test.js`: Validates presets (including `test`), `effortCommand` for orchestrator and worker, and model switching.
-- `tests/model-picker-and-gradient.test.js`: Validates blueish gradient progress bar colors, model discovery (`getAgyModels`, `getOrchestratorModels`), and active model scoping.
+- `tests/model-picker-and-gradient.test.js`: Validates blueish gradient progress bar colors, model discovery (`getAgyModels`, `getOrchestratorModels`), and active model scoping (`getOrchestratorModels` live check skips without `codex`).
+- `tests/provider-expansion.test.js`: Validates 13-provider registries, explicit-only API detection, direct-API wire formats (mocked fetch), and per-call bridge provider override.
 
 ---
 
