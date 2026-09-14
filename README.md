@@ -9,7 +9,7 @@
 
 **Kumo** is a modular CLI application that pairs frontier reasoning models with high-throughput execution workers across independent AI ecosystems.
 
-It coordinate frontier models across **Anthropic Claude** (Claude Opus 4.6 Thinking, Claude Sonnet 4.6), **OpenAI ChatGPT / Codex** (ChatGPT 6 Astra, Sol, Terra, Luna, GPT-5.5), and **Google Gemini** (Gemini 3.8 / 3.7 Flash & Pro) — allowing **any provider to serve as Orchestrator or Worker** (e.g. Claude Opus Orchestrator + Codex Worker, or Codex Orchestrator + Gemini Worker) utilizing your existing subscriptions with **zero separate API keys**.
+It coordinates frontier models across **Anthropic Claude** (Claude Opus 4.6 Thinking, Claude Sonnet 4.6), **OpenAI ChatGPT / Codex** (ChatGPT 6 Astra, Sol, Terra, Luna, GPT-5.5), and **Google Gemini** (Gemini 3.8 / 3.7 Flash & Pro) — allowing **any of 13 providers to serve as Orchestrator or Worker** (e.g. Claude Opus Orchestrator + Codex Worker, or Codex Orchestrator + Gemini Worker) running on your existing subscriptions by default, with optional direct API usage (metered env-var keys, never stored).
 
 ---
 
@@ -142,10 +142,9 @@ Kumo provides two headless safety modes for worker execution (`kumo config set s
 
 ## Features & Capabilities
 
-- **Zero API Keys**: Connects directly to your logged-in consumer subscriptions (**ChatGPT Plus / Pro** via Codex CLI and **Google AI Pro** via Antigravity / Gemini CLI).
-- **Subscription CLIs (default)**: `codex, antigravity, claude, opencode, commandcode, copilot, cursor, gemini-cli, ollama` — logged-in CLIs, zero keys.
+- **Subscriptions by Default**: Connects directly to your logged-in consumer subscriptions across 9 CLI providers (`codex, antigravity, claude, opencode, commandcode, copilot, cursor, gemini-cli, ollama`) — zero keys on disk.
 - **Direct API (optional, env keys never stored)**: `openai-api (OPENAI_API_KEY), anthropic-api (ANTHROPIC_API_KEY), gemini-api (GEMINI_API_KEY), compat-api (COMPAT_BASE_URL + optional COMPAT_API_KEY)` — per-role or per-call (`provider: "anthropic-api"`), mixed with subscriptions; non-secret base-URL overrides via `kumo config set <name>BaseUrl`.
-- **Dual-Provider Architecture**: Frontier reasoning orchestrator breaks down complex architecture and dispatches bounded execution tasks to high-throughput workers via local MCP stdio bridge.
+- **Multi-Provider Architecture**: Frontier reasoning orchestrator breaks down complex architecture and dispatches bounded execution tasks to high-throughput workers via local MCP stdio bridge.
 - **Dynamic Model Tracking & Role Synchronization**: Changing active models via `/model` or presets immediately updates worker prompts and subagent instructions (`.codex/agents/reviewer.toml`), ensuring each role dynamically reflects which model is operating.
 - **Multi-Chat Session Persistence**: Persistent local conversation index and turn logging under `~/.kumo/sessions/` with instant switching (`/chats`) and Markdown export (`/save`).
 - **Global Project Registry**: Automatically tracks workspaces with quick switching (`/projects` or `/cd <path>`).
@@ -249,8 +248,7 @@ Inside an interactive Kumo session (`kumo ›`), manage sessions, workspaces, mo
 
 #### Quotas, History & Utilities
 - `/status`, `/quota`: Checks live account rate limits, quota progress bars, and provider health.
-- `/refresh`: Re-fetches live quotas immediately from Codex and Antigravity.
-- `/history`: Displays recent prompt query history.
+- `/refresh`: Re-fetches live quotas immediately from the active providers.
 - `/history clean`: Strips non-chat commands and settings changes from history file.
 - `/history clear` (or `/clear-history`): Completely wipes prompt history.
 - `/clear` (or `/cls`): Clears screen and re-renders the header banner.

@@ -33,21 +33,24 @@
 - **`bin/kumo.js`**: Executable binary entry point registered in `package.json`.
 - **`src/cli.js`**: Commander router dispatching interactive sessions, headless runs, model switching, status checks, and doctor diagnostics.
 - **`src/commands/start.js`**: Independent interactive REPL. Renders Cloud Cumulus (雲) banner, runs background workers silently, manages live quota auto-refreshes (every 30s after prompt submission), and processes in-session commands (`/model`, `/effort`, `/status`, `/refresh`, `/clear`, `/exit`).
-- **`src/commands/status.js`**: Queries live quotas and health for both Codex and Antigravity, formatting them with aligned 20-character labels and 14-block ASCII progress bars.
-- **`src/commands/model.js`**: Inspects and switches models and reasoning levels for both Orchestrator and Worker, supporting presets and shorthand commands.
+- **`src/commands/status.js`**: Queries live quotas and health for the active orchestrator/worker providers (subscription quota fetches; direct-API roles render env-key presence + base URL instead), formatting them with aligned 24-character labels and 14-block ASCII progress bars.
+- **`src/commands/model.js`**: Inspects and switches models, reasoning levels, and explicit providers for both Orchestrator and Worker, supporting presets and shorthand commands.
+- **`src/commands/doctor.js`**: Renders `runDiagnostics` rows for Node, all subscription CLIs, direct-API key presence, and MCP bridge health.
 - **`src/utils/window-launcher.js`**: Spawns Kumo in a dedicated PowerShell window using `-NoProfile -NoExit -ExecutionPolicy Bypass` and closes the calling terminal.
 - **`src/utils/quota-cache.js`**: Local disk cache (`~/.kumo/quota_cache.json`) enabling `<5ms` instant menu and banner rendering upon window launch.
+- **`src/utils/diagnostics.js`**: `runDiagnostics` covering Node, Codex/Antigravity logins, new subscription CLI `--version` probes, direct-API env presence (no network), bridge health, and overall `orchestratorPath`.
 - **`src/utils/ui.js`**: ANSI styling tokens, Cloud Cumulus (雲) banner, cyan-to-blue gradient rules (`brightCyan` → `cyan` → `brightBlue` → `blue`), standardized 14-block progress bars (`progressBar(percent, 14)`), and relative/calendar date formatters (`formatResetTime`, `formatIsoResetTime`).
+- **`src/utils/model-picker.js`**: Interactive picker grouping Subscription CLIs and Direct API providers (`SUBSCRIPTION_PROVIDERS`, `DIRECT_API_PROVIDERS`).
 - **`src/bridge/agy-runner.js`**: Low-level executor for `agy.exe`. Resolves binary path, manages timeouts with hard-capped output buffers, parses live tab-separated quotas via `agy -p /usage`, and sets `--dangerously-skip-permissions` with mode `accept-edits` or `plan`.
-- **`src/bridge/server.js`**: MCP stdio bridge exposing 5 primary worker tools (`worker_explore`, `worker_implement`, `worker_test`, `worker_research`, `worker_review`) to Codex. Forwards worker model and reasoning effort.
+- **`src/bridge/server.js`**: MCP stdio bridge exposing 5 primary worker tools (`worker_explore`, `worker_implement`, `worker_test`, `worker_research`, `worker_review`) with optional per-call `provider` override. Forwards worker model and reasoning effort.
+- **`src/providers/api/`**: Zero-dependency direct-API transport (`api-transport.js`), single-shot orchestrator clients, and shared worker executor (`api-worker.js`).
 - **`src/config/sync.js`**: Standalone synchronization module that mirrors active orchestrator and worker models to `.codex/agents/reviewer.toml` and `.codex/config.toml`.
-- **`src/config/settings.js`**: Global configuration stored in `~/.kumo/config.json`. Manages presets, custom model strings, and dual-provider reasoning efforts.
+- **`src/config/settings.js`**: Global configuration stored in `~/.kumo/config.json`. Manages presets, custom model strings, 13 provider ids, non-secret `*BaseUrl` overrides, and dual-role reasoning efforts.
 
----
+## 3. Presets & Dual-Role Reasoning
 
-## 3. Presets & Dual-Provider Reasoning
+Kumo supports reasoning effort configuration on **both** roles (any provider):
 
-Kumo supports reasoning effort configuration on **both** providers:
 - **Orchestrator Reasoning**: `low`, `medium`, `high`, `max` (forwarded to Codex as `model_reasoning_effort`)
 - **Worker Reasoning**: `low`, `medium`, `high` (forwarded to Antigravity as `--effort`)
 
@@ -73,18 +76,19 @@ kumo --here                               # Run in current terminal without spaw
 # Live Account Quotas & Rate Limits
 kumo status                               # Also: kumo quota, kumo usage
 
-# Model & Reasoning Configuration
+# Model, Reasoning & Provider Configuration
 kumo model                                # Display current setup, presets, and commands
+kumo model list                           # All 13 provider ids, presets, and env-key hints
 kumo model <model>                        # Set orchestrator model (e.g. kumo model gpt-5.5)
-kumo model orchestrator <model> [effort]  # Set orchestrator model and effort
-kumo model worker <model> [effort]        # Set worker model and effort
+kumo model orchestrator <model> [effort] [provider]  # Set orchestrator model, effort, explicit provider
+kumo model worker <model> [effort] [provider]        # Set worker model, effort, explicit provider
 kumo model use <preset>                   # Apply preset (e.g. kumo model use test)
 
 kumo effort <low|medium|high|max>         # Set orchestrator reasoning effort
 kumo effort worker <low|medium|high>      # Set worker reasoning effort
 
 # Diagnostics & Rules Initialization
-kumo doctor                               # Verify binaries, logins, and MCP bridge
+kumo doctor                               # Verify binaries, logins, direct-API key presence, and MCP bridge
 kumo init                                 # Scaffold AGENTS.md & GEMINI.md in workspace
 kumo banner                               # Display Cloud Cumulus banner
 ```
@@ -92,14 +96,14 @@ kumo banner                               # Display Cloud Cumulus banner
 ### In-Session REPL Commands:
 ```text
 /help                                     Show interactive help
-/status                                   Refresh and show live dual-provider quotas
+/status                                   Refresh and show live provider quotas
 /model                                    Show active model configuration
 /model <model>                            Switch orchestrator model on the fly
-/model worker <model> [effort]            Switch worker model and reasoning effort
+/model worker <model> [effort] [provider]  Switch worker model, effort, explicit provider
 /effort <low|medium|high|max>             Change orchestrator reasoning effort
 /effort worker <low|medium|high>          Change worker reasoning effort
 /clear                                    Clear screen and redraw Cloud Cumulus banner
-/refresh                                  Re-query live account rate limits
+/refresh                                  Re-query live quotas from the active providers
 /exit                                     Cleanly quit session
 ```
 
@@ -130,10 +134,9 @@ When inside the session (`kumo ›`):
    - Refactoring: *"Refactor bridge error handling to support automatic reconnection"*
    - Bug fixing: *"Run tests, locate why status bars clip, and fix the root cause"*
 2. **Orchestrator Plans & Delegates**:
-   - The **Orchestrator** (default: **ChatGPT 6 Astra**, or dynamically configured model) evaluates requirements, decomposes steps, and issues targeted commands to the worker via MCP stdio bridge tools (`worker_explore`, `worker_implement`, `worker_test`, `worker_research`, `worker_review`).
 3. **Execution Worker Executes**:
-   - The **Worker** (default: **Gemini 3.8 Flash**, or dynamically configured model) executes the heavy file inspection, refactoring, and test execution using its high speed and large context window.
-   - **Quota Preservation**: Codex never bloats its ChatGPT Plus quota reading large codebase files directly.
+  - The **Worker** (default: **Gemini 3.8 Flash**, or dynamically configured model) executes the heavy file inspection, refactoring, and test execution using its high speed and large context window.
+  - **Quota Preservation**: The orchestrator never bloats its own quota reading large codebase files directly.
 4. **Review & Verification**:
    - The orchestrator inspects the generated diffs, verifies test results, and presents a concise summary to the user.
 
@@ -158,7 +161,7 @@ All metadata labels and progress bars adhere to strict layout standards:
   - `Worker Weekly:` (`brightBlue`)
   - `Worker 5-Hour:` (`brightBlue`, omitted if no 5-hour limit exists)
 - **Model Reasoning Suffix**: Attached directly to model names with a hyphen (`gpt-5.6-luna-low`, `gemini-3.8-flash-medium`).
-- **Subscription Tags**: Enclosed in parentheses beside the model (`(ChatGPT Plus)`, `(Google AI Pro)`).
+- **Provider Tags**: Enclosed in parentheses beside the model (`(ChatGPT Plus)`, `(Google AI Pro)`, `(Direct API (openai-api))`, or the active provider id).
 - **Bracket-Free Quotas**: Clean progress bars without model or subscription tags in brackets.
 - **Active Model Scoping**: Quotas strictly display only the metrics for the models actively in use. Unselected model pools (e.g. Claude/GPT pool when using Gemini) are completely suppressed.
 - **Quota Bars**: 14-block ASCII progress bar with filled blocks smoothly transitioning along the **blueish gradient** (`progressBar(percent, 14)`).
