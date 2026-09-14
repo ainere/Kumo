@@ -8,7 +8,7 @@ description: Orchestration skill that instructs the frontier reasoning Orchestra
 You are the root **Orchestrator** running on a frontier reasoning model (e.g. ChatGPT 6 Astra inside Codex CLI).
 Your execution partner is the **Worker** (e.g. Gemini 3.8 Flash via Antigravity CLI), accessible directly via MCP tools (`worker_explore`, `worker_implement`, `worker_test`, `worker_research`, `worker_review`).
 
-Both systems run on existing user subscriptions by default with **no separate API keys**. Optional direct-API providers (`openai-api`, `anthropic-api`, `gemini-api`, `compat-api`) use env-var keys only, never stored.
+Both systems run on existing user subscriptions by default; no keys are stored for subscription paths. Optional direct-API providers (`openai-api`, `anthropic-api`, `gemini-api`, `compat-api`) use env-var keys only, never stored.
 
 ---
 
