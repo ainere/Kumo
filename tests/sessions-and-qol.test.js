@@ -114,6 +114,29 @@ test("appendTurn and loadTurnLog append and retrieve turns correctly", () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   }
 });
+test("appendTurn rejects traversal chatIds and loadTurnLog skips corrupt lines", async () => {
+  const testDir = path.join(os.tmpdir(), "kumo-test-turns-evil-" + Date.now());
+  fs.mkdirSync(testDir, { recursive: true });
+
+  try {
+    assert.throws(() => appendTurn(testDir, "../../evil", { prompt: "x" }), /Invalid chatId/);
+
+    const chatId = createChat(testDir, { model: "chatgpt-6-astra" });
+    appendTurn(testDir, chatId, { prompt: "good-1" });
+    appendTurn(testDir, chatId, { prompt: "good-2" });
+    assert.strictEqual(loadTurnLog(testDir, chatId).length, 2);
+
+    const { getSessionDir } = await import("../src/data/sessions.js");
+    fs.appendFileSync(path.join(getSessionDir(testDir), `${chatId}.json`), "NOT-JSON\n", "utf-8");
+    const turns = loadTurnLog(testDir, chatId);
+    assert.strictEqual(turns.length, 2);
+    assert.strictEqual(turns[0].prompt, "good-1");
+
+    assert.throws(() => loadTurnLog(testDir, "../../evil"), /Invalid chatId/);
+  } finally {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  }
+});
 
 test("generateChatTitle cleans and truncates prompt", () => {
   const shortPrompt = "Fix login issue";
@@ -174,6 +197,8 @@ test("isCodexModel distinguishes Codex vs Antigravity models correctly", () => {
   assert.strictEqual(isCodexModel("gemini-3.7-flash"), false);
   assert.strictEqual(isCodexModel("claude-opus-4-6-thinking"), false);
   assert.strictEqual(isCodexModel("gpt-oss-120b"), false);
+  assert.strictEqual(isCodexModel("solana-x"), false);
+  assert.strictEqual(isCodexModel("lunarvim"), false);
   assert.strictEqual(isCodexModel("anything", "antigravity"), false);
   assert.strictEqual(isCodexModel("anything", "gemini"), false);
 });

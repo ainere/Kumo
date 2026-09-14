@@ -41,10 +41,9 @@ The **Model Context Protocol (MCP)** provides an open, standardized RPC protocol
 └────────────────────────────────────────────────────────┘
 ```
 
-### 1. Subscription-Level Authentication
-- No API keys are stored in files or transmitted in network headers.
-- Orchestrator relies on `codex login`.
-- Execution Worker relies on `agy auth login` (or Google account credentials).
+### 1. Subscription-First Authentication (Direct API Optional)
+- Subscription CLIs need no API keys in files or network headers: orchestrator relies on `codex login`, worker on `agy auth login` (or Google account credentials).
+- Optional direct-API providers (`openai-api`, `anthropic-api`, `gemini-api`, `compat-api`) take keys from env vars only (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `COMPAT_API_KEY` optional + `COMPAT_BASE_URL`); keys are never written to disk, cache, logs, or `~/.kumo/*`.
 - The subprocess inherits the user's OS user session and profile environment.
 
 ### 2. Sandbox Mode Enforcement

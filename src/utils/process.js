@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 
 /**
- * Determine if a target binary on Windows is a batch script (.cmd/.bat) or extensionless.
+ * Determine if a target binary on Windows is a batch script (.cmd/.bat).
  *
  * @param {string} bin
  * @returns {boolean}
@@ -23,7 +23,21 @@ export function isWindowsBatch(bin) {
   if (process.platform !== "win32") return false;
   if (!bin || typeof bin !== "string") return false;
   const ext = path.extname(bin).toLowerCase();
-  return ext === ".cmd" || ext === ".bat" || !ext;
+  return ext === ".cmd" || ext === ".bat";
+}
+
+/**
+ * Quote a single argument for `cmd /s /c`.
+ * Safe chars pass through; otherwise double-quote, double inner quotes,
+ * and neutralize `%VAR%` expansion. `& | < > ^` are inert inside quotes.
+ *
+ * @param {*} s
+ * @returns {string}
+ */
+export function quoteCmdArg(s) {
+  const str = String(s);
+  if (/^[A-Za-z0-9_+=:;,.\\/@-]+$/.test(str)) return str;
+  return `"` + str.replace(/"/g, '""').replace(/%/g, "%%") + `"`;
 }
 
 /**
@@ -41,7 +55,7 @@ export function prepareSpawn(bin, args = [], options = {}) {
     const comspec = process.env.ComSpec || "cmd.exe";
     return {
       file: comspec,
-      args: ["/d", "/s", "/c", bin, ...args],
+      args: ["/d", "/s", "/c", [bin, ...args].map(quoteCmdArg).join(" ")],
       options: {
         ...cleanOptions,
         shell: false,

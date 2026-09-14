@@ -24,6 +24,14 @@ export async function doctorCommand() {
   printCheck("Node.js Runtime", results.node);
   printCheck("Codex CLI (OpenAI)", results.codex);
   printCheck("Gemini CLI (Google)", results.gemini);
+  printCheck("Copilot CLI (GitHub)", results.copilot || { ok: false, details: "missing" });
+  printCheck("Cursor Agent", results.cursor || { ok: false, details: "missing" });
+  printCheck("Gemini CLI (standalone)", results.geminiCli || { ok: false, details: "missing" });
+  printCheck("Ollama Local", results.ollama || { ok: false, details: "missing" });
+  printCheck("OpenAI API (env)", results.openaiApi || { ok: false, details: "missing" });
+  printCheck("Anthropic API (env)", results.anthropicApi || { ok: false, details: "missing" });
+  printCheck("Gemini API (env)", results.geminiApi || { ok: false, details: "missing" });
+  printCheck("Compat API (env)", results.compatApi || { ok: false, details: "missing" });
   printCheck("MCP Bridge Server", results.bridge);
 
   console.log(`\n  ${c.dim}Global Config:${c.reset}  ${results.config.path}`);
@@ -32,15 +40,18 @@ export async function doctorCommand() {
   }
 
   console.log("\n" + separator(64));
-  if (results.node.ok && results.codex.ok && results.gemini.ok && results.bridge.ok) {
+  if (results.node.ok && results.bridge.ok && (results.orchestratorPath?.ok || (results.codex.ok && results.gemini.ok))) {
     console.log(`  ${badge.ok} ${c.brightGreen}All systems operational.${c.reset} Ready to run 'kumo'.`);
   } else {
     console.log(`  ${badge.warn} ${c.brightYellow}Action required for some components:${c.reset}`);
-    if (!results.codex.ok) {
-      console.log(`    ${badge.dot} Install Codex CLI: npm install -g @openai/codex && codex login`);
+    if (!results.codex.ok && !results.openaiApi?.ok) {
+      console.log(`    ${badge.dot} Install Codex CLI: npm install -g @openai/codex && codex login (or set OPENAI_API_KEY)`);
     }
-    if (!results.gemini.ok) {
-      console.log(`    ${badge.dot} Configure Gemini binary: kumo config set cliBinary gemini`);
+    if (!results.gemini.ok && !results.geminiApi?.ok && !results.anthropicApi?.ok) {
+      console.log(`    ${badge.dot} Configure Gemini binary: kumo config set cliBinary gemini (or set a Direct API key)`);
+    }
+    if (!results.orchestratorPath?.ok) {
+      console.log(`    ${badge.dot} No orchestrator path: log in to a subscription CLI or set a Direct API key`);
     }
   }
   console.log(separator(64) + "\n");

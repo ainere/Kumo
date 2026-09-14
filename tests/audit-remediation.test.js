@@ -11,6 +11,7 @@ import {
   storePendingPreview,
   consumePendingPreview,
   pruneExpiredPreviews,
+  hashTask,
   PREVIEW_TTL_MS,
 } from "../src/bridge/server.js";
 import { inspectGraph } from "../src/commands/graph.js";
@@ -107,21 +108,29 @@ test("inspectGraph detects missing vs existing graphify data", () => {
   }
 });
 
-test("storePendingPreview and consumePendingPreview key by previewId rather than fragile prose", () => {
+test("storePendingPreview and consumePendingPreview key by previewId with task binding", () => {
   pendingPreviews.clear();
   const sampleDiff = "--- a/src/test.js\n+++ b/src/test.js\n@@ -1 +1 @@\n-old\n+new";
-  const previewId = storePendingPreview(sampleDiff);
+  const previewId = storePendingPreview(sampleDiff, { taskHash: hashTask("do thing"), safetyMode: "diff-review", workspaceDir: "/tmp/ws" });
 
   assert.ok(previewId.startsWith("prev_"));
   assert.equal(pendingPreviews.has(previewId), true);
 
-  // Even if caller changes task prose completely, consuming by previewId succeeds
   const retrieved = consumePendingPreview(previewId);
-  assert.equal(retrieved, sampleDiff);
+  assert.equal(retrieved.previewText, sampleDiff);
+  assert.equal(retrieved.taskHash, hashTask("do thing"));
+  assert.equal(retrieved.workspaceDir, "/tmp/ws");
 
   // Consumed preview is immediately deleted to prevent memory leaks
   assert.equal(pendingPreviews.has(previewId), false);
   assert.equal(consumePendingPreview(previewId), null);
+  assert.equal(consumePendingPreview(undefined), null);
+});
+
+test("checkDiffFidelity warns on empty actual and unparseable preview", () => {
+  const preview = "--- a/src/config.js\n+++ b/src/config.js";
+  assert.match(checkDiffFidelity(preview, []), /no file changes/);
+  assert.match(checkDiffFidelity("no paths here", ["src/a.js"]), /no parseable file paths/);
 });
 
 test("pruneExpiredPreviews removes stale entries older than PREVIEW_TTL_MS", () => {

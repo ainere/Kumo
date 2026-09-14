@@ -22,6 +22,32 @@ function ensureDir(dir) {
   }
 }
 
+const CHAT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Validate a chat id (prevents path traversal via `../../evil` ids).
+ *
+ * @param {string} chatId
+ */
+function assertChatId(chatId) {
+  if (!CHAT_ID_RE.test(chatId || "")) {
+    throw new Error("Invalid chatId");
+  }
+}
+
+/**
+ * Atomically write JSON (tmp file + rename; never leaves a truncated target).
+ *
+ * @param {string} file
+ * @param {*} data
+ */
+function atomicWriteJson(file, data) {
+  ensureDir(path.dirname(file));
+  const tmp = `${file}.tmp.${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf-8");
+  fs.renameSync(tmp, file);
+}
+
 // ── Project Registry ──
 
 export function hashWorkspace(workspacePath) {
@@ -55,8 +81,7 @@ export function registerProject(workspacePath) {
   };
 
   try {
-    ensureDir(DATA_DIR);
-    fs.writeFileSync(PROJECTS_FILE, JSON.stringify(registry, null, 2), "utf-8");
+    atomicWriteJson(PROJECTS_FILE, registry);
   } catch {
     /* ignore write errors */
   }
@@ -90,8 +115,7 @@ export function loadChatIndex(workspacePath) {
 
 function saveChatIndex(workspacePath, chats) {
   const dir = getSessionDir(workspacePath);
-  ensureDir(dir);
-  fs.writeFileSync(path.join(dir, "chats.json"), JSON.stringify(chats, null, 2), "utf-8");
+  atomicWriteJson(path.join(dir, "chats.json"), chats);
 }
 
 export function createChat(workspacePath, opts = {}) {
@@ -99,8 +123,7 @@ export function createChat(workspacePath, opts = {}) {
   ensureDir(dir);
 
   const chats = loadChatIndex(workspacePath);
-  const chatId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-
+  const chatId = `chat-${crypto.randomUUID()}`;
   const entry = {
     id: chatId,
     title: opts.title || "New Chat",
@@ -118,6 +141,8 @@ export function createChat(workspacePath, opts = {}) {
 }
 
 export function updateChat(workspacePath, chatId, updates) {
+  if (!chatId) return false;
+  assertChatId(chatId);
   const chats = loadChatIndex(workspacePath);
   const idx = chats.findIndex((c) => c.id === chatId);
   if (idx === -1) return false;
@@ -128,6 +153,8 @@ export function updateChat(workspacePath, chatId, updates) {
 }
 
 export function deleteChat(workspacePath, chatId) {
+  if (!chatId) return;
+  assertChatId(chatId);
   const chats = loadChatIndex(workspacePath);
   const filtered = chats.filter((c) => c.id !== chatId);
   saveChatIndex(workspacePath, filtered);
@@ -151,6 +178,7 @@ export function listChats(workspacePath) {
 
 export function appendTurn(workspacePath, chatId, turn) {
   if (!chatId) return;
+  assertChatId(chatId);
   const dir = getSessionDir(workspacePath);
   ensureDir(dir);
   const file = path.join(dir, `${chatId}.json`);
@@ -163,15 +191,22 @@ export function appendTurn(workspacePath, chatId, turn) {
 
 export function loadTurnLog(workspacePath, chatId) {
   if (!chatId) return [];
+  assertChatId(chatId);
   const dir = getSessionDir(workspacePath);
   const file = path.join(dir, `${chatId}.json`);
   try {
     if (fs.existsSync(file)) {
       const content = fs.readFileSync(file, "utf-8");
-      return content
-        .split("\n")
-        .filter((l) => l.trim().length > 0)
-        .map((line) => JSON.parse(line));
+      const turns = [];
+      for (const line of content.split("\n")) {
+        if (line.trim().length === 0) continue;
+        try {
+          turns.push(JSON.parse(line));
+        } catch {
+          continue;
+        }
+      }
+      return turns;
     }
   } catch {
     /* ignore */
@@ -196,8 +231,27 @@ export function getLiveLogDir(workspacePath) {
   return dir;
 }
 
+export function pruneLiveLogs(workspacePath, maxAgeMs = 24 * 3600 * 1000) {
+  try {
+    const dir = getLiveLogDir(workspacePath);
+    const cutoff = Date.now() - maxAgeMs;
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.startsWith("live-") || !name.endsWith(".log")) continue;
+      const p = path.join(dir, name);
+      try {
+        if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p);
+      } catch {
+        /* ignore single-file errors */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 export function getLiveLogPath(workspacePath, runId) {
   const dir = getLiveLogDir(workspacePath);
+  pruneLiveLogs(workspacePath);
   return path.join(dir, `live-${runId}.log`);
 }
 
@@ -217,7 +271,7 @@ export function setActiveLiveRun(workspacePath, info) {
     if (info && info.runId) {
       runs[info.runId] = info;
     }
-    fs.writeFileSync(activeFile, JSON.stringify(runs, null, 2), "utf-8");
+    atomicWriteJson(activeFile, runs);
   } catch {
     /* ignore */
   }
@@ -264,7 +318,7 @@ export function clearActiveLiveRun(workspacePath, runId) {
       if (Object.keys(data).length === 0) {
         fs.unlinkSync(activeFile);
       } else {
-        fs.writeFileSync(activeFile, JSON.stringify(data, null, 2), "utf-8");
+        atomicWriteJson(activeFile, data);
       }
     }
   } catch {

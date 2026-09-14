@@ -25,6 +25,58 @@ function readStoredConfig() {
 }
 
 /**
+ * Back up an existing file to `<path>.bak` (overwrites prior backup).
+ *
+ * @param {string} p
+ */
+function backupIfExists(p) {
+  try {
+    if (fs.existsSync(p)) {
+      fs.copyFileSync(p, `${p}.bak`);
+    }
+  } catch {
+    /* non-fatal */
+  }
+}
+
+/**
+ * Write a text file with backup of any existing file.
+ *
+ * @param {string} p
+ * @param {string} content
+ */
+function writeFileBacked(p, content) {
+  backupIfExists(p);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, content, "utf-8");
+}
+
+/**
+ * Write a JSON file, merging top-level `mcpServers` with any existing file.
+ * Missing/corrupt existing JSON is treated as `{}` (existing file backed up first).
+ *
+ * @param {string} p
+ * @param {object} obj
+ */
+function writeJsonMerged(p, obj) {
+  let old = {};
+  if (fs.existsSync(p)) {
+    try {
+      const raw = fs.readFileSync(p, "utf-8").trim();
+      old = raw ? JSON.parse(raw) : {};
+      if (!old || typeof old !== "object") old = {};
+    } catch {
+      old = {};
+    }
+  }
+  const merged = { ...old, ...obj };
+  merged.mcpServers = { ...(old.mcpServers || {}), ...(obj.mcpServers || {}) };
+  backupIfExists(p);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(merged, null, 2), "utf-8");
+}
+
+/**
  * Synchronize orchestrator and worker configs across active providers.
  *
  * @param {string} [workspaceDir] - Workspace directory (defaults to cwd)
@@ -88,7 +140,7 @@ For each finding include:
 If there are no material findings, say so clearly and name any residual uncertainty.
 """
 `;
-      fs.writeFileSync(reviewerPath, reviewerContent, "utf-8");
+      writeFileBacked(reviewerPath, reviewerContent);
 
       const configTomlPath = path.join(codexDir, "config.toml");
       const configTomlContent = `# Kumo Cross-Provider Orchestrator Configuration
@@ -107,10 +159,10 @@ max_concurrent_threads_per_session = 4
 
 [mcp_servers.kumo-bridge]
 command = "node"
-args = ["src/bridge/server.js"]
+args = ["${path.join(workspaceDir, "src", "bridge", "server.js").replace(/\\/g, "\\\\")}"]
 env = {}
 `;
-      fs.writeFileSync(configTomlPath, configTomlContent, "utf-8");
+      writeFileBacked(configTomlPath, configTomlContent);
     }
 
     // 2. Sync Antigravity / Gemini configurations (.agents/mcp_config.json & ~/.gemini/config/mcp_config.json)
@@ -131,30 +183,27 @@ env = {}
           },
         },
       };
-      fs.writeFileSync(agyMcpPath, JSON.stringify(agyMcpConfig, null, 2), "utf-8");
+      writeJsonMerged(agyMcpPath, agyMcpConfig);
 
-      // Also ensure global ~/.gemini/config/mcp_config.json has kumo-bridge
-      try {
-        const geminiGlobalDir = path.join(os.homedir(), ".gemini", "config");
-        if (fs.existsSync(geminiGlobalDir)) {
-          const globalMcpPath = path.join(geminiGlobalDir, "mcp_config.json");
-          let existing = {};
-          if (fs.existsSync(globalMcpPath)) {
-            try {
-              const raw = fs.readFileSync(globalMcpPath, "utf-8").trim();
-              if (raw) existing = JSON.parse(raw);
-            } catch {}
+      // Global gemini sync is opt-in (avoids leaking workspace paths on every save)
+      if (process.env.KUMO_SYNC_GLOBAL_GEMINI === "1") {
+        try {
+          const geminiGlobalDir = path.join(os.homedir(), ".gemini", "config");
+          if (fs.existsSync(geminiGlobalDir)) {
+            const globalMcpPath = path.join(geminiGlobalDir, "mcp_config.json");
+            writeJsonMerged(globalMcpPath, {
+              mcpServers: {
+                "kumo-bridge": {
+                  command: "node",
+                  args: [path.join(workspaceDir, "src", "bridge", "server.js")],
+                  disabled: false,
+                },
+              },
+            });
           }
-          if (!existing.mcpServers) existing.mcpServers = {};
-          existing.mcpServers["kumo-bridge"] = {
-            command: "node",
-            args: [path.join(workspaceDir, "src", "bridge", "server.js")],
-            disabled: false,
-          };
-          fs.writeFileSync(globalMcpPath, JSON.stringify(existing, null, 2), "utf-8");
+        } catch {
+          /* ignore */
         }
-      } catch {
-        /* ignore */
       }
     }
 
@@ -173,7 +222,7 @@ env = {}
           },
         },
       };
-      fs.writeFileSync(claudeMcpPath, JSON.stringify(claudeMcpConfig, null, 2), "utf-8");
+      writeJsonMerged(claudeMcpPath, claudeMcpConfig);
     }
   } catch (err) {
     // Non-fatal if workspace is read-only or not yet initialized

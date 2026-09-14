@@ -29,6 +29,7 @@ test("detectProviderForModel maps models to the correct providers", () => {
 test("supportsEffort correctly flags models that do or do not accept --effort", () => {
   assert.equal(supportsEffort("chatgpt-6-astra"), true);
   assert.equal(supportsEffort("gemini-3.8-flash"), true);
+  assert.equal(supportsEffort("gpt-oss-120b"), true);
   // Claude models do not accept --effort flag
   assert.equal(supportsEffort("claude-opus-4-6-thinking"), false);
   assert.equal(supportsEffort("claude-sonnet-4-6"), false);

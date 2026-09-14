@@ -1326,10 +1326,12 @@ export async function startCommand(opts = {}) {
         case "quota":
         case "usage":
           try {
-            [codexLimits, agyUsage] = await Promise.all([
+            const [freshCodex, freshAgy] = await Promise.all([
               client.getRateLimits().catch(() => null),
               getAgyUsage().catch(() => null),
             ]);
+            if (freshCodex) codexLimits = freshCodex;
+            if (freshAgy) agyUsage = freshAgy;
             saveCachedQuotas(codexLimits, agyUsage);
 
             console.log(`\n  ${c.bold}Live Account Quotas & Remaining Limits:${c.reset}`);
@@ -1366,10 +1368,12 @@ export async function startCommand(opts = {}) {
 
         case "refresh":
           try {
-            [codexLimits, agyUsage] = await Promise.all([
+            const [freshCodex, freshAgy] = await Promise.all([
               client.getRateLimits().catch(() => null),
               getAgyUsage().catch(() => null),
             ]);
+            if (freshCodex) codexLimits = freshCodex;
+            if (freshAgy) agyUsage = freshAgy;
             saveCachedQuotas(codexLimits, agyUsage);
             const isClaudeOrGpt = /claude|gpt|anthropic/i.test(config.workerModel) || config.workerProvider === "claude";
             const wPercent = isClaudeOrGpt ? (agyUsage?.claudeGptWeeklyPercent ?? 0) : (agyUsage?.geminiWeeklyPercent ?? 0);
@@ -1425,10 +1429,12 @@ export async function startCommand(opts = {}) {
       });
 
       // Refresh quotas post-turn
-      [codexLimits, agyUsage] = await Promise.all([
+      const [freshCodex, freshAgy] = await Promise.all([
         client.getRateLimits().catch(() => null),
         getAgyUsage().catch(() => null),
       ]);
+      if (freshCodex) codexLimits = freshCodex;
+      if (freshAgy) agyUsage = freshAgy;
       saveCachedQuotas(codexLimits, agyUsage);
     } catch (err) {
       console.error(`\n${badge.fail} Turn failed: ${err.message}`);

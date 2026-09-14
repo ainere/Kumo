@@ -1,7 +1,7 @@
 # Kumo Cross-Provider Orchestrator Configuration
 # Automatically synchronized with active user settings.
 # Active Orchestrator: chatgpt-6-astra (low) [codex]
-# Active Worker:       gemini-3.8-flash (medium) [gemini]
+# Active Worker:       gemini-3.8-flash (medium) [antigravity]
 
 model = "chatgpt-6-astra"
 model_reasoning_effort = "low"
@@ -14,5 +14,5 @@ max_concurrent_threads_per_session = 4
 
 [mcp_servers.kumo-bridge]
 command = "node"
-args = ["src/bridge/server.js"]
+args = ["D:\\Projects\\Kumo\\src\\bridge\\server.js"]
 env = {}
