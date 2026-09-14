@@ -42,8 +42,18 @@ for (let i = 0; i < args.length; i++) {
 
 export const PREVIEW_TTL_MS = 15 * 60 * 1000; // 15 minutes TTL
 
-// In-memory cache for pending diff previews: Map<string, { previewText: string, createdAt: number }>
+// In-memory cache for pending diff previews: Map<string, { previewText, taskHash, safetyMode, workspaceDir, createdAt }>
 export const pendingPreviews = new Map();
+
+/**
+ * Hash a task string for preview binding.
+ *
+ * @param {string} task
+ * @returns {string}
+ */
+export function hashTask(task) {
+  return crypto.createHash("sha256").update(task || "").digest("hex");
+}
 
 /**
  * Clean up expired previews from cache.
@@ -60,44 +70,28 @@ export function pruneExpiredPreviews() {
 /**
  * Register a new diff preview and return its unique previewId token.
  */
-export function storePendingPreview(previewText) {
+export function storePendingPreview(previewText, opts = {}) {
   pruneExpiredPreviews();
-  const previewId = `prev_${crypto.randomUUID().slice(0, 8)}`;
+  const previewId = `prev_${crypto.randomUUID()}`;
   pendingPreviews.set(previewId, {
     previewText,
+    taskHash: opts.taskHash || null,
+    safetyMode: opts.safetyMode || null,
+    workspaceDir: opts.workspaceDir || null,
     createdAt: Date.now(),
   });
   return previewId;
 }
 
 /**
- * Retrieve and consume a pending preview by previewId.
- * Falls back to latest unexpired preview if previewId is omitted.
+ * Retrieve and consume a pending preview by previewId (single-use, no fallback).
  */
 export function consumePendingPreview(previewId) {
   pruneExpiredPreviews();
-  if (previewId && pendingPreviews.has(previewId)) {
-    const entry = pendingPreviews.get(previewId);
-    pendingPreviews.delete(previewId);
-    return entry.previewText;
-  }
-  // Soft fallback: if previewId wasn't passed, take the most recent preview (if any exist)
-  if (!previewId && pendingPreviews.size > 0) {
-    let latestKey = null;
-    let latestTime = 0;
-    for (const [id, entry] of pendingPreviews.entries()) {
-      if (entry.createdAt > latestTime) {
-        latestTime = entry.createdAt;
-        latestKey = id;
-      }
-    }
-    if (latestKey) {
-      const entry = pendingPreviews.get(latestKey);
-      pendingPreviews.delete(latestKey);
-      return entry.previewText;
-    }
-  }
-  return null;
+  if (!previewId || !pendingPreviews.has(previewId)) return null;
+  const entry = pendingPreviews.get(previewId);
+  pendingPreviews.delete(previewId);
+  return entry;
 }
 
 /**
@@ -113,7 +107,18 @@ export function getGitStatus(cwd) {
     if (!out) return [];
     return out
       .split("\n")
-      .map((l) => l.trim().split(/\s+/)[1])
+      .map((l) => {
+        const status = l.slice(0, 2);
+        let p = l.slice(3).trim();
+        if (status.includes("R")) {
+          const arrow = p.indexOf("->");
+          if (arrow !== -1) p = p.slice(arrow + 2).trim();
+        }
+        if ((p.startsWith('"') && p.endsWith('"')) || (p.startsWith("'") && p.endsWith("'"))) {
+          p = p.slice(1, -1);
+        }
+        return p;
+      })
       .filter(Boolean);
   } catch {
     return [];
@@ -125,12 +130,12 @@ export function getGitStatus(cwd) {
  */
 export function getGitDiffStat(cwd) {
   try {
-    const out = execSync("git diff --stat", {
+    const out = execSync("git diff HEAD --stat", {
       cwd,
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf-8",
     }).trim();
-    return out || "(no unstaged git diff)";
+    return out || "";
   } catch {
     return "";
   }
@@ -149,28 +154,39 @@ export function extractPreviewFiles(previewText) {
       files.add(match[1]);
     }
   }
-  const fileHeaderRegex = /(?:\[FILE:\s*|File:\s*|modified:\s*)([^\s\],]+)/gi;
+  const fileHeaderRegex = /(?:\[FILE:\s*|\bFile:\s*|\bmodified:\s*)([^\s\],]+)/gi;
   while ((match = fileHeaderRegex.exec(previewText)) !== null) {
     if (match[1]) {
-      files.add(match[1]);
+      files.add(match[1].replace(/[.,"' :;)]+$/g, ""));
     }
   }
-  return Array.from(files);
+  return Array.from(files).filter(Boolean);
 }
 
 /**
  * Sanity-check actual modified files against what was previewed in Phase 1.
  */
 export function checkDiffFidelity(previewText, actualModifiedFiles) {
-  if (!previewText || !actualModifiedFiles || actualModifiedFiles.length === 0) return null;
   const previewFiles = extractPreviewFiles(previewText);
-  if (previewFiles.length === 0) return null;
+  if (previewFiles.length === 0) {
+    return "[WARNING] preview contained no parseable file paths; fidelity unverifiable.";
+  }
+  if (!actualModifiedFiles || actualModifiedFiles.length === 0) {
+    return "[WARNING] worker reported no file changes despite a non-empty preview.";
+  }
+
+  const norm = (p) => p.replace(/\\/g, "/").replace(/^\.\//, "");
+  const match = (a, b) => {
+    const na = norm(a);
+    const nb = norm(b);
+    return na === nb || na.endsWith(`/${nb}`) || nb.endsWith(`/${na}`);
+  };
 
   const unexpectedFiles = actualModifiedFiles.filter(
-    (af) => !previewFiles.some((pf) => pf.endsWith(af) || af.endsWith(pf))
+    (af) => !previewFiles.some((pf) => match(pf, af))
   );
   const missingFiles = previewFiles.filter(
-    (pf) => !actualModifiedFiles.some((af) => pf.endsWith(af) || af.endsWith(pf))
+    (pf) => !actualModifiedFiles.some((af) => match(pf, af))
   );
 
   if (unexpectedFiles.length > 0 || missingFiles.length > 0) {
@@ -229,11 +245,13 @@ const server = new McpServer({
 });
 
 /**
- * Dispatch task to configured worker provider (Antigravity, Codex, Claude, etc.).
+ * Dispatch task to the active worker provider (subscription CLI or direct API).
+ * Per-call provider override wins, then KUMO_WORKER_PROVIDER, then config.
  */
 export async function dispatchWorkerTask(opts) {
   const config = loadConfig();
   const workerProvider =
+    opts.provider ||
     process.env.KUMO_WORKER_PROVIDER ||
     config.workerProvider ||
     detectProviderForModel(opts.model || modelOverride || config.workerModel);
@@ -259,7 +277,7 @@ export async function dispatchWorkerTask(opts) {
 }
 
 // Handler implementations
-async function handleExplore({ task, files, model, effort }) {
+async function handleExplore({ task, files, model, effort, provider }) {
   const activeModel = model || modelOverride || undefined;
   const activeEffort = effort || effortOverride || undefined;
   const result = await dispatchWorkerTask({
@@ -270,12 +288,13 @@ async function handleExplore({ task, files, model, effort }) {
     workspace: workspaceDir,
     model: activeModel,
     effort: activeEffort,
+    provider,
     systemPrompt: getSystemPrompt("explore", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
   });
   return formatResult(result, "worker_explore");
 }
 
-async function handleImplement({ task, files, confirm, previewId, model, effort }) {
+async function handleImplement({ task, files, confirm, previewId, model, effort, provider }) {
   const config = loadConfig();
   const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
   const activeModel = model || modelOverride || undefined;
@@ -293,12 +312,13 @@ async function handleImplement({ task, files, confirm, previewId, model, effort 
       workspace: workspaceDir,
       model: activeModel,
       effort: activeEffort,
+      provider,
       systemPrompt: getSystemPrompt("implement", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
     });
 
     const formatted = formatResult(result, "worker_implement");
     if (result.ok && result.stdout) {
-      const generatedId = storePendingPreview(result.stdout);
+      const generatedId = storePendingPreview(result.stdout, { taskHash: hashTask(task), safetyMode, workspaceDir });
       if (formatted.content && formatted.content[0]) {
         formatted.content[0].text += `\n\n---\n[STATUS: PENDING_CONFIRMATION]\nSafety mode is 'diff-review'. The worker generated a proposed change preview without modifying files on disk.\nPreview ID: "${generatedId}"\nTo review and apply these changes, call worker_implement again with confirm: true and previewId: "${generatedId}".`;
       }
@@ -307,6 +327,23 @@ async function handleImplement({ task, files, confirm, previewId, model, effort 
   }
 
   const preFiles = getGitStatus(workspaceDir);
+  let confirmedPreview = null;
+  if (safetyMode === "diff-review" && confirm) {
+    if (!previewId) {
+      return { content: [{ type: "text", text: "[ERROR] diff-review confirmation requires previewId." }], isError: true };
+    }
+    const cached = consumePendingPreview(previewId);
+    if (!cached) {
+      return { content: [{ type: "text", text: "[ERROR] unknown or expired previewId." }], isError: true };
+    }
+    if (cached.taskHash && cached.taskHash !== hashTask(task)) {
+      return { content: [{ type: "text", text: "[ERROR] previewId does not match this task." }], isError: true };
+    }
+    if (cached.workspaceDir && cached.workspaceDir !== workspaceDir) {
+      return { content: [{ type: "text", text: "[ERROR] preview was generated for a different workspace." }], isError: true };
+    }
+    confirmedPreview = cached.previewText;
+  }
 
   const result = await dispatchWorkerTask({
     toolName: "worker_implement",
@@ -317,30 +354,32 @@ async function handleImplement({ task, files, confirm, previewId, model, effort 
     workspace: workspaceDir,
     model: activeModel,
     effort: activeEffort,
+    provider,
     systemPrompt: getSystemPrompt("implement", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
   });
 
   const formatted = formatResult(result, "worker_implement");
   const postFiles = getGitStatus(workspaceDir);
+  const delta = postFiles.filter((f) => !preFiles.includes(f));
   const diffStat = getGitDiffStat(workspaceDir);
 
   if (formatted.content && formatted.content[0]) {
-    const cachedPreview = consumePendingPreview(previewId);
-    if (cachedPreview) {
-      const fidelityWarning = checkDiffFidelity(cachedPreview, postFiles);
+    const previewText = confirmedPreview || (previewId ? consumePendingPreview(previewId)?.previewText : null);
+    if (previewText) {
+      const fidelityWarning = checkDiffFidelity(previewText, delta);
       if (fidelityWarning) {
         formatted.content[0].text += fidelityWarning;
       }
     }
-    if (postFiles.length > 0 || diffStat) {
-      formatted.content[0].text += `\n\n[Applied Files & Diff Summary]\nFiles: ${postFiles.join(", ") || "(none)"}\n${diffStat}`;
+    if (delta.length > 0 || diffStat) {
+      formatted.content[0].text += `\n\n[Applied Files & Diff Summary]\nFiles: ${delta.join(", ") || "(none)"}\n${diffStat}`;
     }
   }
 
   return formatted;
 }
 
-async function handleTest({ task, files, confirm, previewId, model, effort }) {
+async function handleTest({ task, files, confirm, previewId, model, effort, provider }) {
   const config = loadConfig();
   const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
   const activeModel = model || modelOverride || undefined;
@@ -357,12 +396,13 @@ async function handleTest({ task, files, confirm, previewId, model, effort }) {
       workspace: workspaceDir,
       model: activeModel,
       effort: activeEffort,
+      provider,
       systemPrompt: getSystemPrompt("test", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
     });
 
     const formatted = formatResult(result, "worker_test");
     if (result.ok && result.stdout) {
-      const generatedId = storePendingPreview(result.stdout);
+      const generatedId = storePendingPreview(result.stdout, { taskHash: hashTask(task), safetyMode, workspaceDir });
       if (formatted.content && formatted.content[0]) {
         formatted.content[0].text += `\n\n---\n[STATUS: PENDING_CONFIRMATION]\nSafety mode is 'diff-review'. The worker generated a test proposal without modifying files on disk.\nPreview ID: "${generatedId}"\nTo execute and apply these tests, call worker_test again with confirm: true and previewId: "${generatedId}".`;
       }
@@ -371,6 +411,23 @@ async function handleTest({ task, files, confirm, previewId, model, effort }) {
   }
 
   const preFiles = getGitStatus(workspaceDir);
+  let confirmedPreview = null;
+  if (safetyMode === "diff-review" && confirm) {
+    if (!previewId) {
+      return { content: [{ type: "text", text: "[ERROR] diff-review confirmation requires previewId." }], isError: true };
+    }
+    const cached = consumePendingPreview(previewId);
+    if (!cached) {
+      return { content: [{ type: "text", text: "[ERROR] unknown or expired previewId." }], isError: true };
+    }
+    if (cached.taskHash && cached.taskHash !== hashTask(task)) {
+      return { content: [{ type: "text", text: "[ERROR] previewId does not match this task." }], isError: true };
+    }
+    if (cached.workspaceDir && cached.workspaceDir !== workspaceDir) {
+      return { content: [{ type: "text", text: "[ERROR] preview was generated for a different workspace." }], isError: true };
+    }
+    confirmedPreview = cached.previewText;
+  }
 
   const result = await dispatchWorkerTask({
     toolName: "worker_test",
@@ -381,30 +438,32 @@ async function handleTest({ task, files, confirm, previewId, model, effort }) {
     workspace: workspaceDir,
     model: activeModel,
     effort: activeEffort,
+    provider,
     systemPrompt: getSystemPrompt("test", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
   });
 
   const formatted = formatResult(result, "worker_test");
   const postFiles = getGitStatus(workspaceDir);
+  const delta = postFiles.filter((f) => !preFiles.includes(f));
   const diffStat = getGitDiffStat(workspaceDir);
 
   if (formatted.content && formatted.content[0]) {
-    const cachedPreview = consumePendingPreview(previewId);
-    if (cachedPreview) {
-      const fidelityWarning = checkDiffFidelity(cachedPreview, postFiles);
+    const previewText = confirmedPreview || (previewId ? consumePendingPreview(previewId)?.previewText : null);
+    if (previewText) {
+      const fidelityWarning = checkDiffFidelity(previewText, delta);
       if (fidelityWarning) {
         formatted.content[0].text += fidelityWarning;
       }
     }
-    if (postFiles.length > 0 || diffStat) {
-      formatted.content[0].text += `\n\n[Applied Files & Diff Summary]\nFiles: ${postFiles.join(", ") || "(none)"}\n${diffStat}`;
+    if (delta.length > 0 || diffStat) {
+      formatted.content[0].text += `\n\n[Applied Files & Diff Summary]\nFiles: ${delta.join(", ") || "(none)"}\n${diffStat}`;
     }
   }
 
   return formatted;
 }
 
-async function handleResearch({ task, files, model, effort }) {
+async function handleResearch({ task, files, model, effort, provider }) {
   const activeModel = model || modelOverride || undefined;
   const activeEffort = effort || effortOverride || undefined;
   const result = await dispatchWorkerTask({
@@ -415,12 +474,13 @@ async function handleResearch({ task, files, model, effort }) {
     workspace: workspaceDir,
     model: activeModel,
     effort: activeEffort,
+    provider,
     systemPrompt: getSystemPrompt("research", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
   });
   return formatResult(result, "worker_research");
 }
 
-async function handleReview({ task, files, model, effort }) {
+async function handleReview({ task, files, model, effort, provider }) {
   const activeModel = model || modelOverride || undefined;
   const activeEffort = effort || effortOverride || undefined;
   const result = await dispatchWorkerTask({
@@ -431,45 +491,57 @@ async function handleReview({ task, files, model, effort }) {
     workspace: workspaceDir,
     model: activeModel,
     effort: activeEffort,
+    provider,
     systemPrompt: getSystemPrompt("review", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
   });
   return formatResult(result, "worker_review");
 }
 
+const taskField = z.string().min(1).max(8000).refine((v) => !/^\s*$/.test(v), "task must be non-empty");
+const filesField = z.array(z.string().min(1).max(500).refine((f) => !/[\r\n\0]/.test(f), "newline-free")).max(20).optional();
+const modelField = z.string().max(120).refine((v) => !v.startsWith("-") && !v.includes("\0"), "invalid model").optional();
+const effortField = z.enum(["low", "medium", "high", "max"]).optional();
+const providerField = z.string().max(60).regex(/^[a-z0-9][a-z0-9-]*$/i).optional();
+
 const schemas = {
   explore: {
-    task: z.string().describe("What to explore or search for in the codebase"),
-    files: z.array(z.string()).optional().describe("Optional file paths to focus on"),
-    model: z.string().optional().describe("Execution worker model"),
-    effort: z.string().optional().describe("Execution worker reasoning effort"),
+    task: taskField.describe("What to explore or search for in the codebase"),
+    files: filesField.describe("Optional file paths to focus on"),
+    model: modelField.describe("Execution worker model"),
+    effort: effortField.describe("Execution worker reasoning effort"),
+    provider: providerField.describe("Execution worker provider override"),
   },
   implement: {
-    task: z.string().describe("A bounded implementation task with clear acceptance criteria"),
-    files: z.array(z.string()).optional().describe("Optional context file paths"),
+    task: taskField.describe("A bounded implementation task with clear acceptance criteria"),
+    files: filesField.describe("Optional context file paths"),
     confirm: z.boolean().optional().describe("When safetyMode is diff-review, set to true to apply approved changes to disk. When omitted or false, generates a proposed diff preview."),
     previewId: z.string().optional().describe("Unique preview token returned by Phase 1 preview call for diff-fidelity verification upon confirmation."),
-    model: z.string().optional().describe("Execution worker model"),
-    effort: z.string().optional().describe("Execution worker reasoning effort"),
+    model: modelField.describe("Execution worker model"),
+    effort: effortField.describe("Execution worker reasoning effort"),
+    provider: providerField.describe("Execution worker provider override"),
   },
   test: {
-    task: z.string().describe("What to test or which test suite to run"),
-    files: z.array(z.string()).optional().describe("Optional file paths under test"),
+    task: taskField.describe("What to test or which test suite to run"),
+    files: filesField.describe("Optional file paths under test"),
     confirm: z.boolean().optional().describe("When safetyMode is diff-review, set to true to apply changes on disk."),
     previewId: z.string().optional().describe("Unique preview token returned by Phase 1 preview call for diff-fidelity verification upon confirmation."),
-    model: z.string().optional().describe("Execution worker model"),
-    effort: z.string().optional().describe("Execution worker reasoning effort"),
+    model: modelField.describe("Execution worker model"),
+    effort: effortField.describe("Execution worker reasoning effort"),
+    provider: providerField.describe("Execution worker provider override"),
   },
   research: {
-    task: z.string().describe("The technical research question or documentation lookup"),
-    files: z.array(z.string()).optional().describe("Optional context files"),
-    model: z.string().optional().describe("Execution worker model"),
-    effort: z.string().optional().describe("Execution worker reasoning effort"),
+    task: taskField.describe("The technical research question or documentation lookup"),
+    files: filesField.describe("Optional context files"),
+    model: modelField.describe("Execution worker model"),
+    effort: effortField.describe("Execution worker reasoning effort"),
+    provider: providerField.describe("Execution worker provider override"),
   },
   review: {
-    task: z.string().describe("What changes or files to review"),
-    files: z.array(z.string()).optional().describe("Files to review"),
-    model: z.string().optional().describe("Execution worker model"),
-    effort: z.string().optional().describe("Execution worker reasoning effort"),
+    task: taskField.describe("What changes or files to review"),
+    files: filesField.describe("Files to review"),
+    model: modelField.describe("Execution worker model"),
+    effort: effortField.describe("Execution worker reasoning effort"),
+    provider: providerField.describe("Execution worker provider override"),
   },
 };
 

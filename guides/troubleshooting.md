@@ -41,6 +41,9 @@ Worker tool returns: `Error authenticating: IneligibleTierError` or `Session exp
    - Verify that your subscription tier is active and selected.
 2. For Codex / ChatGPT Plus:
    - Run `codex login` and complete the browser authentication.
+3. For direct-API providers (`openai-api`, `anthropic-api`, `gemini-api`, `compat-api`):
+   - `Missing or invalid <VAR>` means the env key is unset or rejected — set it in the current shell (never in config files):
+   - `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` (or `GOOGLE_GENERATIVE_AI_API_KEY` fallback), `COMPAT_API_KEY` (optional) + required `COMPAT_BASE_URL` (or `kumo config set compatBaseUrl <url>`).
 
 ---
 

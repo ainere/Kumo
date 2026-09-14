@@ -29,6 +29,10 @@ export const DEFAULT_CONFIG = {
   safetyMode: "autonomous",
   trustWorkspace: true,
   obsidianVault: "",
+  openaiBaseUrl: "",
+  anthropicBaseUrl: "",
+  geminiBaseUrl: "",
+  compatBaseUrl: "",
 };
 
 /**
@@ -180,12 +184,75 @@ export function saveConfig(config) {
  * Update a specific key.
  */
 export function setConfigValue(key, value) {
+  if (key === "__proto__" || key === "constructor" || key === "prototype" || !(key in DEFAULT_CONFIG)) {
+    throw new Error(`Unknown config key '${key}'. Allowed: ${Object.keys(DEFAULT_CONFIG).sort().join(", ")}`);
+  }
   const current = loadConfig();
 
-  // Allow setting any key for forward-compatibility with future providers
-  if (typeof DEFAULT_CONFIG[key] === "number") {
+  if (typeof DEFAULT_CONFIG[key] === "boolean") {
+    if (typeof value === "boolean") {
+      // keep as-is
+    } else if (typeof value === "number" && (value === 0 || value === 1)) {
+      value = value === 1;
+    } else if (typeof value === "string") {
+      const norm = value.toLowerCase().trim();
+      if (norm === "true" || norm === "1") value = true;
+      else if (norm === "false" || norm === "0") value = false;
+      else throw new Error(`Value for '${key}' must be a boolean`);
+    } else {
+      throw new Error(`Value for '${key}' must be a boolean`);
+    }
+  } else if (typeof DEFAULT_CONFIG[key] === "number") {
     value = parseInt(value, 10);
     if (isNaN(value)) throw new Error(`Value for '${key}' must be a valid number`);
+    if (key === "timeoutMs" && (value < 5000 || value > 1800000)) {
+      throw new Error(`Value for 'timeoutMs' must be between 5000 and 1800000`);
+    }
+  } else if (key === "reasoningEffort") {
+    const norm = String(value).toLowerCase().trim();
+    if (!["low", "medium", "high", "max"].includes(norm)) {
+      throw new Error(`Value for 'reasoningEffort' must be one of: low, medium, high, max`);
+    }
+    value = norm;
+  } else if (key === "workerEffort") {
+    const norm = String(value).toLowerCase().trim();
+    if (!["low", "medium", "high"].includes(norm)) {
+      throw new Error(`Value for 'workerEffort' must be one of: low, medium, high`);
+    }
+    value = norm;
+  } else if (key === "orchestratorProvider" || key === "workerProvider") {
+    const norm = String(value).toLowerCase().trim();
+    const canon = norm === "gemini" || norm === "agy" ? "antigravity" : norm;
+    const allowed = [
+      "codex",
+      "antigravity",
+      "claude",
+      "opencode",
+      "commandcode",
+      "copilot",
+      "cursor",
+      "gemini-cli",
+      "ollama",
+      "openai-api",
+      "anthropic-api",
+      "gemini-api",
+      "compat-api",
+    ];
+    if (!allowed.includes(canon)) {
+      throw new Error(`Value for '${key}' must be one of: ${allowed.join(", ")}`);
+    }
+    value = canon;
+  } else if (
+    key === "openaiBaseUrl" ||
+    key === "anthropicBaseUrl" ||
+    key === "geminiBaseUrl" ||
+    key === "compatBaseUrl"
+  ) {
+    const val = typeof value === "string" ? value.trim() : String(value ?? "").trim();
+    if (val !== "" && !/^https?:\/\/.+/.test(val)) {
+      throw new Error(`Value for '${key}' must be an http(s) URL or empty`);
+    }
+    value = val;
   }
 
   current[key] = value;
@@ -234,7 +301,7 @@ export function isCodexModel(model, provider = null) {
   if (norm.startsWith("gemini-") || norm.startsWith("claude-") || norm.includes("gpt-oss")) {
     return false;
   }
-  return /^(chatgpt|gpt-5\b|gpt-5\.)|astra|sol|terra|luna/i.test(norm);
+  return /^(chatgpt\b|gpt-5(\b|\.)|astra\b|sol\b|terra\b|luna\b)/i.test(norm);
 }
 
 /**
@@ -255,8 +322,13 @@ export function detectProviderForModel(model, preferredProvider = null) {
   const norm = model.toLowerCase().trim();
 
   // OpenAI / Codex models
-  if (/^(chatgpt|gpt-5\b|gpt-5\.)|astra|sol|terra|luna/i.test(norm)) {
+  if (/^(chatgpt\b|gpt-5(\b|\.)|astra\b|sol\b|terra\b|luna\b)/i.test(norm)) {
     return "codex";
+  }
+
+  // Gemini CLI model prefix precedes the generic gemini- branch below (gemini-cli-* starts with gemini-).
+  if (norm.startsWith("gemini-cli")) {
+    return "gemini-cli";
   }
 
   // Google Antigravity models (Gemini + open-weights)
@@ -265,7 +337,7 @@ export function detectProviderForModel(model, preferredProvider = null) {
   }
 
   // Claude models: supported both by Antigravity (Google AI Pro subscription) and Claude Code
-  if (norm.startsWith("claude-") || norm.includes("opus") || norm.includes("sonnet")) {
+  if (norm.startsWith("claude-") || /\bopus\b/.test(norm) || /\bsonnet\b/.test(norm)) {
     if (preferredProvider === "claude") return "claude";
     return "antigravity";
   }
@@ -276,6 +348,16 @@ export function detectProviderForModel(model, preferredProvider = null) {
   }
   if (norm.startsWith("commandcode") || norm.startsWith("command-code")) {
     return "commandcode";
+  }
+  // New subscription CLI model prefixes.
+  if (norm.startsWith("copilot")) {
+    return "copilot";
+  }
+  if (norm.startsWith("cursor-agent") || norm.startsWith("cursor")) {
+    return "cursor";
+  }
+  if (norm.startsWith("ollama")) {
+    return "ollama";
   }
 
   return "codex";
@@ -334,7 +416,8 @@ export function resolveWorkerModel(input) {
 export function supportsEffort(model) {
   if (!model) return false;
   const norm = model.toLowerCase().trim();
-  if (norm.startsWith("claude-") || norm.includes("opus") || norm.includes("sonnet")) {
+  if (norm.startsWith("gpt-oss")) return true;
+  if (norm.startsWith("claude-") || /\bopus\b/.test(norm) || /\bsonnet\b/.test(norm)) {
     return false;
   }
   if (norm.endsWith("-low") || norm.endsWith("-medium") || norm.endsWith("-high")) {

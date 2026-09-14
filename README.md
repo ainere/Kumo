@@ -31,8 +31,8 @@ It coordinate frontier models across **Anthropic Claude** (Claude Opus 4.6 Think
         ▼                                                  ▼
 ┌───────────────────────────┐              ┌───────────────────────────┐
 │   Orchestrator Provider   │              │      Worker Provider      │
-│  (Codex, Antigravity, or  │              │  (Antigravity, Codex, or  │
-│       Claude Code)        │ ◄───[MCP]───►│       Claude Code)        │
+│  (13 providers: 9 CLI +   │              │  (13 providers: 9 CLI +   │
+│    4 direct API)          │ ◄───[MCP]───►│    4 direct API)          │
 │   • Task decomposition    │              │   • File exploration      │
 │   • Architectural design  │              │   • Code implementation   │
 │   • Cross-model review    │              │   • Test generation & runs│
@@ -143,11 +143,13 @@ Kumo provides two headless safety modes for worker execution (`kumo config set s
 ## Features & Capabilities
 
 - **Zero API Keys**: Connects directly to your logged-in consumer subscriptions (**ChatGPT Plus / Pro** via Codex CLI and **Google AI Pro** via Antigravity / Gemini CLI).
+- **Subscription CLIs (default)**: `codex, antigravity, claude, opencode, commandcode, copilot, cursor, gemini-cli, ollama` — logged-in CLIs, zero keys.
+- **Direct API (optional, env keys never stored)**: `openai-api (OPENAI_API_KEY), anthropic-api (ANTHROPIC_API_KEY), gemini-api (GEMINI_API_KEY), compat-api (COMPAT_BASE_URL + optional COMPAT_API_KEY)` — per-role or per-call (`provider: "anthropic-api"`), mixed with subscriptions; non-secret base-URL overrides via `kumo config set <name>BaseUrl`.
 - **Dual-Provider Architecture**: Frontier reasoning orchestrator breaks down complex architecture and dispatches bounded execution tasks to high-throughput workers via local MCP stdio bridge.
 - **Dynamic Model Tracking & Role Synchronization**: Changing active models via `/model` or presets immediately updates worker prompts and subagent instructions (`.codex/agents/reviewer.toml`), ensuring each role dynamically reflects which model is operating.
 - **Multi-Chat Session Persistence**: Persistent local conversation index and turn logging under `~/.kumo/sessions/` with instant switching (`/chats`) and Markdown export (`/save`).
 - **Global Project Registry**: Automatically tracks workspaces with quick switching (`/projects` or `/cd <path>`).
-- **Provider-First Model Picker**: Arrow-key dialog (`/model` or `kumo model`) supporting Codex (OpenAI) and Antigravity (Google / Anthropic) with atomic flicker-free redraw and back navigation.
+- **Provider-First Model Picker**: Arrow-key dialog (`/model` or `kumo model`) grouping Subscription CLIs and Direct API providers (see Model Configuration below) with atomic flicker-free redraw and back navigation.
 - **Live Multi-Provider Quota Meters**: Real-time 5-hour, weekly, and monthly quota progress bars that dynamically adapt based on active orchestrator and worker providers.
 - **Prompt History & Smart Filtering**: Persistent command history (`~/.kumo/history.txt`) with automatic slash-command filtering (Up Arrow only cycles actual prompts).
 - **Context-Aware Smart Suggestions**: Project type detection (`package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`) with inline recommended prompt actions.
@@ -165,8 +167,7 @@ Kumo provides dual-layer model configuration: an interactive arrow-key selector 
 Launch the arrow-key menu by running `kumo model` in your terminal or typing `/model` inside an active interactive session:
 
 - **Arrow-Key Navigation**: Navigate options with `↑` / `↓`, jump with `Home` / `End`, page with `PageUp` / `PageDown`, press `Enter` to select, or press `Left Arrow` / `Esc` to go back.
-- **Provider-First Model Selection**: Choose between **Codex (OpenAI)** and **Antigravity (Google / Anthropic)** for both Orchestrator and Worker models.
-- **Atomic Flicker-Free Redraw**: Uses single-write ANSI buffering so navigating choices never scrolls the terminal or pollutes session history.
+- **Provider-First Model Picker**: Arrow-key dialog (`/model` or `kumo model`) grouping Subscription CLIs (`codex, antigravity, claude, opencode, commandcode, copilot, cursor, gemini-cli, ollama`) and Direct API (`openai-api, anthropic-api, gemini-api, compat-api` — env keys, never stored) with atomic flicker-free redraw and back navigation.
 - **Dynamic Quota Synchronization**: The startup header and `/status` command automatically adapt their quota progress bars to reflect the provider chosen for each role.
 
 ### 2. Built-in Presets
@@ -203,8 +204,11 @@ kumo model worker gemini-3.8-flash medium
 kumo model worker chatgpt-6-astra low codex
 kumo model worker claude-opus-4-6-thinking
 
+# Direct API per-role (env keys only, never stored)
+kumo model worker gpt-4o-mini low openai-api
+kumo model orchestrator claude-opus-4-6 high anthropic-api
+
 # Set orchestrator reasoning effort independently (low, medium, high, max)
-kumo effort low
 kumo effort medium
 
 # Set worker reasoning effort independently (low, medium, high)
@@ -266,17 +270,17 @@ Inside an interactive Kumo session (`kumo ›`), manage sessions, workspaces, mo
 | `kumo status` | View live account rate limits, usage quotas, and provider health |
 | `kumo model` | Open interactive arrow-key selector (`/model` in session) |
 | `kumo model list` | Print complete list of available models and presets |
-| `kumo model orchestrator <model> [effort]` | Configure orchestrator model and optional reasoning effort |
-| `kumo model worker <model> [effort]` | Configure worker model and optional reasoning effort |
+| `kumo model orchestrator <model> [effort] [provider]` | Configure orchestrator model, effort, and explicit provider (13 ids) |
+| `kumo model worker <model> [effort] [provider]` | Configure worker model, effort, and explicit provider (13 ids) |
 | `kumo effort <level>` | Set orchestrator reasoning effort (`low`, `medium`, `high`, `max`) |
 | `kumo effort worker <level>` | Set worker reasoning effort (`low`, `medium`, `high`) |
 | `kumo model use <preset>` | Apply configuration preset (`default`, `pro`, `speed`, `gemini-3.7`, `test`) |
 | `kumo graph` | Inspect Graphify knowledge graph freshness and lifecycle status |
 | `kumo graph --check` | Verify graph freshness and exit with code 1 if stale (CI-safe) |
 | `kumo graph --refresh` | View instructions to regenerate the knowledge graph |
-| `kumo doctor` | Perform diagnostic check on system environment and logins |
+| `kumo doctor` | Perform diagnostic check on system environment, logins, and direct-API key presence |
 | `kumo config list` | View global configuration keys and values (`~/.kumo/config.json`) |
-| `kumo config set <key> <val>` | Update a specific configuration property |
+| `kumo config set <key> <val>` | Update a specific configuration property (incl. `<name>BaseUrl` overrides) |
 | `kumo config reset` | Reset global configuration to defaults |
 | `kumo init` | (Optional) Initialize repository rule files (`AGENTS.md`, `GEMINI.md`) |
 
@@ -291,20 +295,33 @@ The codebase implements a decoupled, unhardcoded provider and data persistence s
   - `claude-client.js`: Anthropic Claude Code CLI client supporting print mode turns.
   - `opencode-client.js`: OpenCode CLI client.
   - `commandcode-client.js`: CommandCode CLI client.
+  - `copilot-client.js`: GitHub Copilot CLI client (`gh copilot`).
+  - `cursor-client.js`: Cursor Agent CLI client (`cursor-agent`).
+  - `gemini-cli-client.js`: Standalone Gemini CLI client (`gemini`, distinct from `agy`).
+  - `ollama-client.js`: Ollama local runner client (`ollama run <model>`).
   - `generic-client.js`: Universal CLI orchestrator adapter that can drive any arbitrary AI CLI tool without hardcoding.
-  - `registry.js`: Open-ended orchestrator provider registry and factory.
+  - `registry.js`: Open-ended orchestrator provider registry and factory (13 providers incl. direct APIs).
+- **Direct-API transport** ([`src/providers/api/`](src/providers/api/)):
+  - `api-transport.js`: Zero-dependency native-fetch transport (`getApiKey`, `resolveBaseUrl`, `ApiError`, `chatComplete`); keys live only in env vars, never on disk.
+  - `openai-api-client.js` (+ `compat-api` via `provider` option), `anthropic-api-client.js`, `gemini-api-client.js`: single-shot orchestrator clients behind the standard client surface (`getRateLimits()` always `null`).
+  - `api-worker.js`: shared `executeApiTask` composing the standard composite-prompt blocks over `chatComplete`.
 - **Workers** ([`src/providers/workers/`](src/providers/workers/)):
   - `gemini.js`: Google Gemini adapter backed by Antigravity / Gemini CLI.
   - `codex.js`: OpenAI Codex execution worker (`codex exec`).
   - `claude.js`: Anthropic Claude Code execution worker (`claude -p`).
-  - `opencode.js`: OpenCode execution worker.
-  - `commandcode.js`: CommandCode execution worker.
+  - `opencode.js`: OpenCode execution worker (`opencode -p`).
+  - `commandcode.js`: CommandCode execution worker (`commandcode -p`).
+  - `copilot.js`: GitHub Copilot CLI worker (`gh copilot -p`).
+  - `cursor.js`: Cursor Agent worker (`cursor-agent -p`).
+  - `gemini-cli.js`: Standalone Gemini CLI worker (`gemini -p`, distinct from `agy`).
+  - `ollama.js`: Ollama local worker (`ollama run <model||"llama3.1">`).
+  - `openai-api.js`, `anthropic-api.js`, `gemini-api.js`, `compat-api.js`: thin direct-API adapters over `executeApiTask`.
   - `generic.js`: Universal worker adapter for any arbitrary CLI execution tool.
   - `registry.js`: Open-ended worker provider registry.
 - **MCP Bridge** ([`src/bridge/`](src/bridge/)):
   - `prompts.js`: Role prompts for `explore`, `implement`, `test`, `research`, and `review`.
   - `agy-runner.js`: Subprocess executor enforcing timeout, permission sandboxes, and transient socket reset recovery.
-  - `server.js`: Standard MCP stdio server routing requests dynamically to the active worker provider.
+  - `server.js`: Standard MCP stdio server routing requests dynamically to the active worker provider, with optional per-call `provider` override.
 - **Session Persistence & Projects** ([`src/data/sessions.js`](src/data/sessions.js)):
   - Project registry (`~/.kumo/projects.json`), multi-chat persistence, append-only turn logs (`~/.kumo/sessions/<hash>/`), and Markdown export.
 - **Terminal UI & Utilities** ([`src/utils/`](src/utils/)):

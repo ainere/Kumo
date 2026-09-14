@@ -30,6 +30,27 @@ export const PRESET_SUMMARIES = {
   test: "GPT-5.5 Low + Gemini 3.6 Low",
 };
 
+/** Canonical provider groupings for picker menus and model list output. */
+export const SUBSCRIPTION_PROVIDERS = [
+  "codex",
+  "antigravity",
+  "claude",
+  "opencode",
+  "commandcode",
+  "copilot",
+  "cursor",
+  "gemini-cli",
+  "ollama",
+];
+
+/** Direct-API providers use env keys only; keys are never stored in config. */
+export const DIRECT_API_PROVIDERS = [
+  "openai-api",
+  "anthropic-api",
+  "gemini-api",
+  "compat-api",
+];
+
 /** Strip ANSI color sequences for accurate visible length calculation */
 function stripAnsi(str) {
   return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
@@ -418,27 +439,39 @@ export async function openInteractiveModelPicker(opts = {}) {
       return updated;
     }
 
-    // 2. Orchestrator Model Picker (Provider-First)
+    // 2. Orchestrator Model Picker (Provider-First, grouped Subscription CLIs / Direct API)
     if (action === "orchestrator") {
       mainIndex = 1;
+      // Flat ordered list: Subscription CLIs first, then Direct API (promptSelect has no section rows).
       const providerItems = [
         {
-          label: "Codex (OpenAI)",
+          label: "[Subscription] Codex (OpenAI)",
           value: "codex",
           hint: "ChatGPT 6 Astra, Sol, Terra, Luna, GPT-5.5",
           isCurrent: config.orchestratorProvider === "codex",
         },
         {
-          label: "Antigravity (Google / Anthropic)",
+          label: "[Subscription] Antigravity (Google / Anthropic)",
           value: "antigravity",
           hint: "Gemini 3.8, 3.7, Claude Opus, Claude Sonnet, GPT-OSS",
-          isCurrent: config.orchestratorProvider !== "codex",
+          isCurrent: config.orchestratorProvider === "antigravity",
         },
+        { label: "[Subscription] Claude", value: "claude", hint: "Claude Code subscription CLI", isCurrent: config.orchestratorProvider === "claude" },
+        { label: "[Subscription] OpenCode", value: "opencode", hint: "OpenCode subscription CLI", isCurrent: config.orchestratorProvider === "opencode" },
+        { label: "[Subscription] CommandCode", value: "commandcode", hint: "CommandCode subscription CLI", isCurrent: config.orchestratorProvider === "commandcode" },
+        { label: "[Subscription] Copilot", value: "copilot", hint: "GitHub Copilot CLI subscription", isCurrent: config.orchestratorProvider === "copilot" },
+        { label: "[Subscription] Cursor", value: "cursor", hint: "Cursor Agent subscription", isCurrent: config.orchestratorProvider === "cursor" },
+        { label: "[Subscription] Gemini CLI", value: "gemini-cli", hint: "Gemini CLI subscription", isCurrent: config.orchestratorProvider === "gemini-cli" },
+        { label: "[Subscription] Ollama", value: "ollama", hint: "Ollama local runner", isCurrent: config.orchestratorProvider === "ollama" },
+        { label: "[Direct API] OpenAI API", value: "openai-api", hint: "OPENAI_API_KEY (env only, never stored)", isCurrent: config.orchestratorProvider === "openai-api" },
+        { label: "[Direct API] Anthropic API", value: "anthropic-api", hint: "ANTHROPIC_API_KEY (env only, never stored)", isCurrent: config.orchestratorProvider === "anthropic-api" },
+        { label: "[Direct API] Gemini API", value: "gemini-api", hint: "GEMINI_API_KEY (env only, never stored)", isCurrent: config.orchestratorProvider === "gemini-api" },
+        { label: "[Direct API] OpenAI-Compatible", value: "compat-api", hint: "COMPAT_BASE_URL + optional COMPAT_API_KEY (env only)", isCurrent: config.orchestratorProvider === "compat-api" },
         { label: "← Back", value: "cancel", hint: "Return to main menu" },
       ];
 
       const provider = await promptSelect({
-        title: "Select Orchestrator Provider",
+        title: "Select Orchestrator Provider (Subscription CLIs / Direct API)",
         items: providerItems,
       });
 
@@ -475,27 +508,39 @@ export async function openInteractiveModelPicker(opts = {}) {
       return updated;
     }
 
-    // 3. Worker Model Picker (Provider-First)
+    // 3. Worker Model Picker (Provider-First, grouped Subscription CLIs / Direct API)
     if (action === "worker") {
       mainIndex = 2;
+      // Flat ordered list: Subscription CLIs first, then Direct API (promptSelect has no section rows).
       const providerItems = [
         {
-          label: "Antigravity (Google / Anthropic)",
+          label: "[Subscription] Antigravity (Google / Anthropic)",
           value: "antigravity",
           hint: "Gemini 3.8, 3.7, Claude Opus, Claude Sonnet, GPT-OSS",
-          isCurrent: config.workerProvider !== "codex",
+          isCurrent: config.workerProvider === "antigravity",
         },
         {
-          label: "Codex (OpenAI)",
+          label: "[Subscription] Codex (OpenAI)",
           value: "codex",
           hint: "ChatGPT 6 Astra, Sol, Terra, Luna, GPT-5.5",
           isCurrent: config.workerProvider === "codex",
         },
+        { label: "[Subscription] Claude", value: "claude", hint: "Claude Code subscription CLI", isCurrent: config.workerProvider === "claude" },
+        { label: "[Subscription] OpenCode", value: "opencode", hint: "OpenCode subscription CLI", isCurrent: config.workerProvider === "opencode" },
+        { label: "[Subscription] CommandCode", value: "commandcode", hint: "CommandCode subscription CLI", isCurrent: config.workerProvider === "commandcode" },
+        { label: "[Subscription] Copilot", value: "copilot", hint: "GitHub Copilot CLI subscription", isCurrent: config.workerProvider === "copilot" },
+        { label: "[Subscription] Cursor", value: "cursor", hint: "Cursor Agent subscription", isCurrent: config.workerProvider === "cursor" },
+        { label: "[Subscription] Gemini CLI", value: "gemini-cli", hint: "Gemini CLI subscription", isCurrent: config.workerProvider === "gemini-cli" },
+        { label: "[Subscription] Ollama", value: "ollama", hint: "Ollama local runner", isCurrent: config.workerProvider === "ollama" },
+        { label: "[Direct API] OpenAI API", value: "openai-api", hint: "OPENAI_API_KEY (env only, never stored)", isCurrent: config.workerProvider === "openai-api" },
+        { label: "[Direct API] Anthropic API", value: "anthropic-api", hint: "ANTHROPIC_API_KEY (env only, never stored)", isCurrent: config.workerProvider === "anthropic-api" },
+        { label: "[Direct API] Gemini API", value: "gemini-api", hint: "GEMINI_API_KEY (env only, never stored)", isCurrent: config.workerProvider === "gemini-api" },
+        { label: "[Direct API] OpenAI-Compatible", value: "compat-api", hint: "COMPAT_BASE_URL + optional COMPAT_API_KEY (env only)", isCurrent: config.workerProvider === "compat-api" },
         { label: "← Back", value: "cancel", hint: "Return to main menu" },
       ];
 
       const provider = await promptSelect({
-        title: "Select Worker Provider",
+        title: "Select Worker Provider (Subscription CLIs / Direct API)",
         items: providerItems,
       });
 
@@ -524,7 +569,7 @@ export async function openInteractiveModelPicker(opts = {}) {
         continue;
       }
 
-      setConfigValue("workerProvider", provider === "antigravity" ? "gemini" : provider);
+      setConfigValue("workerProvider", provider);
       setConfigValue("workerModel", chosenWorker);
       const updated = loadConfig();
       console.log(`  ${badge.ok} Worker model set to ${c.brightBlue}${chosenWorker}-${updated.workerEffort || 'medium'}${c.reset}\n`);

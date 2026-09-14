@@ -4,9 +4,9 @@ This guide walks you through setting up and running your first cross-provider or
 
 ---
 
-## 1. Authentication Setup (No API Keys Needed)
+## 1. Authentication Setup (Subscriptions Default, Direct API Optional)
 
-Both CLIs connect using your existing subscription credentials.
+Subscription CLIs below connect using your existing credentials (no keys). Alternatively, set one env key per direct-API provider (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or `COMPAT_BASE_URL` + optional `COMPAT_API_KEY`) and select `openai-api` / `anthropic-api` / `gemini-api` / `compat-api` — keys are never stored.
 
 ### A. Codex CLI (ChatGPT Plus)
 

@@ -16,7 +16,19 @@ import { formatIsoResetTime } from "../utils/ui.js";
 import { safeSpawn } from "../utils/process.js";
 
 /** Default timeout per invocation (5 minutes). */
-const DEFAULT_TIMEOUT_MS = parseInt(process.env.GEMINI_TIMEOUT_MS || "300000", 10);
+const DEFAULT_TIMEOUT_MS = clampTimeout(process.env.GEMINI_TIMEOUT_MS || "300000");
+
+/**
+ * Clamp a timeout value to [5000, 1800000] ms.
+ *
+ * @param {*} v
+ * @returns {number}
+ */
+function clampTimeout(v) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n)) return 300000;
+  return Math.min(Math.max(n, 5000), 1800000);
+}
 
 /** Maximum output buffer size (1 MB). */
 export const MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -116,8 +128,8 @@ export async function runAgy(opts) {
     effort = opts.effort || process.env.GEMINI_EFFORT || process.env.WORKER_EFFORT || config.workerEffort || null,
     mode = "read-only",
     files = [],
-    workspace = opts.cwd || process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd(),
-    timeoutMs = parseInt(process.env.GEMINI_TIMEOUT_MS || String(config.timeoutMs || DEFAULT_TIMEOUT_MS), 10),
+    workspace = opts.workspace || opts.cwd || process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd(),
+    timeoutMs = clampTimeout(process.env.GEMINI_TIMEOUT_MS || String(config.timeoutMs || DEFAULT_TIMEOUT_MS)),
     safetyMode = opts.safetyMode || process.env.KUMO_SAFETY_MODE || config.safetyMode || "autonomous",
     trustWorkspace = opts.trustWorkspace ?? (process.env.KUMO_TRUST_WORKSPACE !== "false" && process.env.KUMO_SKIP_TRUST !== "false" && (config.trustWorkspace !== false)),
     previewDiff = opts.previewDiff || false,
@@ -128,10 +140,10 @@ export async function runAgy(opts) {
 
   let bin = getCliBinary();
   // If model is a Claude model, ensure agy is used as gemini CLI only supports Gemini models
-  if (model && model.toLowerCase().startsWith("claude-") && bin.toLowerCase().includes("gemini")) {
+  if (model && model.toLowerCase().startsWith("claude-") && path.basename(bin).toLowerCase().startsWith("gemini")) {
     bin = process.env.AGY_BIN || "agy";
   }
-  const isGeminiCli = bin.toLowerCase().includes("gemini");
+  const isGeminiCli = path.basename(bin).toLowerCase().startsWith("gemini");
   const args = [];
 
   let compositePrompt = "";
@@ -170,7 +182,7 @@ export async function runAgy(opts) {
     if (effort && supportsEffort(model)) {
       args.push("--effort", effort);
     }
-    if (safetyMode === "autonomous") {
+    if (mode === "workspace-write" && safetyMode === "autonomous") {
       args.push("--dangerously-skip-permissions");
     }
 
@@ -265,8 +277,8 @@ export async function runAgy(opts) {
         resolve({
           ok: false,
           code: 1,
-          stdout: "",
-          stderr: `Failed to spawn CLI '${bin}': ${err.message}. Ensure '${bin}' is installed or set AGY_BIN.`,
+          stdout: stdout.trim(),
+          stderr: (stderr + `\nFailed to spawn CLI '${bin}': ${err.message}. Ensure '${bin}' is installed or set AGY_BIN.`).trim(),
           timedOut: false,
         });
       });

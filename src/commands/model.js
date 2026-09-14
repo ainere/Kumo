@@ -14,7 +14,7 @@ import {
   isCodexModel,
 } from "../config/settings.js";
 import { c, badge, separator } from "../utils/ui.js";
-import { openInteractiveModelPicker, DEFAULT_CODEX_MODELS } from "../utils/model-picker.js";
+import { openInteractiveModelPicker, DEFAULT_CODEX_MODELS, SUBSCRIPTION_PROVIDERS, DIRECT_API_PROVIDERS } from "../utils/model-picker.js";
 import { DEFAULT_WORKER_MODELS } from "../bridge/agy-runner.js";
 
 export function effortCommand(target, value) {
@@ -93,6 +93,7 @@ export async function modelCommand(action, target, value, extra) {
       console.log(`     ${c.skyBlue}${preset.description}${c.reset}`);
     }
 
+    console.log(`\n${c.bold}Subscription CLIs:${c.reset} ${c.gray}(${SUBSCRIPTION_PROVIDERS.join(", ")})${c.reset}`);
     console.log(`\n${c.bold}Available Orchestrator Models (Codex):${c.reset}`);
     for (const m of DEFAULT_CODEX_MODELS) {
       const isCurrent = config.orchestratorModel === m.id;
@@ -107,14 +108,19 @@ export async function modelCommand(action, target, value, extra) {
       console.log(`  ${marker}${c.brightBlue}${m.id.padEnd(25)}${c.reset} ${m.name}${c.reset}`);
     }
 
+    console.log(`\n${c.bold}Direct API:${c.reset} ${c.gray}(${DIRECT_API_PROVIDERS.join(", ")} — env keys, never stored)${c.reset}`);
+    console.log(`  ${c.gray}Set an explicit provider per call, e.g.:${c.reset}`);
+    console.log(`  ${c.gray}kumo model worker gpt-4o-mini low anthropic-api${c.reset}`);
+    console.log(`  ${c.gray}Keys live only in env: OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, COMPAT_API_KEY (optional) + COMPAT_BASE_URL.${c.reset}`);
+
     console.log(`\n${c.bold}Commands & Arrow Navigation:${c.reset}`);
-    console.log(`  ${c.gray}kumo model${c.reset}                               Launch interactive arrow-key selector`);
-    console.log(`  ${c.gray}kumo model <model>${c.reset}                       Set orchestrator model`);
-    console.log(`  ${c.gray}kumo model orchestrator <model> [effort]${c.reset}  Set orchestrator model and effort`);
-    console.log(`  ${c.gray}kumo model worker <model> [effort]${c.reset}        Set worker model and effort`);
-    console.log(`  ${c.gray}kumo effort <low|medium|high|max>${c.reset}         Set orchestrator reasoning effort`);
-    console.log(`  ${c.gray}kumo effort worker <low|medium|high>${c.reset}      Set worker reasoning effort`);
-    console.log(`  ${c.gray}kumo model use <preset>${c.reset}                   Apply preset (e.g. kumo model use test)\n`);
+    console.log(`  ${c.gray}kumo model${c.reset}                                            Launch interactive arrow-key selector`);
+    console.log(`  ${c.gray}kumo model <model>${c.reset}                                    Set orchestrator model`);
+    console.log(`  ${c.gray}kumo model orchestrator <model> [effort] [provider]${c.reset}  Set orchestrator model, effort, and explicit provider`);
+    console.log(`  ${c.gray}kumo model worker <model> [effort] [provider]${c.reset}        Set worker model, effort, and explicit provider`);
+    console.log(`  ${c.gray}kumo effort <low|medium|high|max>${c.reset}                      Set orchestrator reasoning effort`);
+    console.log(`  ${c.gray}kumo effort worker <low|medium|high>${c.reset}                   Set worker reasoning effort`);
+    console.log(`  ${c.gray}kumo model use <preset>${c.reset}                                Apply preset (e.g. kumo model use test)\n`);
     return;
   }
 
@@ -156,6 +162,10 @@ export async function modelCommand(action, target, value, extra) {
     }
     const model = resolveOrchestratorModel(raw);
     const provider = detectProviderForModel(model, customProvider);
+    if (effort && !["low", "medium", "high", "max"].includes(String(effort).toLowerCase())) {
+      console.error(`${badge.fail} Invalid orchestrator effort '${effort}'. Allowed: low, medium, high, max`);
+      process.exit(1);
+    }
     setConfigValue("orchestratorModel", model);
     setConfigValue("orchestratorProvider", provider);
     if (effort) {
@@ -178,6 +188,10 @@ export async function modelCommand(action, target, value, extra) {
     }
     const model = resolveWorkerModel(raw);
     const provider = detectProviderForModel(model, customProvider);
+    if (effort && !["low", "medium", "high"].includes(String(effort).toLowerCase())) {
+      console.error(`${badge.fail} Invalid worker effort '${effort}'. Allowed: low, medium, high`);
+      process.exit(1);
+    }
     setConfigValue("workerModel", model);
     setConfigValue("workerProvider", provider);
     if (effort) {
@@ -199,12 +213,16 @@ export async function modelCommand(action, target, value, extra) {
     setConfigValue("orchestratorProvider", orchProvider);
     setConfigValue("workerModel", worker);
     setConfigValue("workerProvider", workerProvider);
+    if (effort && !["low", "medium", "high", "max"].includes(String(effort).toLowerCase())) {
+      console.error(`${badge.fail} Invalid orchestrator effort '${effort}'. Allowed: low, medium, high, max`);
+      process.exit(1);
+    }
     if (effort) {
       setConfigValue("reasoningEffort", effort);
     }
     const finalEffort = effort || config.reasoningEffort || "low";
     console.log(`${badge.ok} Orchestrator model set to '${model}-${finalEffort}' (provider: ${orchProvider})`);
-    console.log(`${badge.ok} Worker model set to '${worker}-${config.workerEffort || 'medium'}' (provider: ${workerProvider})`);
+    console.log(`${badge.ok} Worker model set to '${worker}' (provider: ${workerProvider}). Worker effort unchanged (${config.workerEffort || 'medium'})`);
     return;
   }
 
@@ -219,6 +237,10 @@ export async function modelCommand(action, target, value, extra) {
       return;
     }
     const model = resolveOrchestratorModel(action);
+    if (/^gemini-/i.test(model)) {
+      console.error(`${badge.fail} '${model}' is a worker-only model. Use: kumo model worker ${model}`);
+      process.exit(1);
+    }
     const provider = detectProviderForModel(model);
     setConfigValue("orchestratorModel", model);
     setConfigValue("orchestratorProvider", provider);
