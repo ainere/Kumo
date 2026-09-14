@@ -5,10 +5,27 @@
 
 import { test } from "node:test";
 import assert from "node:assert";
+import { execFileSync } from "node:child_process";
 import { progressBar, BLUEISH_GRADIENT } from "../src/utils/ui.js";
 import { getAgyModels, DEFAULT_WORKER_MODELS } from "../src/bridge/agy-runner.js";
 import { getOrchestratorModels, DEFAULT_CODEX_MODELS } from "../src/utils/model-picker.js";
 import { modelCommand } from "../src/commands/model.js";
+import { findCodexBinary } from "../src/providers/orchestrators/codex.js";
+
+/**
+ * Probe whether the `codex` CLI actually executes (not just resolves).
+ * getOrchestratorModels spawns the live CLI; without it the test would fail
+ * with `spawn codex ENOENT` on runners lacking the binary.
+ */
+function isCodexBinaryAvailable() {
+  const bin = process.env.CODEX_BIN || findCodexBinary();
+  try {
+    execFileSync(bin, ["--version"], { stdio: "ignore", timeout: 10000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 test("progressBar renders with blueish gradient colors for filled blocks", () => {
   const bar = progressBar(50, 14);
@@ -52,7 +69,11 @@ test("getAgyModels resolves available models", async () => {
   assert.ok(models.some((m) => m.id.includes("gemini")));
 });
 
-test("getOrchestratorModels resolves available models", async () => {
+test("getOrchestratorModels resolves available models", async (t) => {
+  if (!isCodexBinaryAvailable()) {
+    t.skip("codex CLI not installed; getOrchestratorModels falls back to DEFAULT_CODEX_MODELS");
+    return;
+  }
   const models = await getOrchestratorModels();
   assert.ok(Array.isArray(models) && models.length > 0);
   assert.ok(models.some((m) => m.id.includes("chatgpt") || m.id.includes("gpt")));

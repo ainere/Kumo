@@ -4,16 +4,40 @@
 
 import { test } from "node:test";
 import assert from "node:assert";
+import { execFileSync } from "node:child_process";
 import { CodexAppClient } from "../src/providers/orchestrators/codex-client.js";
 import { findCodexBinary } from "../src/providers/orchestrators/codex.js";
+
+/**
+ * Probe whether the `codex` CLI actually executes (not just resolves).
+ * Live-binary tests skip cleanly on runners without the CLI installed
+ * instead of failing with `spawn codex ENOENT`. CODEX_BIN alone is not
+ * trusted: the pointed binary must run `codex --version` successfully.
+ */
+function isCodexBinaryAvailable() {
+  const bin = process.env.CODEX_BIN || findCodexBinary();
+  try {
+    execFileSync(bin, ["--version"], { stdio: "ignore", timeout: 10000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 test("findCodexBinary locates executable", () => {
   const bin = findCodexBinary();
   assert.ok(bin && bin.length > 0);
 });
 
-test("CodexAppClient initializes and retrieves live account rate limits", async () => {
+test("CodexAppClient initializes and retrieves live account rate limits", async (t) => {
+  if (!isCodexBinaryAvailable()) {
+    t.skip("codex CLI not installed; skipping live rate-limits check");
+    return;
+  }
   const client = new CodexAppClient();
+  // Attach a no-op error listener: safeSpawn emits 'error' on ENOENT and
+  // EventEmitter rethrows unhandled 'error' events as uncaught exceptions.
+  client.on("error", () => {});
   await client.start();
 
   try {
