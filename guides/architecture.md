@@ -6,11 +6,10 @@ This document details the design principles, protocols, and mechanisms powering 
 
 ## The Cross-Provider Problem
 
-Developers often subscribe to multiple flagship AI ecosystems:
-- **OpenAI (ChatGPT Plus / Pro)**: Exceptional reasoning, high-level task planning, nuanced architectural synthesis (e.g. ChatGPT 6 Astra).
-- **Google (Google AI Pro / Antigravity)**: Fast, high-throughput, expansive context window models (e.g. Gemini 3.8 Flash).
+- **Frontier reasoning CLIs** (e.g. Codex / ChatGPT, Claude Code, Copilot, Cursor, Gemini CLI, Ollama): deep planning, nuanced architectural synthesis.
+- **High-throughput workers** (e.g. Antigravity / Gemini, Codex, API-backed models): fast, expansive context window execution (e.g. Gemini 3.8 Flash).
 
-However, each provider's CLI only interfaces directly with its own models. Conventional multi-agent frameworks require separate API keys with per-token billing, bypassing paid consumer subscriptions.
+However, each provider's CLI only interfaces directly with its own models. Conventional multi-agent frameworks default to separate API keys with per-token billing, bypassing paid consumer subscriptions (Kumo keeps subscriptions the default and supports API keys as an opt-in per-role or per-call path).
 
 ---
 
@@ -20,7 +19,7 @@ The **Model Context Protocol (MCP)** provides an open, standardized RPC protocol
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│ Root Orchestrator (Codex CLI)                          │
+│ Root Orchestrator (any of 13 providers)                │
 │ - Model: Dynamic (e.g. ChatGPT 6 Astra, GPT-5.5)       │
 │ - Config: .codex/config.toml (Auto-synced by Kumo)     │
 └───────────────────────────┬────────────────────────────┘
@@ -30,17 +29,17 @@ The **Model Context Protocol (MCP)** provides an open, standardized RPC protocol
 │ MCP Bridge Server (src/bridge/server.js)               │
 │ - Uses @modelcontextprotocol/sdk                       │
 │ - Exposes 5 specialized worker_* MCP tools             │
+│ - Optional per-call `provider` override                │
 └───────────────────────────┬────────────────────────────┘
-                            │ Subprocess spawn
+                            │ Subprocess spawn or direct-API fetch
                             ▼
 ┌────────────────────────────────────────────────────────┐
-│ Execution Worker (Antigravity CLI: agy / gemini)       │
+│ Execution Worker (any of 13 providers)                 │
 │ - Model: Dynamic (e.g. Gemini 3.8 Flash, Claude Opus)  │
-│ - Sandbox: read-only | workspace-write                 │
-│ - Authenticated via subscription CLI login             │
+│ - Sandbox: read-only | workspace-write (CLI workers)   │
+│ - Subscription CLI login, or direct-API env key        │
 └────────────────────────────────────────────────────────┘
 ```
-
 ### 1. Subscription-First Authentication (Direct API Optional)
 - Subscription CLIs need no API keys in files or network headers: orchestrator relies on `codex login`, worker on `agy auth login` (or Google account credentials).
 - Optional direct-API providers (`openai-api`, `anthropic-api`, `gemini-api`, `compat-api`) take keys from env vars only (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `COMPAT_API_KEY` optional + `COMPAT_BASE_URL`); keys are never written to disk, cache, logs, or `~/.kumo/*`.

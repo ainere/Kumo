@@ -7,25 +7,20 @@ Common issues and solutions when running the cross-provider harness.
 ## 1. CLI Executable Not Found
 
 ### Symptom:
-`Failed to spawn CLI binary 'agy': ENOENT` or similar in MCP tool results.
+`Failed to spawn CLI binary '<name>': ENOENT` or similar in MCP tool results (e.g. `agy`, `codex`, `cursor-agent`).
 
 ### Solution:
-1. Check if `agy` is installed and in your system PATH:
+1. Check if the binary for your active provider is installed and in your system PATH:
    ```powershell
    Get-Command agy
+   # or: codex, claude, gh, cursor-agent, gemini, ollama, opencode, commandcode
    ```
-2. If using a different binary name (such as `gemini` or an explicit absolute path), set the `AGY_BIN` environment variable before launching Codex:
+   Run `kumo doctor` to probe every provider binary at once.
+2. Each provider honors a binary override env var: `AGY_BIN`, `CODEX_BIN`, `CLAUDE_BIN`, `COPILOT_BIN`, `CURSOR_BIN`, `GEMINI_BIN`, `OLLAMA_BIN`, `OPENCODE_BIN`, `COMMANDCODE_BIN`. Example:
    ```powershell
-   $env:AGY_BIN = "gemini"
+   $env:GEMINI_BIN = "gemini"
    # Or set a full path:
    $env:AGY_BIN = "C:\Users\<username>\AppData\Roaming\npm\agy.cmd"
-   ```
-3. You can also specify this permanently in `.codex/config.toml` under `[mcp_servers.gemini-bridge.env]`:
-   ```toml
-   [mcp_servers.gemini-bridge]
-   command = "node"
-   args = ["src/bridge/server.js"]
-   env = { AGY_BIN = "gemini" }
    ```
 
 ---
@@ -83,6 +78,6 @@ gemini --skip-trust
 
 You can test the MCP server in isolation anytime by running:
 ```bash
-node --test tests/bridge.test.js
+node --test tests/bridge.test.js tests/provider-expansion.test.js
 ```
-This connects a lightweight client via stdio to verify that all tools register and communication functions without error.
+This connects a lightweight client via stdio to verify that all tools register and communication functions without error, and exercises the direct-API wire formats with mocked fetch (no network).
