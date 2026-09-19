@@ -62,11 +62,14 @@ export function awaitTurnCompletion(client, opts = {}) {
     client.on("close", onClose);
 
     if (timeoutMs > 0) {
+      // Deliberately NOT unref'd. An unref'd timer lets the event loop drain
+      // while this promise is still pending, so the turn would neither complete
+      // nor time out — the caller just never hears back. `cleanup()` clears it
+      // on every settle path, so it cannot outlive the turn.
       timer = setTimeout(
         () => finish(reject, new Error(`Turn timed out after ${Math.round(timeoutMs / 1000)}s`)),
         timeoutMs
       );
-      timer.unref?.();
     }
   });
 }
