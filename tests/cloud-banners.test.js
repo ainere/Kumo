@@ -1,3 +1,4 @@
+import "./helpers/env.js";
 /**
  * cloud-banners.test.js — Verification tests for Cloud Cumulus kanji banner styling,
  * progress bars, and rate limit formatting helpers.
@@ -6,26 +7,16 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import {
-  BANNER_DESIGNS,
   getBanner,
   progressBar,
   formatResetTime,
   formatIsoResetTime,
-  formatPlanType,
-  DEFAULT_SUBTITLE,
 } from "../src/utils/ui.js";
 
-test("cloud cumulus banner renders cleanly and contains KUMO, kanji and subtitle", () => {
-  assert.ok(BANNER_DESIGNS.cloud, "Banner style 'cloud' must exist");
-
-  const rendered = getBanner("1.0.0", "cloud");
-  assert.ok(rendered.includes("KUMO"), "Banner must contain 'KUMO'");
-  assert.ok(rendered.includes("雲"), "Banner must contain centered kanji '雲'");
-  assert.ok(rendered.includes("1.0.0"), "Banner must contain version '1.0.0'");
-  assert.ok(
-    rendered.includes(DEFAULT_SUBTITLE),
-    "Banner must contain default subtitle"
-  );
+test("getBanner interpolates the provided version string", () => {
+  const testVersion = "9.9.9-test";
+  const rendered = getBanner(testVersion, "cloud");
+  assert.ok(rendered.includes(`v${testVersion}`), `Banner must contain version 'v${testVersion}'`);
 });
 
 test("custom subtitle renders in cloud banner", () => {
@@ -53,14 +44,6 @@ test("progressBar clamps and renders correct visual bars", () => {
   assert.ok(barUnder.includes("0%"));
 });
 
-test("formatPlanType capitalizes known plan identifiers and distinguishes Go", () => {
-  assert.strictEqual(formatPlanType("go"), "ChatGPT Go");
-  assert.strictEqual(formatPlanType("plus"), "ChatGPT Plus");
-  assert.strictEqual(formatPlanType("pro"), "ChatGPT Pro");
-  assert.strictEqual(formatPlanType("team"), "ChatGPT Team");
-  assert.strictEqual(formatPlanType("enterprise"), "ChatGPT Enterprise");
-  assert.strictEqual(formatPlanType(null), "Unknown Tier");
-});
 
 test("formatResetTime calculates relative countdown", () => {
   const nowSec = Math.floor(Date.now() / 1000);

@@ -1,3 +1,4 @@
+import "./helpers/env.js";
 /**
  * bridge.test.js — Verification test for the dynamic workspace MCP bridge server.
  */
@@ -5,12 +6,35 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import path from "node:path";
+import fs from "node:fs";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverPath = path.resolve(__dirname, "../src/bridge/server.js");
+
+/**
+ * Write an executable stub that prints `bytes` bytes to stdout and exits 0.
+ * On Windows it must be a real `.cmd`, since that is what npm-installed CLIs
+ * actually are and what the spawn path has to cope with.
+ *
+ * @param {string} dir
+ * @param {number} bytes
+ * @returns {string} path to the stub
+ */
+function writeFloodStub(dir, bytes) {
+  const script = `process.stdout.write("A".repeat(${bytes}));`;
+  if (process.platform === "win32") {
+    const stub = path.join(dir, "flood.cmd");
+    fs.writeFileSync(stub, `@echo off\r\n"${process.execPath}" -e "${script.replace(/"/g, '\\"')}"\r\n`);
+    return stub;
+  }
+  const stub = path.join(dir, "flood.sh");
+  fs.writeFileSync(stub, `#!/bin/sh\nexec "${process.execPath}" -e '${script}'\n`, { mode: 0o755 });
+  return stub;
+}
 
 test("MCP bridge server starts and exposes all 5 tools with workspace parameter", async () => {
   const dummyWorkspace = path.resolve(__dirname, "../");
@@ -53,24 +77,36 @@ test("MCP bridge server starts and exposes all 5 tools with workspace parameter"
   }
 });
 
-test("MAX_OUTPUT_BYTES is 1MB and output buffer slicing logic hard-caps total size", async () => {
-  const { MAX_OUTPUT_BYTES } = await import("../src/bridge/agy-runner.js");
+test("runAgy hard-caps captured stdout at MAX_OUTPUT_BYTES", async () => {
+  const { runAgy, MAX_OUTPUT_BYTES } = await import("../src/bridge/agy-runner.js");
   assert.strictEqual(MAX_OUTPUT_BYTES, 1024 * 1024);
 
-  let stdout = "";
-  const chunk1 = "A".repeat(1024 * 1024 - 10);
-  const chunk2 = "B".repeat(100);
+  // Drive the real accumulator through a stub binary that floods stdout.
+  // This test previously reimplemented the slicing inside its own body, so
+  // removing the cap from agy-runner.js left it green.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-agy-stub-"));
+  const stub = writeFloodStub(dir, MAX_OUTPUT_BYTES + 4096);
+  const saved = process.env.AGY_BIN;
+  process.env.AGY_BIN = stub;
 
-  for (const chunk of [chunk1, chunk2]) {
-    if (stdout.length < MAX_OUTPUT_BYTES) {
-      const remaining = MAX_OUTPUT_BYTES - stdout.length;
-      const str = chunk.toString();
-      stdout += str.length <= remaining ? str : str.slice(0, remaining);
-    }
+  try {
+    const res = await runAgy({
+      prompt: "ignored by the stub",
+      mode: "read-only",
+      model: null,
+      effort: null,
+      trustWorkspace: false,
+      workspace: dir,
+      timeoutMs: 60000,
+    });
+
+    assert.strictEqual(res.stdout.length, MAX_OUTPUT_BYTES, "stdout must be truncated to the cap");
+    assert.strictEqual(res.ok, true);
+  } finally {
+    if (saved === undefined) delete process.env.AGY_BIN;
+    else process.env.AGY_BIN = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
   }
-
-  assert.strictEqual(stdout.length, MAX_OUTPUT_BYTES);
-  assert.strictEqual(stdout.slice(-10), "B".repeat(10));
 });
 
 test("MCP bridge tools expose optional model and effort schema properties", async () => {

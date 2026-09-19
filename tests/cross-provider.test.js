@@ -1,3 +1,4 @@
+import "./helpers/env.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -5,8 +6,7 @@ import {
   detectProviderForModel,
   supportsEffort,
   PRESETS,
-  resolveOrchestratorModel,
-  resolveWorkerModel,
+  resolveModel,
 } from "../src/config/settings.js";
 import {
   createOrchestratorClient,

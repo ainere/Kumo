@@ -4,15 +4,22 @@
  */
 
 import { findCodexBinary } from "../orchestrators/codex.js";
-import { safeSpawn } from "../../utils/process.js";
-
-const MAX_OUTPUT_BYTES = 1024 * 1024; // 1 MB
-const DEFAULT_TIMEOUT_MS = 300000;
+import {
+  runCliWorker,
+  buildCompositePrompt,
+  mustUseStdinPrompt,
+  DEFAULT_TIMEOUT_MS,
+} from "./cli-runner.js";
 
 export const PROVIDER_INFO = {
   id: "codex",
   name: "OpenAI Codex Worker",
 };
+
+const PREVIEW_NOTE =
+  "You are running in read-only diff preview mode. DO NOT modify any files on disk.\n" +
+  "Carefully analyze the workspace and produce a complete unified git diff (--- a/... +++ b/...) " +
+  "of the exact changes you propose to make, followed by an impact summary.";
 
 /**
  * Execute a bounded worker task using Codex CLI.
@@ -27,12 +34,12 @@ export const PROVIDER_INFO = {
  * @param {string} [opts.systemPrompt] - System prompt instructions
  * @param {boolean} [opts.previewDiff] - Whether to enforce read-only diff generation
  * @param {number} [opts.timeoutMs] - Execution timeout
+ * @param {string} [opts.liveLogPath] - File to tee raw output into
  * @returns {Promise<{ ok: boolean, code: number, stdout: string, stderr: string, timedOut: boolean }>}
  */
 export async function executeTask(opts) {
   const {
     prompt,
-    mode = "read-only",
     files = [],
     workspace = process.cwd(),
     model,
@@ -40,11 +47,19 @@ export async function executeTask(opts) {
     systemPrompt,
     previewDiff = false,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    liveLogPath = null,
   } = opts;
 
   const bin = findCodexBinary();
-  const args = ["exec", "--ephemeral"];
+  const compositePrompt = buildCompositePrompt({
+    prompt,
+    systemPrompt,
+    previewDiff,
+    files,
+    previewNote: PREVIEW_NOTE,
+  });
 
+  const args = ["exec", "--ephemeral"];
   if (model) {
     args.push("--model", model);
   }
@@ -52,83 +67,19 @@ export async function executeTask(opts) {
     args.push("-c", `model_reasoning_effort="${effort}"`);
   }
 
-  let compositePrompt = "";
-  if (systemPrompt) {
-    compositePrompt += `[System Instructions]\n${systemPrompt}\n\n`;
-  }
-  if (previewDiff) {
-    compositePrompt += `[DIFF PREVIEW MODE]\nYou are running in read-only diff preview mode. DO NOT modify any files on disk.\nCarefully analyze the workspace and produce a complete unified git diff (--- a/... +++ b/...) of the exact changes you propose to make, followed by an impact summary.\n\n`;
-  }
-  if (files && files.length > 0) {
-    compositePrompt += `[Relevant Files]\n${files.map((f) => `- ${f}`).join("\n")}\n\n`;
-  }
-  compositePrompt += `[Task]\n${prompt}`;
-  args.push(compositePrompt);
+  // `codex exec -` reads the prompt from stdin. Only used when argv cannot carry
+  // it safely (Windows .cmd shim), so the working POSIX path is unchanged.
+  const useStdin = mustUseStdinPrompt(bin, compositePrompt);
+  args.push(useStdin ? "-" : compositePrompt);
 
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let settled = false;
-
-    const proc = safeSpawn(bin, args, {
-      cwd: workspace,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
-    });
-
-    proc.stdout?.on("data", (chunk) => {
-      if (stdout.length < MAX_OUTPUT_BYTES) {
-        const remaining = MAX_OUTPUT_BYTES - stdout.length;
-        const str = chunk.toString();
-        stdout += str.length <= remaining ? str : str.slice(0, remaining);
-      }
-    });
-
-    proc.stderr?.on("data", (chunk) => {
-      if (stderr.length < MAX_OUTPUT_BYTES) {
-        const remaining = MAX_OUTPUT_BYTES - stderr.length;
-        const str = chunk.toString();
-        stderr += str.length <= remaining ? str : str.slice(0, remaining);
-      }
-    });
-
-    const timer = setTimeout(() => {
-      if (!settled) {
-        timedOut = true;
-        proc.kill("SIGTERM");
-        setTimeout(() => {
-          try {
-            proc.kill("SIGKILL");
-          } catch {
-            /* ignore */
-          }
-        }, 5000);
-      }
-    }, timeoutMs);
-
-    proc.on("close", (code) => {
-      settled = true;
-      clearTimeout(timer);
-      resolve({
-        ok: code === 0,
-        code: code ?? 1,
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-        timedOut,
-      });
-    });
-
-    proc.on("error", (err) => {
-      settled = true;
-      clearTimeout(timer);
-      resolve({
-        ok: false,
-        code: 1,
-        stdout: "",
-        stderr: `Failed to spawn Codex worker '${bin}': ${err.message}`,
-        timedOut: false,
-      });
-    });
+  return runCliWorker({
+    providerId: PROVIDER_INFO.id,
+    label: "Codex",
+    bin,
+    args,
+    workspace,
+    timeoutMs,
+    liveLogPath,
+    stdinPrompt: useStdin ? compositePrompt : null,
   });
 }

@@ -30,7 +30,7 @@ Both systems run on existing user subscriptions by default; no keys are stored f
    - Cross-model review catches blind spots, hallucinated APIs, and subtle concurrency or error-handling bugs that a single model might miss.
 
 4. **Always Update Documentation & Knowledge**:
-   - Always refer to and update Graphify (`graphify-out/`) and Obsidian (`C:\Users\xenob\Documents\Obsidian\Agent-Workspace`).
+   - Always refer to and update Graphify (`graphify-out/`) and Obsidian (configured via `$KUMO_OBSIDIAN_VAULT` or `kumo config set obsidianVault <path>`).
    - **If a major change is made (features, commands, config, architecture), update `README.md` immediately.**
 
 5. **Keep Worker Invocations Bounded (<60s)**:
@@ -137,7 +137,7 @@ The task **MUST** be delegated via MCP tools or subagents when at least one of t
 4. **Fix Bug**: Call `worker_implement` with specific instructions to fix the cause without altering existing APIs.
 5. **Verify**: Call `worker_test` to confirm the regression test passes and no other tests broke.
 6. **Review**: Inspect the diff and provide a concise summary to the user.
-7. **Document**: If the fix introduces behavioral changes or new settings, update [README.md](file:///d:/Projects/Kumo/README.md).
+7. **Document**: If the fix introduces behavioral changes or new settings, update [README.md](../../../README.md).
 
 ---
 
@@ -174,8 +174,8 @@ When calling worker MCP tools, write **clear, bounded, concrete prompts with con
 ## 8. Knowledge Base & Obsidian Integration
 
 - **Graphify**: Treat `graphify-out/` as the primary structural map of the repository. Query `graphify-out/GRAPH_REPORT.md` or `graph.json` to understand dependencies, god nodes, and call hierarchies before delegating deep exploration.
-- **Obsidian Vault**: The knowledge vault is located at `C:\Users\xenob\Documents\Obsidian\Agent-Workspace`. Consult it for cross-project learnings and store durable architectural decisions, verified procedures, or uncompleted handoffs.
-- **README Maintenance**: Any major addition, command change, model preset update, or architecture change must be recorded in [README.md](file:///d:/Projects/Kumo/README.md) immediately.
+- **Obsidian Vault**: The knowledge vault is configured via `$KUMO_OBSIDIAN_VAULT` (or `kumo config set obsidianVault <path>`). Consult it for cross-project learnings and store durable architectural decisions, verified procedures, or uncompleted handoffs.
+- **README Maintenance**: Any major addition, command change, model preset update, or architecture change must be recorded in [README.md](../../../README.md) immediately.
 
 ---
 

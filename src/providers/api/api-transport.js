@@ -4,6 +4,8 @@
  * Zero external dependencies: uses Node >=20 global fetch and AbortSignal.timeout.
  */
 
+import { isSafeBaseUrl } from "../../config/settings.js";
+
 /**
  * Normalizes provider string to canonical format.
  * @param {string} provider
@@ -75,6 +77,15 @@ export function getApiKey(provider) {
  * @param {object} [config={}]
  * @returns {string}
  */
+export function assertSafeBaseUrl(url) {
+  if (!isSafeBaseUrl(url)) {
+    throw new Error(
+      `Refusing to use base URL '${url}': API keys may only be sent over https, or over plain http to localhost.`
+    );
+  }
+  return url;
+}
+
 export function resolveBaseUrl(provider, config = {}) {
   const norm = normalizeProvider(provider);
   const cfg = config || {};
@@ -84,7 +95,7 @@ export function resolveBaseUrl(provider, config = {}) {
       (cfg.openaiBaseUrl && cfg.openaiBaseUrl.trim()) ||
       (process.env.OPENAI_BASE_URL && process.env.OPENAI_BASE_URL.trim()) ||
       "https://api.openai.com/v1";
-    return url.replace(/\/+$/, "");
+    return assertSafeBaseUrl(url.replace(/\/+$/, ""));
   }
 
   if (norm === "anthropic-api") {
@@ -92,7 +103,7 @@ export function resolveBaseUrl(provider, config = {}) {
       (cfg.anthropicBaseUrl && cfg.anthropicBaseUrl.trim()) ||
       (process.env.ANTHROPIC_BASE_URL && process.env.ANTHROPIC_BASE_URL.trim()) ||
       "https://api.anthropic.com";
-    return url.replace(/\/+$/, "");
+    return assertSafeBaseUrl(url.replace(/\/+$/, ""));
   }
 
   if (norm === "gemini-api") {
@@ -101,7 +112,7 @@ export function resolveBaseUrl(provider, config = {}) {
       (process.env.GEMINI_BASE_URL && process.env.GEMINI_BASE_URL.trim()) ||
       (process.env.GOOGLE_GENERATIVE_AI_BASE_URL && process.env.GOOGLE_GENERATIVE_AI_BASE_URL.trim()) ||
       "https://generativelanguage.googleapis.com";
-    return url.replace(/\/+$/, "");
+    return assertSafeBaseUrl(url.replace(/\/+$/, ""));
   }
 
   if (norm === "compat-api") {
@@ -111,10 +122,31 @@ export function resolveBaseUrl(provider, config = {}) {
     if (!url) {
       throw new Error("compat-api requires compatBaseUrl (config.compatBaseUrl or COMPAT_BASE_URL env var)");
     }
-    return url.replace(/\/+$/, "");
+    return assertSafeBaseUrl(url.replace(/\/+$/, ""));
   }
 
   throw new Error(`Unknown provider: ${provider}`);
+}
+
+/** Hard ceiling on a response body; a hostile endpoint must not exhaust memory. */
+export const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Read a response body as text, refusing anything past MAX_RESPONSE_BYTES.
+ *
+ * @param {Response} res
+ * @returns {Promise<string>}
+ */
+export async function readBoundedText(res) {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+    throw new Error(`Response body of ${declared} bytes exceeds the ${MAX_RESPONSE_BYTES}-byte cap`);
+  }
+  const text = await res.text();
+  if (text.length > MAX_RESPONSE_BYTES) {
+    throw new Error(`Response body exceeds the ${MAX_RESPONSE_BYTES}-byte cap`);
+  }
+  return text;
 }
 
 /**
@@ -240,16 +272,20 @@ export function chatComplete({
 
     const normEffort = (effort || "").toLowerCase().trim();
     if (normEffort === "high" || normEffort === "max") {
+      const budgetTokens = 10000;
       requestBody.thinking = {
         type: "enabled",
-        budget_tokens: 10000,
+        budget_tokens: budgetTokens,
       };
+      // The Messages API rejects budget_tokens >= max_tokens with HTTP 400.
+      requestBody.max_tokens = budgetTokens + 4096;
     }
   } else if (normProvider === "gemini-api") {
     const geminiBase = effectiveBaseUrl.endsWith("/v1beta")
       ? effectiveBaseUrl
       : `${effectiveBaseUrl}/v1beta`;
-    url = `${geminiBase}/models/${encodeURIComponent(model.trim())}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    // Authenticate with the header only: query strings land in proxy logs.
+    url = `${geminiBase}/models/${encodeURIComponent(model.trim())}:generateContent`;
 
     headers["x-goog-api-key"] = apiKey;
 
@@ -282,6 +318,9 @@ export function chatComplete({
         headers,
         body: JSON.stringify(requestBody),
         signal: AbortSignal.timeout(timeoutMs),
+        // The fetch spec does NOT strip x-api-key / x-goog-api-key on a
+        // cross-origin redirect, so a redirecting endpoint could harvest the key.
+        redirect: "manual",
       });
     } catch (err) {
       if (err instanceof ApiError) {
@@ -293,6 +332,15 @@ export function chatComplete({
       throw err;
     }
 
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get("location") || "(no Location header)";
+      throw new ApiError(
+        provider,
+        res.status,
+        `Endpoint attempted to redirect to ${location}; refusing to forward credentials.`
+      );
+    }
+
     if (!res.ok) {
       if (res.status === 401 || res.status === 403) {
         const envVar = getKeyEnvVarName(normProvider);
@@ -301,14 +349,15 @@ export function chatComplete({
 
       let errorText = "";
       try {
-        const errData = await res.json();
-        errorText = errData?.error?.message || errData?.message || JSON.stringify(errData);
-      } catch {
+        const raw = await readBoundedText(res);
         try {
-          errorText = await res.text();
+          const errData = JSON.parse(raw);
+          errorText = errData?.error?.message || errData?.message || raw;
         } catch {
-          errorText = "";
+          errorText = raw;
         }
+      } catch {
+        errorText = "";
       }
 
       const sanitized = sanitizeMessage(errorText, apiKey);
@@ -318,7 +367,7 @@ export function chatComplete({
       throw new ApiError(provider, res.status, msg);
     }
 
-    const data = await res.json();
+    const data = JSON.parse(await readBoundedText(res));
     let text = "";
     let usage;
 

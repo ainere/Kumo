@@ -92,7 +92,7 @@ A focused stream can continue to show live text while the timeline remains the r
 - Codex/Antigravity quota information when available
 - workspace and chat identifiers in a human-friendly form
 
-A machine-readable `kumo status --json` command is added and derives its payload from the same normalized status model.
+A machine-readable `kumo status --json` command is added and derives its payload from the same normalized status model. *(Status note: Not implemented as of this audit; `kumo status` currently accepts only `-d, --dir`)*
 
 ## Safety and diff-review
 
@@ -253,7 +253,7 @@ Add unit/integration tests before implementation for:
 - worker/tool events maintain stable IDs
 - timeline reflects concurrent worker activity accurately
 - `/status` reflects the same lifecycle state as the live UI
-- `kumo status --json` matches the normalized status model
+- `kumo status --json` matches the normalized status model *(Status note: Not implemented as of this audit)*
 - failed turns are not displayed as successful completions
 
 ## Delivery order

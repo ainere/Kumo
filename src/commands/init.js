@@ -5,9 +5,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { c, badge, separator } from "../utils/ui.js";
-import { getObsidianVaultPath } from "../config/settings.js";
+import { getObsidianVaultPath, loadConfig } from "../config/settings.js";
 
 function getAgentsTemplate(vaultPath) {
+  const config = loadConfig();
+  const orchModel = config.orchestratorModel || "chatgpt-6-astra";
+  const orchProvider = config.orchestratorProvider || "codex";
+  const workerModel = config.workerModel || "gemini-3.8-flash";
+  const workerProvider = config.workerProvider || "antigravity";
+
   const vaultNote = vaultPath
     ? `- **Obsidian**: Consult and update the Obsidian knowledge vault (\`${vaultPath}\`) for durable project state.`
     : `- **Obsidian**: If configured via \`$KUMO_OBSIDIAN_VAULT\` or \`kumo config set obsidianVault <path>\`, consult and update the Obsidian knowledge vault for durable project state.`;
@@ -15,8 +21,8 @@ function getAgentsTemplate(vaultPath) {
   return `# Project Orchestration Rules (Cross-Provider Harness)
 
 This project coordinates a frontier reasoning model as the **Root Orchestrator** and a high-throughput execution model as the **Worker**.
-- **Root Orchestrator**: Frontier reasoning model (default: ChatGPT 6 Astra via Codex CLI)
-- **Execution Worker**: High-throughput worker (Gemini 3.8 Flash, Claude 3.7/Opus/Sonnet, or GPT-OSS via Antigravity / MCP bridge)
+- **Root Orchestrator**: Frontier reasoning model (${orchModel} via ${orchProvider})
+- **Execution Worker**: High-throughput worker (${workerModel} via ${workerProvider} / MCP bridge)
 - **Reviewer**: Orchestrator subagent for deep cross-model review
 
 ## Delegation Gate

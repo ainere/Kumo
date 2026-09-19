@@ -4,10 +4,13 @@
  * (`GEMINI_BIN`), distinct from the `agy` binary used by `antigravity`.
  */
 
-import { safeSpawn } from "../../utils/process.js";
-
-const MAX_OUTPUT_BYTES = 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 300000;
+import { resolveBinary } from "../../utils/process.js";
+import {
+  runCliWorker,
+  buildCompositePrompt,
+  mustUseStdinPrompt,
+  DEFAULT_TIMEOUT_MS,
+} from "./cli-runner.js";
 
 export const PROVIDER_INFO = {
   id: "gemini-cli",
@@ -16,100 +19,50 @@ export const PROVIDER_INFO = {
 
 export function findGeminiCliBinary() {
   if (process.env.GEMINI_BIN) return process.env.GEMINI_BIN;
-  return "gemini";
+  return resolveBinary("gemini");
 }
 
 export async function executeTask(opts) {
   const {
     prompt,
     mode = "read-only",
+    safetyMode = "autonomous",
     files = [],
     workspace = process.cwd(),
     model,
     systemPrompt,
     previewDiff = false,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    liveLogPath = null,
   } = opts;
 
   const bin = findGeminiCliBinary();
+  const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files });
 
-  let compositePrompt = "";
-  if (systemPrompt) {
-    compositePrompt += `[System Instructions]\n${systemPrompt}\n\n`;
-  }
-  if (previewDiff) {
-    compositePrompt += `[DIFF PREVIEW MODE]\nProduce a complete unified git diff without modifying files on disk.\n\n`;
-  }
-  if (files && files.length > 0) {
-    compositePrompt += `[Relevant Files]\n${files.map((f) => `- ${f}`).join("\n")}\n\n`;
-  }
-  compositePrompt += `[Task]\n${prompt}`;
-
-  const args = ["-p", compositePrompt];
+  // Flags first, positional prompt last.
+  const args = [];
   if (model) {
     args.push("-m", model);
   }
-  if (mode === "workspace-write") {
+  if (mode === "workspace-write" && safetyMode === "autonomous") {
     args.push("-y", "--approval-mode", "yolo");
   }
 
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let settled = false;
+  // The Gemini CLI reads the prompt from stdin when `-p` carries no value.
+  const useStdin = mustUseStdinPrompt(bin, compositePrompt);
+  args.push("-p");
+  if (!useStdin) {
+    args.push(compositePrompt);
+  }
 
-    const proc = safeSpawn(bin, args, {
-      cwd: workspace,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
-    });
-
-    proc.stdout?.on("data", (chunk) => {
-      if (stdout.length < MAX_OUTPUT_BYTES) {
-        const remaining = MAX_OUTPUT_BYTES - stdout.length;
-        const str = chunk.toString();
-        stdout += str.length <= remaining ? str : str.slice(0, remaining);
-      }
-    });
-
-    proc.stderr?.on("data", (chunk) => {
-      if (stderr.length < MAX_OUTPUT_BYTES) {
-        const remaining = MAX_OUTPUT_BYTES - stderr.length;
-        const str = chunk.toString();
-        stderr += str.length <= remaining ? str : str.slice(0, remaining);
-      }
-    });
-
-    const timer = setTimeout(() => {
-      if (!settled) {
-        timedOut = true;
-        proc.kill("SIGTERM");
-      }
-    }, timeoutMs);
-
-    proc.on("close", (code) => {
-      settled = true;
-      clearTimeout(timer);
-      resolve({
-        ok: code === 0,
-        code: code ?? 1,
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-        timedOut,
-      });
-    });
-
-    proc.on("error", (err) => {
-      settled = true;
-      clearTimeout(timer);
-      resolve({
-        ok: false,
-        code: 1,
-        stdout: "",
-        stderr: `Failed to spawn Gemini CLI worker '${bin}': ${err.message}`,
-        timedOut: false,
-      });
-    });
+  return runCliWorker({
+    providerId: PROVIDER_INFO.id,
+    label: "Gemini CLI",
+    bin,
+    args,
+    workspace,
+    timeoutMs,
+    liveLogPath,
+    stdinPrompt: useStdin ? compositePrompt : null,
   });
 }

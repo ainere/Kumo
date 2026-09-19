@@ -2,7 +2,7 @@
  * gemini.js — Google Gemini worker provider adapter.
  */
 
-import { runAgy, getCliBinary } from "../../bridge/agy-runner.js";
+import { runAgy } from "../../bridge/agy-runner.js";
 
 export const PROVIDER_INFO = {
   id: "gemini",
@@ -11,8 +11,4 @@ export const PROVIDER_INFO = {
 
 export async function executeTask(opts) {
   return runAgy(opts);
-}
-
-export function getBinary() {
-  return getCliBinary();
 }

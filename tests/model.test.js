@@ -1,3 +1,4 @@
+import "./helpers/env.js";
 /**
  * model.test.js — Verification tests for model and reasoning effort configuration.
  */

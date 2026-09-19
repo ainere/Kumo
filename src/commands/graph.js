@@ -4,7 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { execSync, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { c, badge, separator } from "../utils/ui.js";
 
 /**

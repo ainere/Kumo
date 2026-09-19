@@ -15,6 +15,7 @@ import { formatPlanType, formatResetTime } from "../../utils/ui.js";
 import { loadConfig } from "../../config/settings.js";
 import { syncAgentConfigs } from "../../config/sync.js";
 import { safeSpawn } from "../../utils/process.js";
+import { VERSION } from "../../cli.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -56,6 +57,19 @@ export class CodexAppClient extends EventEmitter {
    */
   async start() {
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      };
+      const succeed = (res) => {
+        if (settled) return;
+        settled = true;
+        this.emit("initialized", res);
+        resolve(res);
+      };
+
       try {
         this.proc = safeSpawn(this.bin, ["app-server", "--stdio"], {
           stdio: ["pipe", "pipe", "pipe"],
@@ -76,26 +90,47 @@ export class CodexAppClient extends EventEmitter {
       });
 
       this.proc.on("error", (err) => {
-        this.emit("error", err);
-        reject(err);
+        // A bare emit("error") with no listener throws and takes the whole
+        // process down; callers learn about the failure from the rejection.
+        if (this.listenerCount("error") > 0) this.emit("error", err);
+        this._rejectPending(err);
+        fail(new Error(`Failed to spawn Codex app-server at '${this.bin}': ${err.message}`));
       });
 
       this.proc.on("close", (code) => {
         this.emit("close", code);
         this.proc = null;
+        // Anything still in flight can never be answered now; without this each
+        // caller waits out the full 30s request timeout.
+        this._rejectPending(new Error(`Codex app-server exited (code ${code})`));
+        fail(new Error(`Codex app-server exited before initialization (code ${code})`));
       });
 
       // Send initialize handshake
       this.request("initialize", {
-        clientInfo: { name: "kumo", version: "1.0.0" },
+        clientInfo: { name: "kumo", version: VERSION },
         capabilities: {},
       })
-        .then((res) => {
-          this.emit("initialized", res);
-          resolve(res);
-        })
-        .catch(reject);
+        .then(succeed)
+        .catch(fail);
     });
+  }
+
+  /**
+   * Reject every in-flight JSON-RPC request.
+   *
+   * @param {Error} err
+   */
+  _rejectPending(err) {
+    for (const [id, pending] of this.pendingRequests.entries()) {
+      clearTimeout(pending.timeout);
+      this.pendingRequests.delete(id);
+      try {
+        pending.reject(err);
+      } catch {
+        /* the caller already went away */
+      }
+    }
   }
 
   /**

@@ -1,3 +1,4 @@
+import "./helpers/env.js";
 /**
  * sessions-and-qol.test.js — Verification tests for sessions data layer, spinner, and history.
  */
@@ -23,16 +24,26 @@ import {
   setActiveLiveRun,
   getActiveLiveRun,
   clearActiveLiveRun,
+  readLiveLogChunk,
+  ACTIVE_RUN_MAX_AGE_MS,
 } from "../src/data/sessions.js";
 import { createSpinner } from "../src/utils/spinner.js";
 import { loadHistory, saveHistory, cleanHistory, clearHistory } from "../src/utils/history.js";
-import { isCodexModel, resolveWorkerModel } from "../src/config/settings.js";
+import { isCodexModel, resolveModel } from "../src/config/settings.js";
 
-test("hashWorkspace generates deterministic 12-char hex hash", () => {
+test("hashWorkspace folds case only on case-insensitive filesystems", () => {
   const h1 = hashWorkspace("d:\\Projects\\Kumo");
   const h2 = hashWorkspace("D:\\Projects\\Kumo");
-  assert.strictEqual(h1, h2, "Should be case-insensitive for workspace paths");
   assert.strictEqual(h1.length, 12);
+  assert.match(h1, /^[0-9a-f]{12}$/);
+
+  if (process.platform === "win32" || process.platform === "darwin") {
+    assert.strictEqual(h1, h2, "Windows and macOS paths are case-insensitive");
+  } else {
+    assert.notStrictEqual(h1, h2, "POSIX paths are case-sensitive; folding would collide them");
+  }
+
+  assert.strictEqual(hashWorkspace("/srv/app"), hashWorkspace("/srv/app"), "hash is deterministic");
 });
 
 test("registerProject and listProjects persist and order workspaces", () => {
@@ -203,13 +214,13 @@ test("isCodexModel distinguishes Codex vs Antigravity models correctly", () => {
   assert.strictEqual(isCodexModel("anything", "gemini"), false);
 });
 
-test("resolveWorkerModel resolves both Codex and Antigravity aliases", () => {
-  assert.strictEqual(resolveWorkerModel("astra"), "chatgpt-6-astra");
-  assert.strictEqual(resolveWorkerModel("sol"), "chatgpt-5.6-sol");
-  assert.strictEqual(resolveWorkerModel("gpt-5"), "gpt-5.5");
-  assert.strictEqual(resolveWorkerModel("flash"), "gemini-3.8-flash");
-  assert.strictEqual(resolveWorkerModel("opus"), "claude-opus-4-6-thinking");
-  assert.strictEqual(resolveWorkerModel("oss"), "gpt-oss-120b");
+test("resolveModel resolves both Codex and Antigravity aliases", () => {
+  assert.strictEqual(resolveModel("astra"), "chatgpt-6-astra");
+  assert.strictEqual(resolveModel("sol"), "chatgpt-5.6-sol");
+  assert.strictEqual(resolveModel("gpt-5"), "gpt-5.5");
+  assert.strictEqual(resolveModel("flash"), "gemini-3.8-flash");
+  assert.strictEqual(resolveModel("opus"), "claude-opus-4-6-thinking");
+  assert.strictEqual(resolveModel("oss"), "gpt-oss-120b");
 });
 
 test("promptSelect handles non-interactive TTY fallback gracefully", async () => {
@@ -232,29 +243,25 @@ test("setActiveLiveRun, getActiveLiveRun, and clearActiveLiveRun track concurren
     const liveDir = getLiveLogDir(testDir);
     assert.ok(fs.existsSync(liveDir), "Live log dir should exist");
 
-    const run1 = { runId: "run-1", tool: "worker_explore", timestamp: 1000 };
-    const run2 = { runId: "run-2", tool: "worker_implement", timestamp: 2000 };
+    const now = Date.now();
+    const run1 = { runId: "run-1", tool: "worker_explore", timestamp: now - 2000 };
+    const run2 = { runId: "run-2", tool: "worker_implement", timestamp: now };
 
     setActiveLiveRun(testDir, run1);
     setActiveLiveRun(testDir, run2);
 
     // Retrieve specific runs
-    const found1 = getActiveLiveRun(testDir, "run-1");
-    assert.strictEqual(found1.tool, "worker_explore");
-
-    const found2 = getActiveLiveRun(testDir, "run-2");
-    assert.strictEqual(found2.tool, "worker_implement");
+    assert.strictEqual(getActiveLiveRun(testDir, "run-1").tool, "worker_explore");
+    assert.strictEqual(getActiveLiveRun(testDir, "run-2").tool, "worker_implement");
 
     // Retrieve default (newest)
-    const newest = getActiveLiveRun(testDir);
-    assert.strictEqual(newest.runId, "run-2");
+    assert.strictEqual(getActiveLiveRun(testDir).runId, "run-2");
 
-    // Clear run 1
+    // Clearing one run must not disturb the other
     clearActiveLiveRun(testDir, "run-1");
     assert.strictEqual(getActiveLiveRun(testDir, "run-1"), null);
     assert.strictEqual(getActiveLiveRun(testDir, "run-2")?.tool, "worker_implement");
 
-    // Clear run 2
     clearActiveLiveRun(testDir, "run-2");
     assert.strictEqual(getActiveLiveRun(testDir), null);
   } finally {
@@ -262,7 +269,44 @@ test("setActiveLiveRun, getActiveLiveRun, and clearActiveLiveRun track concurren
   }
 });
 
-test("live log file supports incremental chunk appending and seek-offset reading", () => {
+test("getActiveLiveRun ignores orphaned registrations left by killed processes", () => {
+  const testDir = path.join(os.tmpdir(), "kumo-test-orphan-" + Date.now());
+  fs.mkdirSync(testDir, { recursive: true });
+
+  try {
+    const stale = {
+      runId: "run-stale",
+      tool: "worker_explore",
+      timestamp: Date.now() - (ACTIVE_RUN_MAX_AGE_MS + 5000),
+    };
+    setActiveLiveRun(testDir, stale);
+
+    // An explicit lookup still resolves — the caller knows which run it wants.
+    assert.strictEqual(getActiveLiveRun(testDir, "run-stale")?.tool, "worker_explore");
+    // The "newest active run" lookup must not adopt it.
+    assert.strictEqual(getActiveLiveRun(testDir), null);
+  } finally {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  }
+});
+
+test("setActiveLiveRun and getLiveLogPath reject run ids that escape the session dir", () => {
+  const testDir = path.join(os.tmpdir(), "kumo-test-runid-" + Date.now());
+  fs.mkdirSync(testDir, { recursive: true });
+
+  try {
+    assert.throws(() => getLiveLogPath(testDir, "../../escape"), /Invalid runId/);
+    setActiveLiveRun(testDir, { runId: "../../escape", tool: "x", timestamp: Date.now() });
+    const activeDir = path.join(getLiveLogDir(testDir), "active");
+    const entries = fs.existsSync(activeDir) ? fs.readdirSync(activeDir) : [];
+    assert.deepStrictEqual(entries, [], "no file may be created for an invalid runId");
+    assert.strictEqual(getActiveLiveRun(testDir), null);
+  } finally {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  }
+});
+
+test("readLiveLogChunk streams a growing log forward from a byte offset", () => {
   const testDir = path.join(os.tmpdir(), "kumo-test-seek-" + Date.now());
   fs.mkdirSync(testDir, { recursive: true });
 
@@ -270,39 +314,19 @@ test("live log file supports incremental chunk appending and seek-offset reading
     const logPath = getLiveLogPath(testDir, "test-seek-run");
     assert.ok(logPath.includes("test-seek-run"));
 
-    // Write chunk 1
     fs.appendFileSync(logPath, "Chunk 1: Starting exploration\n");
+    const first = readLiveLogChunk(testDir, "test-seek-run", 0);
+    assert.strictEqual(first.text, "Chunk 1: Starting exploration\n");
 
-    let offset = 0;
-    const readChunks = [];
+    // No new bytes yet: same offset, empty read.
+    const idle = readLiveLogChunk(testDir, "test-seek-run", first.offset);
+    assert.strictEqual(idle.text, "");
+    assert.strictEqual(idle.offset, first.offset);
 
-    // Read chunk 1 using seek offset
-    let stat = fs.statSync(logPath);
-    let bytesToRead = stat.size - offset;
-    let buf = Buffer.alloc(bytesToRead);
-    let fd = fs.openSync(logPath, "r");
-    let readBytes = fs.readSync(fd, buf, 0, bytesToRead, offset);
-    fs.closeSync(fd);
-    offset += readBytes;
-    readChunks.push(buf.toString("utf-8"));
-
-    assert.strictEqual(readChunks[0], "Chunk 1: Starting exploration\n");
-
-    // Write chunk 2
     fs.appendFileSync(logPath, "Chunk 2: Found 3 files\n");
-
-    // Read chunk 2 using updated offset
-    stat = fs.statSync(logPath);
-    bytesToRead = stat.size - offset;
-    buf = Buffer.alloc(bytesToRead);
-    fd = fs.openSync(logPath, "r");
-    readBytes = fs.readSync(fd, buf, 0, bytesToRead, offset);
-    fs.closeSync(fd);
-    offset += readBytes;
-    readChunks.push(buf.toString("utf-8"));
-
-    assert.strictEqual(readChunks[1], "Chunk 2: Found 3 files\n");
-    assert.strictEqual(readChunks.join(""), "Chunk 1: Starting exploration\nChunk 2: Found 3 files\n");
+    const second = readLiveLogChunk(testDir, "test-seek-run", first.offset);
+    assert.strictEqual(second.text, "Chunk 2: Found 3 files\n");
+    assert.strictEqual(second.offset, fs.statSync(logPath).size);
   } finally {
     fs.rmSync(testDir, { recursive: true, force: true });
   }

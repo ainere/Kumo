@@ -3,10 +3,12 @@
  * Runs non-interactive worker tasks using `gh copilot -p`.
  */
 
-import { safeSpawn } from "../../utils/process.js";
-
-const MAX_OUTPUT_BYTES = 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 300000;
+import { resolveBinary } from "../../utils/process.js";
+import {
+  runCliWorker,
+  buildCompositePrompt,
+  DEFAULT_TIMEOUT_MS,
+} from "./cli-runner.js";
 
 export const PROVIDER_INFO = {
   id: "copilot",
@@ -15,13 +17,14 @@ export const PROVIDER_INFO = {
 
 export function findCopilotBinary() {
   if (process.env.COPILOT_BIN) return process.env.COPILOT_BIN;
-  return "gh";
+  return resolveBinary("gh");
 }
 
 export async function executeTask(opts) {
   const {
     prompt,
     mode = "read-only",
+    safetyMode = "autonomous",
     files = [],
     workspace = process.cwd(),
     model,
@@ -29,88 +32,31 @@ export async function executeTask(opts) {
     systemPrompt,
     previewDiff = false,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    liveLogPath = null,
   } = opts;
 
   const bin = findCopilotBinary();
+  const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files });
 
-  let compositePrompt = "";
-  if (systemPrompt) {
-    compositePrompt += `[System Instructions]\n${systemPrompt}\n\n`;
-  }
-  if (previewDiff) {
-    compositePrompt += `[DIFF PREVIEW MODE]\nProduce a complete unified git diff without modifying files on disk.\n\n`;
-  }
-  if (files && files.length > 0) {
-    compositePrompt += `[Relevant Files]\n${files.map((f) => `- ${f}`).join("\n")}\n\n`;
-  }
-  compositePrompt += `[Task]\n${prompt}`;
-
-  const args = ["copilot", "-p", compositePrompt];
+  // Flags first, positional prompt last.
+  const args = ["copilot"];
   if (model) {
     args.push("--model", model);
   }
   void effort; // gh copilot has no --effort flag; effort stays a no-op.
-  if (mode === "workspace-write") {
+  if (mode === "workspace-write" && safetyMode === "autonomous") {
     args.push("--allow-all-tools");
   }
+  // `gh copilot` has no documented stdin prompt form, so the prompt stays in argv.
+  args.push("-p", compositePrompt);
 
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let settled = false;
-
-    const proc = safeSpawn(bin, args, {
-      cwd: workspace,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
-    });
-
-    proc.stdout?.on("data", (chunk) => {
-      if (stdout.length < MAX_OUTPUT_BYTES) {
-        const remaining = MAX_OUTPUT_BYTES - stdout.length;
-        const str = chunk.toString();
-        stdout += str.length <= remaining ? str : str.slice(0, remaining);
-      }
-    });
-
-    proc.stderr?.on("data", (chunk) => {
-      if (stderr.length < MAX_OUTPUT_BYTES) {
-        const remaining = MAX_OUTPUT_BYTES - stderr.length;
-        const str = chunk.toString();
-        stderr += str.length <= remaining ? str : str.slice(0, remaining);
-      }
-    });
-
-    const timer = setTimeout(() => {
-      if (!settled) {
-        timedOut = true;
-        proc.kill("SIGTERM");
-      }
-    }, timeoutMs);
-
-    proc.on("close", (code) => {
-      settled = true;
-      clearTimeout(timer);
-      resolve({
-        ok: code === 0,
-        code: code ?? 1,
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-        timedOut,
-      });
-    });
-
-    proc.on("error", (err) => {
-      settled = true;
-      clearTimeout(timer);
-      resolve({
-        ok: false,
-        code: 1,
-        stdout: "",
-        stderr: `Failed to spawn Copilot worker '${bin}': ${err.message}`,
-        timedOut: false,
-      });
-    });
+  return runCliWorker({
+    providerId: PROVIDER_INFO.id,
+    label: "Copilot",
+    bin,
+    args,
+    workspace,
+    timeoutMs,
+    liveLogPath,
   });
 }

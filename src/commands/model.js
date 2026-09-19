@@ -8,10 +8,8 @@ import {
   setConfigValue,
   applyPreset,
   PRESETS,
-  resolveOrchestratorModel,
-  resolveWorkerModel,
+  resolveModel,
   detectProviderForModel,
-  isCodexModel,
 } from "../config/settings.js";
 import { c, badge, separator } from "../utils/ui.js";
 import { openInteractiveModelPicker, DEFAULT_CODEX_MODELS, SUBSCRIPTION_PROVIDERS, DIRECT_API_PROVIDERS } from "../utils/model-picker.js";
@@ -39,8 +37,16 @@ export function effortCommand(target, value) {
     return;
   }
 
+  // Handle kumo effort orchestrator <level>, symmetric with the worker form.
+  if (target === "orchestrator" && (!value || value === "show" || value === "get")) {
+    console.log(`\n  ${c.gray}Current orchestrator reasoning effort:${c.reset} ${c.brightCyan}${config.reasoningEffort || "low"}${c.reset}`);
+    console.log(`  ${c.gray}Available options:${c.reset} low, medium, high, max`);
+    console.log(`  ${c.gray}Usage:${c.reset} kumo effort orchestrator <low|medium|high|max>\n`);
+    return;
+  }
+
   // Orchestrator effort
-  const level = target;
+  const level = target === "orchestrator" ? value : target;
   if (!level || level === "show" || level === "status" || level === "get") {
     console.log(`\n  ${c.gray}Current orchestrator reasoning effort:${c.reset} ${c.brightCyan}${config.reasoningEffort || "low"}${c.reset}`);
     console.log(`  ${c.gray}Current worker reasoning effort:${c.reset}       ${c.brightBlue}${config.workerEffort || "medium"}${c.reset}`);
@@ -69,58 +75,17 @@ export async function modelCommand(action, target, value, extra) {
       await openInteractiveModelPicker();
       return;
     }
+    if (action) {
+      // Without a TTY there is no picker. Falling through would treat the
+      // literal word "select" as a model name and persist it.
+      printModelList(config);
+      return;
+    }
   }
 
   // If 'list' or non-interactive 'show' / 'status', print comprehensive model & preset list
   if (!action || action === "show" || action === "status" || action === "list") {
-    console.log(`\n${c.bold}${c.brightCyan}KUMO Model Configuration & Available Models${c.reset}`);
-    console.log(separator(60));
-    const orchModelFull = config.reasoningEffort ? `${config.orchestratorModel}-${config.reasoningEffort}` : config.orchestratorModel;
-    const workerModelFull = config.workerEffort ? `${config.workerModel}-${config.workerEffort}` : config.workerModel;
-    console.log(`  ${c.gray}Orchestrator:${c.reset}      ${c.brightCyan}${orchModelFull}${c.reset} (${config.orchestratorProvider === 'codex' ? 'ChatGPT Plus' : config.orchestratorProvider})`);
-    console.log(`  ${c.gray}Worker:${c.reset}            ${c.brightBlue}${workerModelFull}${c.reset} (${config.workerProvider === 'gemini' ? 'Google AI Pro' : config.workerProvider})`);
-    console.log(`  ${c.gray}CLI Binary:${c.reset}        ${config.cliBinary || 'gemini'}`);
-
-    console.log(`\n${c.bold}Available Presets:${c.reset}`);
-    for (const [key, preset] of Object.entries(PRESETS)) {
-      const isCurrent =
-        config.orchestratorModel === preset.config.orchestratorModel &&
-        config.workerModel === preset.config.workerModel &&
-        config.reasoningEffort === preset.config.reasoningEffort &&
-        config.workerEffort === preset.config.workerEffort;
-      const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
-      console.log(`  ${marker}${c.bold}${key.padEnd(12)}${c.reset} ${badge.arrow} ${preset.name}`);
-      console.log(`     ${c.skyBlue}${preset.description}${c.reset}`);
-    }
-
-    console.log(`\n${c.bold}Subscription CLIs:${c.reset} ${c.gray}(${SUBSCRIPTION_PROVIDERS.join(", ")})${c.reset}`);
-    console.log(`\n${c.bold}Available Orchestrator Models (Codex):${c.reset}`);
-    for (const m of DEFAULT_CODEX_MODELS) {
-      const isCurrent = config.orchestratorModel === m.id;
-      const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
-      console.log(`  ${marker}${c.brightCyan}${m.id.padEnd(20)}${c.reset} ${m.name} ${c.gray}— ${m.desc}${c.reset}`);
-    }
-
-    console.log(`\n${c.bold}Available Worker Models (Antigravity):${c.reset}`);
-    for (const m of DEFAULT_WORKER_MODELS) {
-      const isCurrent = config.workerModel === m.id;
-      const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
-      console.log(`  ${marker}${c.brightBlue}${m.id.padEnd(25)}${c.reset} ${m.name}${c.reset}`);
-    }
-
-    console.log(`\n${c.bold}Direct API:${c.reset} ${c.gray}(${DIRECT_API_PROVIDERS.join(", ")} — env keys, never stored)${c.reset}`);
-    console.log(`  ${c.gray}Set an explicit provider per call, e.g.:${c.reset}`);
-    console.log(`  ${c.gray}kumo model worker gpt-4o-mini low anthropic-api${c.reset}`);
-    console.log(`  ${c.gray}Keys live only in env: OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, COMPAT_API_KEY (optional) + COMPAT_BASE_URL.${c.reset}`);
-
-    console.log(`\n${c.bold}Commands & Arrow Navigation:${c.reset}`);
-    console.log(`  ${c.gray}kumo model${c.reset}                                            Launch interactive arrow-key selector`);
-    console.log(`  ${c.gray}kumo model <model>${c.reset}                                    Set orchestrator model`);
-    console.log(`  ${c.gray}kumo model orchestrator <model> [effort] [provider]${c.reset}  Set orchestrator model, effort, and explicit provider`);
-    console.log(`  ${c.gray}kumo model worker <model> [effort] [provider]${c.reset}        Set worker model, effort, and explicit provider`);
-    console.log(`  ${c.gray}kumo effort <low|medium|high|max>${c.reset}                      Set orchestrator reasoning effort`);
-    console.log(`  ${c.gray}kumo effort worker <low|medium|high>${c.reset}                   Set worker reasoning effort`);
-    console.log(`  ${c.gray}kumo model use <preset>${c.reset}                                Apply preset (e.g. kumo model use test)\n`);
+    printModelList(config);
     return;
   }
 
@@ -160,7 +125,7 @@ export async function modelCommand(action, target, value, extra) {
       console.log("Usage: kumo model orchestrator <model> [effort] [provider]");
       return;
     }
-    const model = resolveOrchestratorModel(raw);
+    const model = resolveModel(raw);
     const provider = detectProviderForModel(model, customProvider);
     if (effort && !["low", "medium", "high", "max"].includes(String(effort).toLowerCase())) {
       console.error(`${badge.fail} Invalid orchestrator effort '${effort}'. Allowed: low, medium, high, max`);
@@ -186,7 +151,7 @@ export async function modelCommand(action, target, value, extra) {
       console.log("Usage: kumo model worker <model> [effort] [provider]");
       return;
     }
-    const model = resolveWorkerModel(raw);
+    const model = resolveModel(raw);
     const provider = detectProviderForModel(model, customProvider);
     if (effort && !["low", "medium", "high"].includes(String(effort).toLowerCase())) {
       console.error(`${badge.fail} Invalid worker effort '${effort}'. Allowed: low, medium, high`);
@@ -204,8 +169,8 @@ export async function modelCommand(action, target, value, extra) {
 
   // Fallback 1: custom positional syntax: kumo model <orchestrator> <worker> [effort]
   if (action && target) {
-    const model = resolveOrchestratorModel(action);
-    const worker = resolveWorkerModel(target);
+    const model = resolveModel(action);
+    const worker = resolveModel(target);
     const effort = value;
     const orchProvider = detectProviderForModel(model);
     const workerProvider = detectProviderForModel(worker);
@@ -236,7 +201,7 @@ export async function modelCommand(action, target, value, extra) {
       console.log(`  ${badge.dot} Worker:       ${updated.workerModel}-${updated.workerEffort || 'medium'} [${updated.workerProvider}]`);
       return;
     }
-    const model = resolveOrchestratorModel(action);
+    const model = resolveModel(action);
     if (/^gemini-/i.test(model)) {
       console.error(`${badge.fail} '${model}' is a worker-only model. Use: kumo model worker ${model}`);
       process.exit(1);
@@ -250,4 +215,63 @@ export async function modelCommand(action, target, value, extra) {
 
   console.error(`${badge.fail} Unknown model command. Run 'kumo model' for usage.`);
   process.exit(1);
+}
+
+
+/**
+ * Print the full inventory of presets, orchestrator models, worker models,
+ * and provider families. Shared by `kumo model list` and by the non-TTY
+ * fallback for `kumo model select`.
+ *
+ * @param {object} config
+ */
+function printModelList(config) {
+  console.log(`\n${c.bold}${c.brightCyan}KUMO Model Configuration & Available Models${c.reset}`);
+  console.log(separator(60));
+  const orchModelFull = config.reasoningEffort ? `${config.orchestratorModel}-${config.reasoningEffort}` : config.orchestratorModel;
+  const workerModelFull = config.workerEffort ? `${config.workerModel}-${config.workerEffort}` : config.workerModel;
+  console.log(`  ${c.gray}Orchestrator:${c.reset}      ${c.brightCyan}${orchModelFull}${c.reset} (${config.orchestratorProvider === 'codex' ? 'ChatGPT Plus' : config.orchestratorProvider})`);
+  console.log(`  ${c.gray}Worker:${c.reset}            ${c.brightBlue}${workerModelFull}${c.reset} (${config.workerProvider === 'gemini' ? 'Google AI Pro' : config.workerProvider})`);
+  console.log(`  ${c.gray}CLI Binary:${c.reset}        ${config.cliBinary || 'gemini'}`);
+
+  console.log(`\n${c.bold}Available Presets:${c.reset}`);
+  for (const [key, preset] of Object.entries(PRESETS)) {
+    const isCurrent =
+      config.orchestratorModel === preset.config.orchestratorModel &&
+      config.workerModel === preset.config.workerModel &&
+      config.reasoningEffort === preset.config.reasoningEffort &&
+      config.workerEffort === preset.config.workerEffort;
+    const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
+    console.log(`  ${marker}${c.bold}${key.padEnd(12)}${c.reset} ${badge.arrow} ${preset.name}`);
+    console.log(`     ${c.skyBlue}${preset.description}${c.reset}`);
+  }
+
+  console.log(`\n${c.bold}Subscription CLIs:${c.reset} ${c.gray}(${SUBSCRIPTION_PROVIDERS.join(", ")})${c.reset}`);
+  console.log(`\n${c.bold}Available Orchestrator Models (Codex):${c.reset}`);
+  for (const m of DEFAULT_CODEX_MODELS) {
+    const isCurrent = config.orchestratorModel === m.id;
+    const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
+    console.log(`  ${marker}${c.brightCyan}${m.id.padEnd(20)}${c.reset} ${m.name} ${c.gray}— ${m.desc}${c.reset}`);
+  }
+
+  console.log(`\n${c.bold}Available Worker Models (Antigravity):${c.reset}`);
+  for (const m of DEFAULT_WORKER_MODELS) {
+    const isCurrent = config.workerModel === m.id;
+    const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
+    console.log(`  ${marker}${c.brightBlue}${m.id.padEnd(25)}${c.reset} ${m.name}${c.reset}`);
+  }
+
+  console.log(`\n${c.bold}Direct API:${c.reset} ${c.gray}(${DIRECT_API_PROVIDERS.join(", ")} — env keys, never stored)${c.reset}`);
+  console.log(`  ${c.gray}Set an explicit provider per call, e.g.:${c.reset}`);
+  console.log(`  ${c.gray}kumo model worker gpt-4o-mini low anthropic-api${c.reset}`);
+  console.log(`  ${c.gray}Keys live only in env: OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, COMPAT_API_KEY (optional) + COMPAT_BASE_URL.${c.reset}`);
+
+  console.log(`\n${c.bold}Commands & Arrow Navigation:${c.reset}`);
+  console.log(`  ${c.gray}kumo model${c.reset}                                            Launch interactive arrow-key selector`);
+  console.log(`  ${c.gray}kumo model <model>${c.reset}                                    Set orchestrator model`);
+  console.log(`  ${c.gray}kumo model orchestrator <model> [effort] [provider]${c.reset}  Set orchestrator model, effort, and explicit provider`);
+  console.log(`  ${c.gray}kumo model worker <model> [effort] [provider]${c.reset}        Set worker model, effort, and explicit provider`);
+  console.log(`  ${c.gray}kumo effort <low|medium|high|max>${c.reset}                      Set orchestrator reasoning effort`);
+  console.log(`  ${c.gray}kumo effort worker <low|medium|high>${c.reset}                   Set worker reasoning effort`);
+  console.log(`  ${c.gray}kumo model use <preset>${c.reset}                                Apply preset (e.g. kumo model use test)\n`);
 }

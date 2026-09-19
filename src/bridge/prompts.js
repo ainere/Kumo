@@ -184,18 +184,3 @@ If there are no material findings, say so clearly and name any residual uncertai
   }
 }
 
-/**
- * Proxy object exposing SYSTEM_PROMPTS.explore, SYSTEM_PROMPTS.implement, etc.
- * Dynamically resolves against the latest loaded configuration.
- */
-export const SYSTEM_PROMPTS = new Proxy(
-  {},
-  {
-    get(_target, prop) {
-      if (typeof prop === "string" && ["explore", "implement", "test", "research", "review"].includes(prop)) {
-        return getSystemPrompt(prop);
-      }
-      return undefined;
-    },
-  }
-);

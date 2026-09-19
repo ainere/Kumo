@@ -1,3 +1,4 @@
+import "./helpers/env.js";
 /**
  * codex-client.test.js — Verification tests for CodexAppClient JSON-RPC protocol.
  */
@@ -24,9 +25,75 @@ function isCodexBinaryAvailable() {
   }
 }
 
-test("findCodexBinary locates executable", () => {
-  const bin = findCodexBinary();
-  assert.ok(bin && bin.length > 0);
+test("findCodexBinary honors CODEX_BIN environment variable verbatim", () => {
+  const prev = process.env.CODEX_BIN;
+  process.env.CODEX_BIN = process.execPath;
+  try {
+    assert.strictEqual(findCodexBinary(), process.execPath);
+  } finally {
+    if (prev === undefined) {
+      delete process.env.CODEX_BIN;
+    } else {
+      process.env.CODEX_BIN = prev;
+    }
+  }
+});
+
+test("CodexAppClient handles split line buffering and correlates interleaved JSON-RPC requests with stub transport", async () => {
+  const client = new CodexAppClient();
+  const written = [];
+  client.proc = {
+    stdin: {
+      writable: true,
+      write: (data) => written.push(data),
+    },
+  };
+
+  // Start two interleaved requests
+  const req1Promise = client.request("test/method1", { foo: "bar" });
+  const req2Promise = client.request("test/method2", { baz: "qux" });
+
+  assert.strictEqual(written.length, 2);
+  const parsedPayload1 = JSON.parse(written[0].trim());
+  const parsedPayload2 = JSON.parse(written[1].trim());
+
+  const id1 = parsedPayload1.id;
+  const id2 = parsedPayload2.id;
+  assert.notStrictEqual(id1, id2, "Request ids must be distinct");
+
+  // Prepare JSON responses. Interleave responses: send response 2 first, split across two chunks.
+  const res2Full = JSON.stringify({ jsonrpc: "2.0", id: id2, result: { success: "from-req-2" } }) + "\n";
+  const splitIdx = Math.floor(res2Full.length / 2);
+  const chunk2A = res2Full.slice(0, splitIdx);
+  const chunk2B = res2Full.slice(splitIdx);
+
+  // Feed first chunk of response 2 mid-line
+  client._handleStdout(Buffer.from(chunk2A));
+
+  // Neither promise should be resolved yet
+  let req2Resolved = false;
+  req2Promise.then(() => { req2Resolved = true; });
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(req2Resolved, false, "req2 must not resolve before second chunk arrives");
+
+  // Feed second chunk of response 2 (completing response 2)
+  client._handleStdout(Buffer.from(chunk2B));
+  const res2 = await req2Promise;
+  assert.deepStrictEqual(res2, { success: "from-req-2" });
+
+  // Verify response 1 has not resolved yet
+  let req1Resolved = false;
+  req1Promise.then(() => { req1Resolved = true; });
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(req1Resolved, false, "req1 must not resolve when response 2 arrives");
+
+  // Now send response 1 (also split across chunks)
+  const res1Full = JSON.stringify({ jsonrpc: "2.0", id: id1, result: { value: 42 } }) + "\n";
+  client._handleStdout(Buffer.from(res1Full.slice(0, 10)));
+  client._handleStdout(Buffer.from(res1Full.slice(10)));
+
+  const res1 = await req1Promise;
+  assert.deepStrictEqual(res1, { value: 42 });
 });
 
 test("CodexAppClient initializes and retrieves live account rate limits", async (t) => {

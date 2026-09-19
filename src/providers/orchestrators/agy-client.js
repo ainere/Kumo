@@ -13,7 +13,7 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { getCliBinary, getAgyUsage } from "../../bridge/agy-runner.js";
-import { safeSpawn } from "../../utils/process.js";
+import { safeSpawn, childEnvFor } from "../../utils/process.js";
 import { loadConfig, supportsEffort } from "../../config/settings.js";
 
 function getTaskSignature(raw) {
@@ -45,6 +45,11 @@ export class AgyAppClient extends EventEmitter {
     this.workerModel = options.workerModel || null;
     this.workerEffort = options.workerEffort || null;
     this.workspace = options.workspace || process.cwd();
+    this.safetyMode =
+      options.safetyMode ||
+      process.env.KUMO_SAFETY_MODE ||
+      options.config?.safetyMode ||
+      "autonomous";
     this.isTurnActive = false;
     this._pendingToolCallIds = new Map();
   }
@@ -57,8 +62,13 @@ export class AgyAppClient extends EventEmitter {
       const args = [
         "--input-format", "stream-json",
         "--output-format", "stream-json",
-        "--dangerously-skip-permissions",
       ];
+
+      // Permission bypass is only legitimate in autonomous mode; diff-review and
+      // interactive both require the CLI to stop before touching the workspace.
+      if (this.safetyMode === "autonomous") {
+        args.push("--dangerously-skip-permissions");
+      }
 
       if (this.activeModel) {
         args.push("--model", this.activeModel);
@@ -72,10 +82,7 @@ export class AgyAppClient extends EventEmitter {
         this.proc = safeSpawn(this.bin, args, {
           cwd: this.workspace,
           stdio: ["pipe", "pipe", "pipe"],
-          env: {
-            ...process.env,
-            ...this.options.env,
-          },
+          env: childEnvFor("antigravity", this.options.env || {}),
         });
       } catch (err) {
         return reject(new Error(`Failed to spawn Antigravity orchestrator at '${this.bin}': ${err.message}`));

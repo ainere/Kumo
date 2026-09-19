@@ -38,14 +38,33 @@ const WORKERS = {
   "compat-api": compatApiWorker,
 };
 
-export function getWorker(id = "gemini") {
+/** Worker provider ids this registry knows about. */
+export const KNOWN_WORKERS = Object.keys(WORKERS);
+
+/**
+ * Resolve a worker provider adapter.
+ *
+ * An unknown id becomes the name of the executable `createGenericWorker` spawns,
+ * so it is never accepted implicitly: MCP tool arguments are model-authored.
+ * Only a value the operator configured may opt into the generic path.
+ *
+ * @param {string} [id]
+ * @param {Object} [options]
+ * @param {boolean} [options.allowGeneric=false]
+ * @returns {{PROVIDER_INFO?: object, executeTask: Function}}
+ */
+export function getWorker(id = "gemini", { allowGeneric = false } = {}) {
   const norm = (id || "gemini").toLowerCase().trim();
   const worker = WORKERS[norm];
   if (worker) {
     return worker;
   }
-  // Generic fallback for any arbitrary CLI worker
-  return createGenericWorker(norm);
+  if (allowGeneric) {
+    return createGenericWorker(norm);
+  }
+  throw new Error(
+    `Unknown worker provider '${norm}'. Known: ${KNOWN_WORKERS.slice().sort().join(", ")}`
+  );
 }
 
 export function listWorkers() {

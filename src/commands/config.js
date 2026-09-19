@@ -4,11 +4,9 @@
 
 import {
   loadConfig,
-  saveConfig,
   setConfigValue,
   resetConfig,
   getConfigPath,
-  DEFAULT_CONFIG,
 } from "../config/settings.js";
 import { c, badge, separator } from "../utils/ui.js";
 

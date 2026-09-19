@@ -1,22 +1,39 @@
+import "./helpers/env.js";
 /**
- * process.test.js — Verification tests for safeSpawn and prepareSpawn.
+ * process.test.js — Verification tests for the shared spawn helpers.
+ *
+ * The Windows command-line logic is the product's primary platform but CI also
+ * runs on Linux, so every platform-specific assertion passes an explicit
+ * `platform` argument instead of branching on `process.platform` (which made
+ * the Windows half dead code on every Linux runner).
  */
 
 import { test } from "node:test";
 import assert from "node:assert";
-import { prepareSpawn, isWindowsBatch, quoteCmdArg, safeSpawn } from "../src/utils/process.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+  prepareSpawn,
+  isWindowsBatch,
+  quoteCmdArg,
+  safeSpawn,
+  spawnWithLiveLog,
+  childEnvFor,
+  resolveBinary,
+  clearBinaryCache,
+  SECRET_ENV_RE,
+} from "../src/utils/process.js";
 
-test("isWindowsBatch identifies Windows batch scripts only", () => {
-  if (process.platform === "win32") {
-    assert.strictEqual(isWindowsBatch("C:\\bin\\codex.cmd"), true);
-    assert.strictEqual(isWindowsBatch("C:\\bin\\run.bat"), true);
-    assert.strictEqual(isWindowsBatch("codex"), false);
-    assert.strictEqual(isWindowsBatch("agy"), false);
-    assert.strictEqual(isWindowsBatch("C:\\bin\\codex.exe"), false);
-    assert.strictEqual(isWindowsBatch("node.exe"), false);
-  } else {
-    assert.strictEqual(isWindowsBatch("/usr/bin/codex"), false);
-  }
+test("isWindowsBatch identifies batch scripts on win32 and never elsewhere", () => {
+  assert.strictEqual(isWindowsBatch("C:\\bin\\codex.cmd", "win32"), true);
+  assert.strictEqual(isWindowsBatch("C:\\bin\\run.bat", "win32"), true);
+  assert.strictEqual(isWindowsBatch("C:\\bin\\codex.exe", "win32"), false);
+  assert.strictEqual(isWindowsBatch("codex", "win32"), false);
+  assert.strictEqual(isWindowsBatch("agy", "win32"), false);
+
+  assert.strictEqual(isWindowsBatch("C:\\bin\\codex.cmd", "linux"), false);
+  assert.strictEqual(isWindowsBatch("/usr/bin/codex", "linux"), false);
 });
 
 test("quoteCmdArg quotes metacharacters and neutralizes percent expansion", () => {
@@ -28,39 +45,51 @@ test("quoteCmdArg quotes metacharacters and neutralizes percent expansion", () =
   assert.strictEqual(quoteCmdArg('q"q'), '"q""q"');
 });
 
-test("prepareSpawn strips shell: true and routes batch scripts through ComSpec without DEP0190", () => {
-  if (process.platform === "win32") {
-    const prepBatch = prepareSpawn("C:\\bin\\codex.cmd", ["app-server", "--stdio"], { shell: true, cwd: "C:\\test" });
-    assert.strictEqual(prepBatch.options.shell, false);
-    assert.ok(prepBatch.file.toLowerCase().includes("cmd.exe"));
-    assert.strictEqual(prepBatch.args.length, 4);
-    assert.deepStrictEqual(prepBatch.args.slice(0, 3), ["/d", "/s", "/c"]);
-    assert.ok(prepBatch.args[3].includes("C:\\bin\\codex.cmd"));
-    assert.ok(prepBatch.args[3].includes("app-server"));
-    assert.ok(prepBatch.args[3].includes("--stdio"));
-    assert.strictEqual(prepBatch.options.cwd, "C:\\test");
+test("quoteCmdArg refuses newlines, which cmd.exe treats as command separators", () => {
+  assert.throws(() => quoteCmdArg("line1\nline2"), /newline/i);
+  assert.throws(() => quoteCmdArg("line1\r\nline2"), /newline/i);
+});
 
-    const prepQuoted = prepareSpawn("x.cmd", ["a&b", "c|d", "%PATH%", 'q"q']);
-    assert.strictEqual(prepQuoted.args.length, 4);
-    assert.ok(prepQuoted.args[3].includes('"a&b"'));
-    assert.ok(prepQuoted.args[3].includes('"c|d"'));
-    assert.ok(prepQuoted.args[3].includes('"%%PATH%%"'));
-    assert.ok(prepQuoted.args[3].includes('"q""q"'));
+test("prepareSpawn routes win32 batch scripts through ComSpec with shell disabled", () => {
+  const prep = prepareSpawn(
+    "C:\\bin\\codex.cmd",
+    ["app-server", "--stdio"],
+    { shell: true, cwd: "C:\\test" },
+    "win32"
+  );
 
-    const prepExe = prepareSpawn("C:\\bin\\codex.exe", ["--version"], { shell: true });
-    assert.strictEqual(prepExe.options.shell, false);
-    assert.strictEqual(prepExe.file, "C:\\bin\\codex.exe");
-    assert.deepStrictEqual(prepExe.args, ["--version"]);
+  assert.strictEqual(prep.options.shell, false, "shell:true must never reach spawn (DEP0190)");
+  assert.ok(prep.file.toLowerCase().includes("cmd"), `expected a cmd shell, got ${prep.file}`);
+  assert.deepStrictEqual(prep.args.slice(0, 3), ["/d", "/s", "/c"]);
+  assert.strictEqual(prep.args.length, 4);
+  assert.ok(prep.args[3].includes("C:\\bin\\codex.cmd"));
+  assert.ok(prep.args[3].includes("app-server"));
+  assert.ok(prep.args[3].includes("--stdio"));
+  assert.strictEqual(prep.options.cwd, "C:\\test");
+});
 
-    const prepExtensionless = prepareSpawn("codex", ["--version"], { shell: true });
-    assert.strictEqual(prepExtensionless.file, "codex");
-    assert.deepStrictEqual(prepExtensionless.args, ["--version"]);
-  } else {
-    const prep = prepareSpawn("/usr/local/bin/codex", ["app-server"], { shell: true });
-    assert.strictEqual(prep.options.shell, false);
-    assert.strictEqual(prep.file, "/usr/local/bin/codex");
-    assert.deepStrictEqual(prep.args, ["app-server"]);
-  }
+test("prepareSpawn quotes every dangerous token it splices into the cmd line", () => {
+  const prep = prepareSpawn("x.cmd", ["a&b", "c|d", "%PATH%", 'q"q'], {}, "win32");
+  assert.ok(prep.args[3].includes('"a&b"'));
+  assert.ok(prep.args[3].includes('"c|d"'));
+  assert.ok(prep.args[3].includes('"%%PATH%%"'));
+  assert.ok(prep.args[3].includes('"q""q"'));
+});
+
+test("prepareSpawn passes non-batch targets through untouched on both platforms", () => {
+  const exe = prepareSpawn("C:\\bin\\codex.exe", ["--version"], { shell: true }, "win32");
+  assert.strictEqual(exe.file, "C:\\bin\\codex.exe");
+  assert.deepStrictEqual(exe.args, ["--version"]);
+  assert.strictEqual(exe.options.shell, false);
+
+  const bare = prepareSpawn("codex", ["--version"], { shell: true }, "win32");
+  assert.strictEqual(bare.file, "codex");
+  assert.deepStrictEqual(bare.args, ["--version"]);
+
+  const posix = prepareSpawn("/usr/local/bin/codex", ["app-server"], { shell: true }, "linux");
+  assert.strictEqual(posix.file, "/usr/local/bin/codex");
+  assert.deepStrictEqual(posix.args, ["app-server"]);
+  assert.strictEqual(posix.options.shell, false);
 });
 
 test("safeSpawn executes without throwing and cleanly passes arguments", async () => {
@@ -74,4 +103,89 @@ test("safeSpawn executes without throwing and cleanly passes arguments", async (
   const code = await new Promise((resolve) => proc.on("close", resolve));
   assert.strictEqual(code, 0);
   assert.strictEqual(stdout.trim(), "SAFE_SPAWN_OK");
+});
+
+test("spawnWithLiveLog tees stdout and stderr into the live log file", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-livelog-"));
+  const logPath = path.join(dir, "live-test.log");
+
+  try {
+    const proc = spawnWithLiveLog(
+      process.execPath,
+      ["-e", "console.log('OUT_LINE'); console.error('ERR_LINE');"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+      logPath
+    );
+
+    let collected = "";
+    proc.stdout.on("data", (c) => {
+      collected += c.toString();
+    });
+
+    await new Promise((resolve) => proc.on("close", resolve));
+
+    const logged = fs.readFileSync(logPath, "utf-8");
+    assert.match(logged, /OUT_LINE/, "stdout must reach the live log");
+    assert.match(logged, /ERR_LINE/, "stderr must reach the live log");
+    // The caller's own listener must keep working alongside the tee.
+    assert.match(collected, /OUT_LINE/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("childEnvFor strips credentials the selected provider does not need", () => {
+  const saved = { ...process.env };
+  process.env.OPENAI_API_KEY = "sk-secret";
+  process.env.ANTHROPIC_API_KEY = "ak-secret";
+  process.env.SOME_TOKEN = "tok";
+  process.env.DB_PASSWORD = "pw";
+  process.env.KUMO_HARMLESS = "keep-me";
+
+  try {
+    const cliEnv = childEnvFor("claude");
+    assert.strictEqual(cliEnv.OPENAI_API_KEY, undefined, "CLI workers need no API keys");
+    assert.strictEqual(cliEnv.ANTHROPIC_API_KEY, undefined);
+    assert.strictEqual(cliEnv.SOME_TOKEN, undefined);
+    assert.strictEqual(cliEnv.DB_PASSWORD, undefined);
+    assert.strictEqual(cliEnv.KUMO_HARMLESS, "keep-me");
+    assert.ok(cliEnv.PATH || cliEnv.Path, "PATH must survive or binaries cannot resolve");
+
+    const apiEnv = childEnvFor("anthropic-api");
+    assert.strictEqual(apiEnv.ANTHROPIC_API_KEY, "ak-secret", "its own key is allowed through");
+    assert.strictEqual(apiEnv.OPENAI_API_KEY, undefined, "another provider's key is not");
+
+    const withExtra = childEnvFor("antigravity", { GEMINI_CLI_TRUST_WORKSPACE: "true" });
+    assert.strictEqual(withExtra.GEMINI_CLI_TRUST_WORKSPACE, "true");
+  } finally {
+    for (const k of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "SOME_TOKEN", "DB_PASSWORD", "KUMO_HARMLESS"]) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+});
+
+test("SECRET_ENV_RE matches credential-shaped names and not ordinary ones", () => {
+  for (const name of ["OPENAI_API_KEY", "GH_TOKEN", "CLIENT_SECRET", "DB_PASSWORD", "AWS_CREDENTIAL_FILE"]) {
+    assert.ok(SECRET_ENV_RE.test(name), `${name} should be treated as a secret`);
+  }
+  for (const name of ["PATH", "HOME", "APPDATA", "ComSpec", "TEMP", "KUMO_WORKSPACE"]) {
+    assert.ok(!SECRET_ENV_RE.test(name), `${name} must not be stripped`);
+  }
+});
+
+test("resolveBinary returns an existing path when found and the bare name otherwise", () => {
+  clearBinaryCache();
+
+  // node is guaranteed to be on PATH: this process is running it.
+  const nodeName = process.platform === "win32" ? "node.exe" : "node";
+  const resolved = resolveBinary(nodeName);
+  assert.ok(fs.existsSync(resolved), `expected an existing path, got ${resolved}`);
+  assert.ok(path.isAbsolute(resolved), `expected an absolute path, got ${resolved}`);
+
+  const missing = "kumo-definitely-not-a-real-binary";
+  assert.strictEqual(resolveBinary(missing), missing, "unknown names fall back unchanged");
+
+  const abs = path.join(os.tmpdir(), "already-absolute");
+  assert.strictEqual(resolveBinary(abs), abs, "absolute inputs pass through");
 });

@@ -1,3 +1,5 @@
+> **Historical Snapshot**: This document is an archived sprint handoff from September 2026 and is preserved for historical reference only; it is not kept current.
+
 # KUMO (雲) — Engineering Handoff
 
 ## 1. Project Overview

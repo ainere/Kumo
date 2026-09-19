@@ -1,4 +1,5 @@
 import path from "node:path";
+import { VERSION } from "../cli.js";
 import { loadConfig, isCodexModel } from "../config/settings.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
 import { checkAgyHealth, getAgyUsage } from "../bridge/agy-runner.js";
@@ -18,7 +19,7 @@ export async function statusCommand(opts = {}) {
   const workspace = path.resolve(opts.dir || process.cwd());
   const style = config.bannerStyle || "cloud";
 
-  console.log("\n" + getBanner("1.0.0", style, DEFAULT_SUBTITLE));
+  console.log("\n" + getBanner(VERSION, style, DEFAULT_SUBTITLE));
   console.log(separator(64));
   console.log(`  ${c.bold}KUMO System & Live Account Quota Status${c.reset}`);
   console.log(separator(64));
@@ -26,7 +27,6 @@ export async function statusCommand(opts = {}) {
   const g1 = c.brightCyan;
   const g2 = c.cyan;
   const g3 = c.brightBlue;
-  const g4 = c.skyBlue;
 
   const cached = getCachedQuotas();
   let codexLimits = cached.codex;
@@ -118,10 +118,16 @@ export async function statusCommand(opts = {}) {
     try {
       await client.start();
       const freshCodex = await client.getRateLimits();
-      await client.stop();
       if (freshCodex) codexLimits = freshCodex;
     } catch (err) {
       console.log(`  ${g2}${"Codex Limits:".padEnd(24)}${c.reset}${badge.warn} (Could not query: ${err.message})`);
+    } finally {
+      // A throw above used to skip stop() and orphan a codex app-server process.
+      try {
+        await client.stop();
+      } catch {
+        /* teardown failure must not mask the original error */
+      }
     }
   }
 

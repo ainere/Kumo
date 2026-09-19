@@ -6,8 +6,16 @@
 
 import readline from "node:readline";
 import { c, badge, separator } from "./ui.js";
-import { loadConfig, setConfigValue, applyPreset, PRESETS } from "../config/settings.js";
-import { getAgyModels } from "../bridge/agy-runner.js";
+import {
+  loadConfig,
+  setConfigValue,
+  applyPreset,
+  PRESETS,
+  detectProviderForModel,
+} from "../config/settings.js";
+import { getAgyModels, DEFAULT_WORKER_MODELS } from "../bridge/agy-runner.js";
+import { safeSpawn } from "./process.js";
+import { findOllamaBinary } from "../providers/workers/ollama.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
 
 /** Default known orchestrator models (Codex) */
@@ -117,6 +125,93 @@ export async function getOrchestratorModels() {
     /* fallback to defaults */
   }
   return DEFAULT_CODEX_MODELS;
+}
+
+/**
+ * List locally installed Ollama models, with the same short-timeout-and-fallback
+ * shape getAgyModels uses so the picker can never hang.
+ *
+ * @returns {Promise<Array<{id: string, name: string, desc?: string}>>}
+ */
+export async function getOllamaModels() {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let proc;
+    try {
+      proc = safeSpawn(findOllamaBinary(), ["list"], { stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      resolve([]);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+      resolve([]);
+    }, 4000);
+
+    proc.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    proc.on("error", () => {
+      clearTimeout(timer);
+      resolve([]);
+    });
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0 || !stdout.trim()) {
+        resolve([]);
+        return;
+      }
+      const models = [];
+      for (const line of stdout.trim().split("\n").slice(1)) {
+        const id = line.trim().split(/\s+/)[0];
+        if (id) models.push({ id, name: id, desc: "local Ollama model" });
+      }
+      resolve(models);
+    });
+  });
+}
+
+const ALL_KNOWN_MODELS = () => [...DEFAULT_CODEX_MODELS, ...DEFAULT_WORKER_MODELS];
+
+/**
+ * Models appropriate for the chosen provider.
+ *
+ * Previously every non-Codex provider was shown the Antigravity list, so
+ * selecting `anthropic-api` could persist `orchestratorModel: gemini-3.8-flash`.
+ *
+ * @param {string} provider
+ * @returns {Promise<Array<{id: string, name?: string, desc?: string}>>}
+ */
+export async function modelsForProvider(provider) {
+  switch (provider) {
+    case "codex":
+      return getOrchestratorModels();
+    case "antigravity":
+      return getAgyModels();
+    case "ollama": {
+      const live = await getOllamaModels();
+      return live.length > 0 ? live : [{ id: "llama3.1", name: "llama3.1", desc: "Ollama default" }];
+    }
+    case "openai-api":
+      return DEFAULT_CODEX_MODELS;
+    case "anthropic-api":
+      return ALL_KNOWN_MODELS().filter((m) => /^claude-/i.test(m.id));
+    case "gemini-api":
+      return ALL_KNOWN_MODELS().filter((m) => /^gemini-/i.test(m.id));
+    case "compat-api":
+      // The model id is defined by the endpoint, so no list can be authoritative.
+      return ALL_KNOWN_MODELS();
+    default: {
+      // Subscription CLIs: show only the ids that resolve back to this provider.
+      const matching = ALL_KNOWN_MODELS().filter((m) => detectProviderForModel(m.id) === provider);
+      return matching.length > 0 ? matching : ALL_KNOWN_MODELS();
+    }
+  }
 }
 
 let _keypressInitialized = false;
@@ -477,7 +572,7 @@ export async function openInteractiveModelPicker(opts = {}) {
 
       if (!provider || provider === "cancel") continue;
 
-      const models = provider === "codex" ? await getOrchestratorModels() : await getAgyModels();
+      const models = await modelsForProvider(provider);
 
       const modelItems = models.map((m) => ({
         label: m.name || m.id,
@@ -546,7 +641,7 @@ export async function openInteractiveModelPicker(opts = {}) {
 
       if (!provider || provider === "cancel") continue;
 
-      const models = provider === "codex" ? await getOrchestratorModels() : await getAgyModels();
+      const models = await modelsForProvider(provider);
 
       const modelItems = models.map((m) => ({
         label: m.name || m.id,

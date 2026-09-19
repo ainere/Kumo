@@ -1,3 +1,4 @@
+import "./helpers/env.js";
 /**
  * provider-expansion.test.js — Verification for provider expansion plan.
  * Mocks globalThis.fetch (no network). Pins: unknown-key rejection, detection
@@ -68,7 +69,20 @@ function mockFetchOnce(handler) {
   };
 }
 
-const okJson = (data) => ({ ok: true, status: 200, json: async () => data });
+// Real Response objects: the transport reads headers and bounds the body via
+// res.text(), so a `{ json }` duck-type would pin the wrong contract.
+const okJson = (data) =>
+  new Response(JSON.stringify(data), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+
+const errJson = (status, statusText, data) =>
+  new Response(JSON.stringify(data), {
+    status,
+    statusText,
+    headers: { "content-type": "application/json" },
+  });
 
 test("setConfigValue rejects secret material by construction", () => {
   assert.throws(() => setConfigValue("openaiApiKey", "x"), /Unknown config key/);
@@ -155,12 +169,7 @@ test("chatComplete missing key throws naming the env var", async () => {
 });
 test("chatComplete non-2xx throws ApiError with status", async () => {
   await withEnv({ OPENAI_API_KEY: "sk-test" }, async () => {
-    const m = mockFetchOnce(async () => ({
-      ok: false,
-      status: 500,
-      statusText: "Server Error",
-      json: async () => ({ error: { message: "boom" } }),
-    }));
+    const m = mockFetchOnce(async () => errJson(500, "Server Error", { error: { message: "boom" } }));
     try {
       await assert.rejects(
         chatComplete({ provider: "openai-api", model: "m", prompt: "hi" }),

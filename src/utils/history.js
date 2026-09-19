@@ -3,16 +3,20 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
+import { kumoHome, atomicWriteText } from "../config/paths.js";
 
-const HISTORY_FILE = path.join(os.homedir(), ".kumo", "history.txt");
 const MAX_HISTORY = 500;
+
+function historyFile() {
+  return path.join(kumoHome(), "history.txt");
+}
 
 export function loadHistory() {
   try {
-    if (fs.existsSync(HISTORY_FILE)) {
+    const file = historyFile();
+    if (fs.existsSync(file)) {
       return fs
-        .readFileSync(HISTORY_FILE, "utf-8")
+        .readFileSync(file, "utf-8")
         .split("\n")
         .filter(Boolean)
         .slice(-MAX_HISTORY);
@@ -25,10 +29,8 @@ export function loadHistory() {
 
 export function saveHistory(lines) {
   try {
-    const dir = path.dirname(HISTORY_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const trimmed = (lines || []).filter(Boolean).slice(-MAX_HISTORY);
-    fs.writeFileSync(HISTORY_FILE, trimmed.join("\n") + "\n", "utf-8");
+    atomicWriteText(historyFile(), trimmed.join("\n") + "\n");
   } catch {
     /* ignore */
   }
@@ -40,13 +42,14 @@ export function saveHistory(lines) {
  */
 export function cleanHistory() {
   try {
-    if (fs.existsSync(HISTORY_FILE)) {
+    const file = historyFile();
+    if (fs.existsSync(file)) {
       const current = fs
-        .readFileSync(HISTORY_FILE, "utf-8")
+        .readFileSync(file, "utf-8")
         .split("\n")
         .filter(Boolean);
       const cleaned = current.filter((line) => !line.trim().startsWith("/"));
-      fs.writeFileSync(HISTORY_FILE, cleaned.length ? cleaned.join("\n") + "\n" : "", "utf-8");
+      atomicWriteText(file, cleaned.length ? cleaned.join("\n") + "\n" : "");
       return cleaned;
     }
   } catch {
@@ -60,8 +63,9 @@ export function cleanHistory() {
  */
 export function clearHistory() {
   try {
-    if (fs.existsSync(HISTORY_FILE)) {
-      fs.unlinkSync(HISTORY_FILE);
+    const file = historyFile();
+    if (fs.existsSync(file)) {
+      fs.unlinkSync(file);
     }
   } catch {
     /* ignore */

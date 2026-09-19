@@ -61,7 +61,7 @@ Before performing substantive work, classify the task as either **root-only** or
 
 4. **Subscriptions Default, Direct API Optional**:
    - Both systems run on existing subscriptions by default (e.g. `codex login` and Google AI Pro / Antigravity login).
-   - Direct-API providers (`openai-api`, `anthropic-api`, `gemini-api`, `compat-api`) use env-var keys only (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `COMPAT_API_KEY` optional, `COMPAT_BASE_URL`); keys are never written to disk, cache, logs, or `~/.kumo/*`.
+   - Direct-API providers (`openai-api`, `anthropic-api`, `gemini-api`, `compat-api`) use env-var keys only (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `COMPAT_API_KEY` optional, `COMPAT_BASE_URL`). Kumo never persists your keys. Only the API keys relevant to the selected provider are forwarded to the provider CLIs Kumo launches; other secret-looking environment variables are stripped from the child environment.
 
 5. **Bounded Scope & Granular Delegation**:
    - **Never** delegate an open-ended mega-task (e.g. "audit everything and fix all problems") to a single worker tool call.

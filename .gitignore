@@ -33,7 +33,14 @@ coverage/
 # Antigravity session & transient IDE directories
 .system_generated/
 scratch/
+
+# Provider configs generated per-machine by `syncAgentConfigs`
+# (each bakes in an absolute path to this installation's bridge server)
 .agents/mcp_config.json
+.claude/
+.codex/config.toml
+.codex/agents/
+*.bak
 
 # Knowledge graph & build artifacts
 graphify-out/

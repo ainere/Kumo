@@ -1,33 +1,47 @@
 /**
  * api-worker.js — Shared worker executor for direct API providers.
- * Composes the same compositePrompt blocks as workers/claude.js
+ * Composes the same compositePrompt blocks as the CLI workers
  * ([System Instructions], [DIFF PREVIEW MODE], [Relevant Files], [Task])
- * and runs it single-shot through chatComplete. No subprocess, no disk
- * access: mode/workspace never gate execution, previewDiff is prompt-level
- * only. No SDKs, no streaming, single-shot text only.
+ * and runs it single-shot through chatComplete. No SDKs, no streaming.
+ *
+ * These providers have no subprocess and no filesystem access, so they cannot
+ * satisfy a `workspace-write` request; that is reported as an explicit error
+ * rather than a success with an empty diff.
  */
 
+import fs from "node:fs";
 import { chatComplete, ApiError } from "./api-transport.js";
+import { loadConfig } from "../../config/settings.js";
 
 const DEFAULT_TIMEOUT_MS = 120000;
 
 export async function executeApiTask({
   provider,
   prompt,
-  mode,
+  mode = "read-only",
   files = [],
-  workspace,
   model,
   effort,
   systemPrompt,
   previewDiff = false,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
+  timeoutMs,
   baseUrl,
   config,
+  liveLogPath = null,
 } = {}) {
-  // mode/workspace intentionally do not gate execution (no subprocess).
-  void mode;
-  void workspace;
+  if (mode === "workspace-write") {
+    return {
+      ok: false,
+      code: 1,
+      stdout: "",
+      stderr:
+        "Direct-API workers cannot modify files; select a CLI worker provider for worker_implement/worker_test.",
+      timedOut: false,
+    };
+  }
+
+  const effectiveConfig = config || loadConfig();
+  const effectiveTimeout = timeoutMs ?? effectiveConfig?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   let compositePrompt = "";
   if (systemPrompt) {
@@ -47,10 +61,18 @@ export async function executeApiTask({
       model,
       prompt: compositePrompt,
       effort,
-      timeoutMs,
+      timeoutMs: effectiveTimeout,
       baseUrl,
-      config,
+      config: effectiveConfig,
     });
+    // There is no child process to tee, so the REPL tailer only ever sees this.
+    if (liveLogPath) {
+      try {
+        fs.appendFileSync(liveLogPath, text ?? "");
+      } catch {
+        /* live log is best-effort telemetry */
+      }
+    }
     return { ok: true, code: 0, stdout: text ?? "", stderr: "", timedOut: false };
   } catch (err) {
     if (err instanceof ApiError) {
