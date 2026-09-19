@@ -9,7 +9,7 @@
   },
   "main": "./src/cli.js",
   "scripts": {
-    "test": "node --test tests/*.test.js",
+    "test": "node --test",
     "doctor": "node ./bin/kumo.js doctor"
   },
   "dependencies": {
