@@ -68,12 +68,66 @@ test("prepareSpawn routes win32 batch scripts through ComSpec with shell disable
   assert.strictEqual(prep.options.cwd, "C:\\test");
 });
 
+test("prepareSpawn hands cmd.exe a verbatim, outer-quoted command line", () => {
+  // Without windowsVerbatimArguments, Node applies MSVCRT escaping and rewrites
+  // our `"` as `\"`, which cmd.exe rejects: any binary path containing a space,
+  // `(` or `~` then fails with "is not recognized as an internal or external
+  // command". The outer quote pair is the wrapper `/s` strips before parsing.
+  const prep = prepareSpawn("C:\\Program Files (x86)\\t\\run.cmd", ["exec"], {}, "win32");
+
+  assert.strictEqual(prep.options.windowsVerbatimArguments, true);
+  assert.ok(prep.args[3].startsWith('"'), `expected an outer quote, got ${prep.args[3]}`);
+  assert.ok(prep.args[3].endsWith('"'), `expected an outer quote, got ${prep.args[3]}`);
+  assert.ok(prep.args[3].includes('"C:\\Program Files (x86)\\t\\run.cmd"'));
+  assert.ok(!prep.args[3].includes('\\"'), "cmd.exe does not understand backslash-escaped quotes");
+});
+
+test("prepareSpawn leaves tildes unquoted; 8.3 short paths are ordinary paths", () => {
+  const prep = prepareSpawn("C:\\Users\\RUNNER~1\\t\\run.cmd", ["exec"], {}, "win32");
+  assert.ok(
+    prep.args[3].includes("C:\\Users\\RUNNER~1\\t\\run.cmd "),
+    `path should not be quoted, got ${prep.args[3]}`
+  );
+});
+
 test("prepareSpawn quotes every dangerous token it splices into the cmd line", () => {
   const prep = prepareSpawn("x.cmd", ["a&b", "c|d", "%PATH%", 'q"q'], {}, "win32");
   assert.ok(prep.args[3].includes('"a&b"'));
   assert.ok(prep.args[3].includes('"c|d"'));
   assert.ok(prep.args[3].includes('"%%PATH%%"'));
   assert.ok(prep.args[3].includes('"q""q"'));
+});
+
+test("safeSpawn runs a binary whose path needs quoting", async () => {
+  // Regression: every Windows user with a space in their profile path, or a
+  // tool under "C:\\Program Files (x86)", hit a spawn failure here.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo spawn~probe-"));
+  try {
+    let stub;
+    if (process.platform === "win32") {
+      stub = path.join(dir, "stub.cmd");
+      fs.writeFileSync(stub, "@echo STUB_OK %1\r\n");
+    } else {
+      stub = path.join(dir, "stub.sh");
+      fs.writeFileSync(stub, '#!/bin/sh\necho "STUB_OK $1"\n', { mode: 0o755 });
+    }
+
+    const proc = safeSpawn(stub, ["exec"], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (c) => {
+      stdout += c.toString();
+    });
+    proc.stderr.on("data", (c) => {
+      stderr += c.toString();
+    });
+
+    const code = await new Promise((resolve) => proc.on("close", resolve));
+    assert.strictEqual(code, 0, `stub failed: ${stderr.trim()}`);
+    assert.strictEqual(stdout.trim(), "STUB_OK exec");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("prepareSpawn passes non-batch targets through untouched on both platforms", () => {
