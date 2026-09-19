@@ -6,7 +6,6 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { randomUUID } from "node:crypto";
@@ -15,8 +14,7 @@ import {
   setConfigValue,
   PRESETS,
   applyPreset,
-  resolveOrchestratorModel,
-  resolveWorkerModel,
+  resolveModel,
   detectProviderForModel,
   isCodexModel,
 } from "../config/settings.js";
@@ -44,10 +42,13 @@ import {
   listProjects,
   generateChatTitle,
   loadTurnLog,
-  getLiveLogDir,
   getLiveLogPath,
   getActiveLiveRun,
+  getApprovalDir,
+  isValidId,
 } from "../data/sessions.js";
+import { awaitTurnCompletion } from "../providers/orchestrators/turn-wait.js";
+import { configFile } from "../config/paths.js";
 import { VERSION } from "../cli.js";
 
 function getOrchestratorPeriod(limits) {
@@ -242,7 +243,7 @@ export async function startCommand(opts = {}) {
   let currentWorkspace = path.resolve(opts.dir || process.cwd());
 
   // Check for first-run onboarding
-  const configPath = path.join(os.homedir(), ".kumo", "config.json");
+  const configPath = configFile();
   if (!fs.existsSync(configPath)) {
     await runOnboarding();
   }
@@ -252,7 +253,7 @@ export async function startCommand(opts = {}) {
   // If not running in child window and not explicitly told to stay here, launch dedicated window
   const shouldNewWindow = !opts.here && process.stdout.isTTY && !process.env.KUMO_HERE;
   if (shouldNewWindow) {
-    const launched = launchInNewWindow({
+    const launched = await launchInNewWindow({
       workspace: currentWorkspace,
       args: process.argv.slice(2),
     });
@@ -279,6 +280,7 @@ export async function startCommand(opts = {}) {
   renderHeader(currentWorkspace, config, codexLimits, agyUsage);
 
   let client = null;
+  let clientReady = null;
   let isTurnActive = false;
   const activeTools = new Map();
   const streamBuffers = new Map();
@@ -287,15 +289,19 @@ export async function startCommand(opts = {}) {
   let quotaInterval = null;
   const spinner = createSpinner("Thinking");
 
-  const MAX_BUFFER_LINES = 200;
+  // appendToBuffer is called once per streamed delta chunk, so a chunk-count cap
+  // silently discards the beginning of any long response. Budget characters instead.
+  const MAX_BUFFER_CHARS = 200_000;
   function appendToBuffer(streamId, text) {
     if (!streamBuffers.has(streamId)) {
       streamBuffers.set(streamId, []);
     }
     const buf = streamBuffers.get(streamId);
     buf.push(text);
-    if (buf.length > MAX_BUFFER_LINES) {
-      buf.splice(0, buf.length - MAX_BUFFER_LINES);
+    let total = 0;
+    for (const part of buf) total += part.length;
+    while (buf.length > 1 && total > MAX_BUFFER_CHARS) {
+      total -= buf.shift().length;
     }
   }
 
@@ -489,7 +495,8 @@ export async function startCommand(opts = {}) {
 
     cl.on("item_started", (params) => {
       const item = params?.item || {};
-      const itemId = item.id || randomUUID();
+      // item.id reaches the filesystem as live-<id>.log; degrade instead of throwing.
+      const itemId = isValidId(item.id) ? item.id : randomUUID();
       if (item.type === "tool_call" || item.type === "dynamic_tool_call" || item.type === "mcp_tool_call") {
         const toolName = item.name || item.tool || "tool";
 
@@ -563,11 +570,10 @@ export async function startCommand(opts = {}) {
             }
           }
         }
-        if (!itemId || !activeTools.has(itemId)) {
-          itemId = activeTools.keys().next().value;
-        }
+        // No confident match: leave activeTools alone rather than tearing down a
+        // different concurrent tool's tailer. The turn teardown cleans up.
       }
-      if (itemId) {
+      if (itemId && activeTools.has(itemId)) {
         stopTailing(itemId);
         activeTools.delete(itemId);
       }
@@ -583,6 +589,11 @@ export async function startCommand(opts = {}) {
       spinner.stop();
       setKumoTitle(currentWorkspace);
       console.error(`\n${badge.fail} ${err.message || JSON.stringify(err)}`);
+      if (isTurnActive) {
+        isTurnActive = false;
+        rl.resume();
+        rl.prompt();
+      }
     });
 
     cl.on("close", async (code) => {
@@ -605,9 +616,7 @@ export async function startCommand(opts = {}) {
           console.error(`  ${badge.fail} Reconnection failed: ${e.message}`);
           console.log(`  ${c.dim}Type any prompt to retry, or /exit to quit.${c.reset}\n`);
         }
-
-        rl.resume();
-        rl.prompt();
+        // The turn teardown owns re-prompting; doing it here too double-prompts.
       }
     });
   }
@@ -627,6 +636,11 @@ export async function startCommand(opts = {}) {
       env: {
         ORCHESTRATOR_WORKSPACE: currentWorkspace,
         KUMO_WORKSPACE: currentWorkspace,
+        // Tells the MCP bridge that a TTY operator is available to approve
+        // writes; without it `interactive` safety mode degrades to diff-review.
+        ...(config.safetyMode === "interactive" && process.stdout.isTTY
+          ? { KUMO_INTERACTIVE_APPROVAL: "1" }
+          : {}),
       },
     });
 
@@ -639,8 +653,9 @@ export async function startCommand(opts = {}) {
     });
   }
 
-  // Asynchronously initialize background client and fetch fresh live quotas
-  (async () => {
+  // Asynchronously initialize background client and fetch fresh live quotas.
+  // The first prompt awaits this handle so it cannot dereference a null client.
+  clientReady = (async () => {
     try {
       await initClient();
 
@@ -757,6 +772,139 @@ export async function startCommand(opts = {}) {
     const chatOnly = (rl.history || []).filter((line) => !line.trim().startsWith("/"));
     saveHistory(chatOnly);
   };
+
+  /**
+   * Put the terminal back the way we found it. `setRawMode(true)` is set on every
+   * turn and never cleared, which leaves the user's shell without local echo.
+   */
+  function restoreTerminal() {
+    if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+      try {
+        process.stdin.setRawMode(false);
+      } catch {
+        /* stdin may already be closed */
+      }
+    }
+  }
+
+  /** Stop the orchestrator client if one was ever created. */
+  async function stopClientQuietly() {
+    if (!client) return;
+    try {
+      await client.stop();
+    } catch {
+      /* teardown must never throw on the exit path */
+    }
+  }
+
+  // ── interactive safety mode: human approval handshake ──
+  let approvalInterval = null;
+  let approvalBusy = false;
+  const handledApprovals = new Set();
+
+  /**
+   * Render a pending write preview and read a single-key decision.
+   *
+   * @param {{previewId: string, tool: string, previewText: string}} record
+   * @returns {Promise<boolean>}
+   */
+  function askApproval(record) {
+    return new Promise((resolve) => {
+      const text = String(record.previewText || "");
+      const lines = text.split("\n");
+      const shown = lines.slice(0, 40);
+
+      console.log(`\n  ${badge.warn} ${c.bold}Approval required${c.reset} ${c.dim}(${record.tool})${c.reset}`);
+      for (const line of shown) console.log(`    ${c.dim}${line}${c.reset}`);
+      if (lines.length > shown.length) {
+        console.log(`    ${c.dim}… ${lines.length - shown.length} more lines — press d for the full preview${c.reset}`);
+      }
+      process.stdout.write(`\n  Apply changes? ${c.bold}[y/N/d]${c.reset} `);
+
+      const onKey = (str) => {
+        const ch = String(str || "").toLowerCase();
+        if (ch === "d") {
+          process.stdout.write("d\n");
+          console.log(text);
+          process.stdout.write(`\n  Apply changes? ${c.bold}[y/N]${c.reset} `);
+          return;
+        }
+        process.stdin.off("keypress", onKey);
+        const approved = ch === "y";
+        process.stdout.write(`${approved ? "y" : "n"}\n`);
+        resolve(approved);
+      };
+      process.stdin.on("keypress", onKey);
+    });
+  }
+
+  function startApprovalWatcher() {
+    // Without a TTY there is nobody to ask; the bridge falls back to diff-review.
+    if (approvalInterval || !process.stdout.isTTY || !process.stdin.isTTY) return;
+    approvalInterval = setInterval(async () => {
+      if (approvalBusy) return;
+      let dir;
+      let names;
+      try {
+        dir = getApprovalDir(currentWorkspace);
+        names = fs.readdirSync(dir);
+      } catch {
+        return;
+      }
+      for (const name of names) {
+        if (!name.endsWith(".json") || name.endsWith(".decision.json")) continue;
+        const previewId = name.slice(0, -".json".length);
+        if (handledApprovals.has(previewId)) continue;
+        if (fs.existsSync(path.join(dir, `${previewId}.decision.json`))) continue;
+
+        let record;
+        try {
+          record = JSON.parse(fs.readFileSync(path.join(dir, name), "utf-8"));
+        } catch {
+          continue;
+        }
+
+        handledApprovals.add(previewId);
+        approvalBusy = true;
+        try {
+          const approved = await askApproval(record);
+          fs.writeFileSync(
+            path.join(dir, `${previewId}.decision.json`),
+            JSON.stringify({ approved, decidedAt: Date.now() }, null, 2),
+            { encoding: "utf-8", mode: 0o600 }
+          );
+        } catch {
+          /* the bridge times out on its own if we cannot answer */
+        } finally {
+          approvalBusy = false;
+        }
+        break;
+      }
+    }, 500);
+    approvalInterval.unref();
+  }
+
+  function stopApprovalWatcher() {
+    clearInterval(approvalInterval);
+    approvalInterval = null;
+    approvalBusy = false;
+  }
+
+  // Registered once, outside every per-turn handler, so repeated turns cannot
+  // accumulate listeners.
+  const shutdown = () => {
+    clearInterval(quotaInterval);
+    clearInterval(approvalInterval);
+    for (const itemId of Array.from(tailIntervals.keys())) {
+      stopTailing(itemId);
+    }
+    restoreTerminal();
+  };
+  process.on("exit", shutdown);
+  process.on("SIGTERM", () => {
+    shutdown();
+    void stopClientQuietly().finally(() => process.exit(143));
+  });
 
   async function switchWorkspace(newPath) {
     const resolvedPath = path.resolve(newPath);
@@ -962,6 +1110,7 @@ export async function startCommand(opts = {}) {
             return;
           }
 
+          const wasRaw = Boolean(process.stdin.isRaw);
           rl.pause();
           try {
             const items = chats.map((chat, i) => ({
@@ -997,7 +1146,7 @@ export async function startCommand(opts = {}) {
           } finally {
             process.stdin.resume();
             if (process.stdin.setRawMode) {
-              process.stdin.setRawMode(true);
+              process.stdin.setRawMode(wasRaw);
             }
             rl.line = "";
             rl.cursor = 0;
@@ -1015,6 +1164,7 @@ export async function startCommand(opts = {}) {
             return;
           }
 
+          const wasRaw = Boolean(process.stdin.isRaw);
           rl.pause();
           try {
             const items = projects.map((p) => ({
@@ -1033,7 +1183,7 @@ export async function startCommand(opts = {}) {
           } finally {
             process.stdin.resume();
             if (process.stdin.setRawMode) {
-              process.stdin.setRawMode(true);
+              process.stdin.setRawMode(wasRaw);
             }
             rl.line = "";
             rl.cursor = 0;
@@ -1114,6 +1264,7 @@ export async function startCommand(opts = {}) {
         case "model":
           if (!arg1) {
             if (process.stdout.isTTY && process.stdin.isTTY) {
+              const wasRaw = Boolean(process.stdin.isRaw);
               rl.pause();
               try {
                 const oldOrch = config.orchestratorModel;
@@ -1158,7 +1309,7 @@ export async function startCommand(opts = {}) {
               } finally {
                 process.stdin.resume();
                 if (process.stdin.setRawMode) {
-                  process.stdin.setRawMode(true);
+                  process.stdin.setRawMode(wasRaw);
                 }
                 rl.line = "";
                 rl.cursor = 0;
@@ -1178,10 +1329,20 @@ export async function startCommand(opts = {}) {
             return;
           }
 
+          if ((arg1 === "worker" || arg1 === "orchestrator") && !arg2) {
+            console.log(`\n  ${c.gray}Orchestrator:${c.reset} ${c.brightCyan}${config.orchestratorModel}-${config.reasoningEffort}${c.reset}`);
+            console.log(`  ${c.gray}Worker:${c.reset}       ${c.brightBlue}${config.workerModel}-${config.workerEffort || "medium"}${c.reset}`);
+            console.log(`\n  ${c.gray}Usage:${c.reset} /model <model> | /model worker <model> [effort]\n`);
+            rl.prompt();
+            return;
+          }
+
           if (arg1 === "worker" && arg2) {
-            const resolvedWorker = resolveWorkerModel(arg2);
+            const resolvedWorker = resolveModel(arg2);
             config.workerModel = resolvedWorker;
-            config.workerProvider = detectProviderForModel(resolvedWorker);
+            // Honor the provider the user already configured; re-deriving it from the
+            // model name silently rewrites an explicit choice (e.g. claude -> antigravity).
+            config.workerProvider = detectProviderForModel(resolvedWorker, config.workerProvider);
             setConfigValue("workerModel", resolvedWorker);
             setConfigValue("workerProvider", config.workerProvider);
             if (parts[3]) {
@@ -1223,9 +1384,9 @@ export async function startCommand(opts = {}) {
             return;
           }
 
-          const resolvedOrch = resolveOrchestratorModel(rawTarget);
+          const resolvedOrch = resolveModel(rawTarget);
           const oldOrchProv = config.orchestratorProvider;
-          const newOrchProv = detectProviderForModel(resolvedOrch);
+          const newOrchProv = detectProviderForModel(resolvedOrch, config.orchestratorProvider);
           config.orchestratorModel = resolvedOrch;
           config.orchestratorProvider = newOrchProv;
           setConfigValue("orchestratorModel", resolvedOrch);
@@ -1389,8 +1550,9 @@ export async function startCommand(opts = {}) {
         case "q":
           console.log(`\n${badge.info} Exiting Kumo session.`);
           saveReplHistory();
-          if (quotaInterval) clearInterval(quotaInterval);
-          await client.stop();
+          clearInterval(quotaInterval);
+          await stopClientQuietly();
+          restoreTerminal();
           process.exit(0);
           return;
 
@@ -1405,8 +1567,11 @@ export async function startCommand(opts = {}) {
     ensureQuotaRefresher();
 
     const turnStart = Date.now();
+    let turnOk = false;
+    let responseText = "";
     isTurnActive = true;
     rl.pause();
+    const turnWasRaw = Boolean(process.stdin.isRaw);
     if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
       process.stdin.setRawMode(true);
       process.stdin.resume();
@@ -1414,19 +1579,36 @@ export async function startCommand(opts = {}) {
     process.stdout.write("\n");
 
     try {
-      await client.startTurn(input, {
+      // The background client initializer runs unawaited at startup; a fast first
+      // prompt would otherwise dereference a null client.
+      if (clientReady) await clientReady;
+      if (!client) {
+        throw new Error("Orchestrator client is not available. Check `kumo doctor`.");
+      }
+
+      if (config.safetyMode === "interactive") {
+        startApprovalWatcher();
+      }
+
+      const startTurnResult = await client.startTurn(input, {
         model: config.orchestratorModel,
         effort: config.reasoningEffort,
       });
 
-      // Wait for turn completion event
-      await new Promise((resolve) => {
-        const handler = () => {
-          client.off("turn_completed", handler);
-          resolve();
-        };
-        client.on("turn_completed", handler);
+      // Races turn_completed against server_error, close, and a timeout. Waiting
+      // on turn_completed alone deadlocks the REPL whenever the turn fails.
+      const outcome = await awaitTurnCompletion(client, {
+        timeoutMs: config.timeoutMs,
+        startTurnResult,
       });
+      turnOk = outcome.ok;
+
+      // Capture before either turn_completed's or the teardown's streamBuffers.clear().
+      responseText = (streamBuffers.get("orchestrator") || []).join("");
+
+      if (!turnOk) {
+        console.error(`\n  ${badge.fail} ${outcome.reason}`);
+      }
 
       // Refresh quotas post-turn
       const [freshCodex, freshAgy] = await Promise.all([
@@ -1447,28 +1629,38 @@ export async function startCommand(opts = {}) {
       streamBuffers.clear();
       focusedStream = "orchestrator";
       spinner.stop();
+      stopApprovalWatcher();
       setKumoTitle(currentWorkspace);
       isTurnActive = false;
+      if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+        process.stdin.setRawMode(turnWasRaw);
+      }
 
       const elapsed = ((Date.now() - turnStart) / 1000).toFixed(1);
-      console.log(`\n  ${c.dim}✓ Completed in ${elapsed}s${c.reset}\n`);
 
-      turnCount++;
-      appendTurn(currentWorkspace, currentChatId, {
-        prompt: input,
-        responseSummary: null,
-        timestamp: Date.now(),
-        model: config.orchestratorModel,
-        elapsedMs: Date.now() - turnStart,
-      });
-      updateChat(currentWorkspace, currentChatId, {
-        lastUsedAt: Date.now(),
-        turns: turnCount,
-      });
-      if (turnCount === 1) {
-        updateChat(currentWorkspace, currentChatId, {
-          title: generateChatTitle(input),
+      if (turnOk) {
+        console.log(`\n  ${c.dim}✓ Completed in ${elapsed}s${c.reset}\n`);
+
+        turnCount++;
+        appendTurn(currentWorkspace, currentChatId, {
+          prompt: input,
+          responseSummary: responseText || null,
+          timestamp: Date.now(),
+          model: config.orchestratorModel,
+          elapsedMs: Date.now() - turnStart,
         });
+        updateChat(currentWorkspace, currentChatId, {
+          lastUsedAt: Date.now(),
+          turns: turnCount,
+        });
+        if (turnCount === 1) {
+          updateChat(currentWorkspace, currentChatId, {
+            title: generateChatTitle(input),
+          });
+        }
+      } else {
+        // A failed turn is not a turn: recording it would corrupt /save transcripts.
+        console.log(`\n  ${badge.fail} Turn ended without completion after ${elapsed}s\n`);
       }
 
       saveReplHistory();
@@ -1482,7 +1674,7 @@ export async function startCommand(opts = {}) {
   rl.on("SIGINT", async () => {
     if (isTurnActive) {
       console.log(`\n  ${badge.warn} Interrupting active task...`);
-      await client.interruptTurn();
+      if (client) await client.interruptTurn().catch(() => {});
       isTurnActive = false;
       rl.resume();
       rl.prompt();
@@ -1499,8 +1691,9 @@ export async function startCommand(opts = {}) {
     } else {
       console.log(`\n${badge.info} Goodbye.`);
       saveReplHistory();
-      if (quotaInterval) clearInterval(quotaInterval);
-      await client.stop();
+      clearInterval(quotaInterval);
+      await stopClientQuietly();
+      restoreTerminal();
       process.exit(0);
     }
   });
@@ -1511,8 +1704,10 @@ export async function startCommand(opts = {}) {
       stopTailing(itemId);
     }
     saveReplHistory();
-    if (quotaInterval) clearInterval(quotaInterval);
-    await client.stop();
+    clearInterval(quotaInterval);
+    clearInterval(approvalInterval);
+    await stopClientQuietly();
+    restoreTerminal();
     process.exit(0);
   });
 }

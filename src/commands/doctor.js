@@ -2,7 +2,7 @@
  * doctor.js — CLI command to diagnose environment and subscriptions.
  */
 
-import { runDiagnostics } from "../utils/diagnostics.js";
+import { runDiagnostics, isEnvironmentReady } from "../utils/diagnostics.js";
 import { getBanner, c, badge, separator } from "../utils/ui.js";
 import { VERSION } from "../cli.js";
 
@@ -33,6 +33,8 @@ export async function doctorCommand() {
   printCheck("Gemini API (env)", results.geminiApi || { ok: false, details: "missing" });
   printCheck("Compat API (env)", results.compatApi || { ok: false, details: "missing" });
   printCheck("MCP Bridge Server", results.bridge);
+  printCheck("Orchestrator Path", results.orchestratorPath || { ok: false, details: "missing" });
+  printCheck("Worker Path", results.workerPath || { ok: false, details: "missing" });
 
   console.log(`\n  ${c.dim}Global Config:${c.reset}  ${results.config.path}`);
   for (const [k, v] of Object.entries(results.config.values)) {
@@ -40,9 +42,12 @@ export async function doctorCommand() {
   }
 
   console.log("\n" + separator(64));
-  if (results.node.ok && results.bridge.ok && (results.orchestratorPath?.ok || (results.codex.ok && results.gemini.ok))) {
+  const ready = isEnvironmentReady(results);
+
+  if (ready) {
     console.log(`  ${badge.ok} ${c.brightGreen}All systems operational.${c.reset} Ready to run 'kumo'.`);
   } else {
+    process.exitCode = 1;
     console.log(`  ${badge.warn} ${c.brightYellow}Action required for some components:${c.reset}`);
     if (!results.codex.ok && !results.openaiApi?.ok) {
       console.log(`    ${badge.dot} Install Codex CLI: npm install -g @openai/codex && codex login (or set OPENAI_API_KEY)`);
@@ -52,6 +57,9 @@ export async function doctorCommand() {
     }
     if (!results.orchestratorPath?.ok) {
       console.log(`    ${badge.dot} No orchestrator path: log in to a subscription CLI or set a Direct API key`);
+    }
+    if (!results.workerPath?.ok) {
+      console.log(`    ${badge.dot} No worker path: install a worker CLI (gemini, claude, gh copilot, cursor-agent, ollama) or set a Direct API key`);
     }
   }
   console.log(separator(64) + "\n");

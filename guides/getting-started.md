@@ -42,11 +42,12 @@ kumo model worker <model> <effort> <provider>
 Run `kumo model list` for all 13 provider ids.
 ## 2. Setting Up the Bridge
 
-Inside `~/Projects/Kumo`:
+Inside the Kumo repository root:
 
-1. Ensure dependencies are installed:
+1. Ensure dependencies are installed and link globally:
    ```bash
    npm install
+   npm link --force
    ```
 2. Run the test suite:
    ```bash
@@ -58,13 +59,13 @@ Inside `~/Projects/Kumo`:
 
 ## 3. Running Your First Orchestrated Task
 
-1. From the repository root (`~/Projects/Kumo`):
+1. From your repository root:
    ```bash
    node ./bin/kumo.js
    # or simply
    kumo
    ```
-2. You will be greeted by the Codex CLI session running **ChatGPT 6 Astra** (reasoning effort: `low`).
+2. You will enter Kumo's own interactive REPL (`kumo ›` prompt, Cloud Cumulus banner), which drives the configured orchestrator headlessly over JSON-RPC.
 3. Enter a task request. For example:
    > "Explore the project structure, locate where the bridge server is defined, and create a utility script that validates environment configuration."
 

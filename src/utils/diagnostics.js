@@ -172,6 +172,25 @@ export async function runDiagnostics() {
     Boolean(results.geminiApi?.ok) ||
     Boolean(results.compatApi?.ok);
   const pathOk = subscriptionOk || apiOk;
+  // Worker readiness is a separate question from orchestrator readiness: a
+  // machine with only Codex installed has an orchestrator and no worker.
+  const workerNames = [];
+  if (results.gemini?.ok) workerNames.push("gemini");
+  if (results.claude?.ok) workerNames.push("claude");
+  if (results.copilot?.ok) workerNames.push("copilot");
+  if (results.cursor?.ok) workerNames.push("cursor");
+  if (results.geminiCli?.ok) workerNames.push("gemini-cli");
+  if (results.ollama?.ok) workerNames.push("ollama");
+  const workerOk = workerNames.length > 0 || apiOk;
+  results.workerPath = {
+    ok: workerOk,
+    details: workerOk
+      ? workerNames.length > 0
+        ? `Worker CLI available: ${workerNames.join(", ")}`
+        : "Available via Direct API keys (no worker CLI required)"
+      : "No worker path available (no worker CLI and no API key)",
+  };
+
   results.orchestratorPath = {
     ok: pathOk,
     details: pathOk
@@ -182,4 +201,23 @@ export async function runDiagnostics() {
   };
 
   return results;
+}
+
+/**
+ * Whether the environment can actually run a Kumo session.
+ *
+ * Requires BOTH halves of the harness: an orchestrator path and a worker path.
+ * `orchestratorPath.ok` alone is not sufficient, because it already counts a
+ * Codex login, which says nothing about whether any worker exists.
+ *
+ * @param {object} results - output of runDiagnostics()
+ * @returns {boolean}
+ */
+export function isEnvironmentReady(results) {
+  return Boolean(
+    results?.node?.ok &&
+      results?.bridge?.ok &&
+      results?.orchestratorPath?.ok &&
+      results?.workerPath?.ok
+  );
 }

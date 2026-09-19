@@ -1,28 +1,33 @@
 /**
  * sessions.js — Multi-chat session persistence and project registry for Kumo.
  *
- * Data layout:
- *   ~/.kumo/projects.json       — Global registry: { [pathHash]: { path, name, lastOpened } }
- *   ~/.kumo/sessions/<pathHash>/
+ * Data layout (root is `KUMO_HOME`, default `~/.kumo`):
+ *   <kumoHome>/projects.json       — Global registry: { [pathHash]: { path, name, lastOpened } }
+ *   <kumoHome>/sessions/<pathHash>/
  *     ├── chats.json            — Chat index: [{ id, title, createdAt, lastUsedAt, threadId, model, turns }]
- *     └── <chatId>.json         — Turn log (JSON lines): { prompt, responseSummary, timestamp, model, elapsedMs }
+ *     ├── <chatId>.json         — Turn log (JSON lines): { prompt, responseSummary, timestamp, model, elapsedMs }
+ *     └── live/
+ *         ├── live-<runId>.log  — Raw worker stdout/stderr
+ *         └── active/<runId>.json — One file per in-flight worker run
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import crypto from "node:crypto";
+import { kumoHome, ensureDir, atomicWriteJson, quarantineCorruptFile } from "../config/paths.js";
 
-const DATA_DIR = path.join(os.homedir(), ".kumo");
-const PROJECTS_FILE = path.join(DATA_DIR, "projects.json");
+/** A worker registration older than this is treated as an orphan from a killed process. */
+export const ACTIVE_RUN_MAX_AGE_MS = 60 * 1000;
 
-function ensureDir(dir) {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+function dataDir() {
+  return kumoHome();
 }
 
-const CHAT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+function projectsFile() {
+  return path.join(dataDir(), "projects.json");
+}
+
+const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
  * Validate a chat id (prevents path traversal via `../../evil` ids).
@@ -30,38 +35,50 @@ const CHAT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
  * @param {string} chatId
  */
 function assertChatId(chatId) {
-  if (!CHAT_ID_RE.test(chatId || "")) {
+  if (!ID_RE.test(chatId || "")) {
     throw new Error("Invalid chatId");
   }
 }
 
 /**
- * Atomically write JSON (tmp file + rename; never leaves a truncated target).
+ * Validate a worker run id — it reaches the filesystem as `live-<runId>.log`
+ * and originates from provider-supplied event ids.
  *
- * @param {string} file
- * @param {*} data
+ * @param {string} runId
  */
-function atomicWriteJson(file, data) {
-  ensureDir(path.dirname(file));
-  const tmp = `${file}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf-8");
-  fs.renameSync(tmp, file);
+export function assertRunId(runId) {
+  if (!ID_RE.test(runId || "")) {
+    throw new Error("Invalid runId");
+  }
+}
+
+/** True when `id` is safe to use as a path component. */
+export function isValidId(id) {
+  return ID_RE.test(id || "");
 }
 
 // ── Project Registry ──
 
+/**
+ * Hash a workspace path into a stable session directory name.
+ * Case is folded only on case-insensitive filesystems; folding on Linux would
+ * collide `/srv/Project` with `/srv/project`.
+ */
 export function hashWorkspace(workspacePath) {
+  const resolved = path.resolve(workspacePath);
+  const caseInsensitive = process.platform === "win32" || process.platform === "darwin";
   return crypto
     .createHash("sha256")
-    .update(path.resolve(workspacePath).toLowerCase())
+    .update(caseInsensitive ? resolved.toLowerCase() : resolved)
     .digest("hex")
     .slice(0, 12);
 }
 
 export function loadProjectRegistry() {
   try {
-    if (fs.existsSync(PROJECTS_FILE)) {
-      return JSON.parse(fs.readFileSync(PROJECTS_FILE, "utf-8"));
+    const file = projectsFile();
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, "utf-8"));
     }
   } catch {
     /* ignore corrupt file */
@@ -81,7 +98,7 @@ export function registerProject(workspacePath) {
   };
 
   try {
-    atomicWriteJson(PROJECTS_FILE, registry);
+    atomicWriteJson(projectsFile(), registry);
   } catch {
     /* ignore write errors */
   }
@@ -97,20 +114,24 @@ export function listProjects() {
 // ── Chat Index ──
 
 export function getSessionDir(workspacePath) {
-  return path.join(DATA_DIR, "sessions", hashWorkspace(workspacePath));
+  return path.join(dataDir(), "sessions", hashWorkspace(workspacePath));
 }
 
 export function loadChatIndex(workspacePath) {
   const dir = getSessionDir(workspacePath);
   const file = path.join(dir, "chats.json");
+  if (!fs.existsSync(file)) return [];
   try {
-    if (fs.existsSync(file)) {
-      return JSON.parse(fs.readFileSync(file, "utf-8"));
-    }
+    const parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
-    /* ignore corrupt index */
+    // Never let the next write silently overwrite an unreadable index.
+    const moved = quarantineCorruptFile(file);
+    if (moved) {
+      console.warn(`[Warning] Corrupt chat index quarantined at ${moved}`);
+    }
+    return [];
   }
-  return [];
 }
 
 function saveChatIndex(workspacePath, chats) {
@@ -183,7 +204,7 @@ export function appendTurn(workspacePath, chatId, turn) {
   ensureDir(dir);
   const file = path.join(dir, `${chatId}.json`);
   try {
-    fs.appendFileSync(file, JSON.stringify(turn) + "\n", "utf-8");
+    fs.appendFileSync(file, JSON.stringify(turn) + "\n", { encoding: "utf-8", mode: 0o600 });
   } catch {
     /* ignore */
   }
@@ -226,7 +247,27 @@ export function generateChatTitle(firstPrompt) {
 
 export function getLiveLogDir(workspacePath) {
   const hash = hashWorkspace(workspacePath);
-  const dir = path.join(DATA_DIR, "sessions", hash, "live");
+  const dir = path.join(dataDir(), "sessions", hash, "live");
+  ensureDir(dir);
+  return dir;
+}
+
+function activeRunDir(workspacePath) {
+  const dir = path.join(getLiveLogDir(workspacePath), "active");
+  ensureDir(dir);
+  return dir;
+}
+
+/**
+ * Directory holding human-approval handshake files for the interactive safety mode.
+ * The MCP bridge writes <previewId>.json there; the REPL answers with
+ * <previewId>.decision.json. They are separate processes with no other IPC channel.
+ *
+ * @param {string} workspacePath
+ * @returns {string}
+ */
+export function getApprovalDir(workspacePath) {
+  const dir = path.join(getLiveLogDir(workspacePath), "approvals");
   ensureDir(dir);
   return dir;
 }
@@ -250,28 +291,21 @@ export function pruneLiveLogs(workspacePath, maxAgeMs = 24 * 3600 * 1000) {
 }
 
 export function getLiveLogPath(workspacePath, runId) {
+  assertRunId(runId);
   const dir = getLiveLogDir(workspacePath);
   pruneLiveLogs(workspacePath);
   return path.join(dir, `live-${runId}.log`);
 }
 
+/**
+ * Register an in-flight worker run. Each run owns its own file, so concurrent
+ * registrations and clears can never clobber one another.
+ */
 export function setActiveLiveRun(workspacePath, info) {
   try {
-    const dir = getLiveLogDir(workspacePath);
-    const activeFile = path.join(dir, "active.json");
-    let runs = {};
-    if (fs.existsSync(activeFile)) {
-      try {
-        runs = JSON.parse(fs.readFileSync(activeFile, "utf-8"));
-      } catch {}
-    }
-    if (runs.runId && !runs[runs.runId]) {
-      runs = { [runs.runId]: runs };
-    }
-    if (info && info.runId) {
-      runs[info.runId] = info;
-    }
-    atomicWriteJson(activeFile, runs);
+    if (!info || !info.runId) return;
+    assertRunId(info.runId);
+    atomicWriteJson(path.join(activeRunDir(workspacePath), `${info.runId}.json`), info);
   } catch {
     /* ignore */
   }
@@ -279,21 +313,30 @@ export function setActiveLiveRun(workspacePath, info) {
 
 export function getActiveLiveRun(workspacePath, runId) {
   try {
-    const dir = getLiveLogDir(workspacePath);
-    const activeFile = path.join(dir, "active.json");
-    if (fs.existsSync(activeFile)) {
-      const data = JSON.parse(fs.readFileSync(activeFile, "utf-8"));
-      if (runId) {
-        if (data.runId === runId) return data;
-        return data[runId] || null;
-      }
-      if (data.runId) return data;
-      const keys = Object.keys(data);
-      if (keys.length > 0) {
-        keys.sort((a, b) => (data[b].timestamp || 0) - (data[a].timestamp || 0));
-        return data[keys[0]];
+    const dir = activeRunDir(workspacePath);
+
+    if (runId) {
+      assertRunId(runId);
+      const file = path.join(dir, `${runId}.json`);
+      if (!fs.existsSync(file)) return null;
+      return JSON.parse(fs.readFileSync(file, "utf-8"));
+    }
+
+    const cutoff = Date.now() - ACTIVE_RUN_MAX_AGE_MS;
+    let newest = null;
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith(".json")) continue;
+      try {
+        const rec = JSON.parse(fs.readFileSync(path.join(dir, name), "utf-8"));
+        if (!rec || !rec.runId) continue;
+        // Orphaned registrations from killed processes must not be adopted.
+        if (!(typeof rec.timestamp === "number" && rec.timestamp >= cutoff)) continue;
+        if (!newest || (rec.timestamp || 0) > (newest.timestamp || 0)) newest = rec;
+      } catch {
+        continue;
       }
     }
+    return newest;
   } catch {
     /* ignore */
   }
@@ -302,26 +345,55 @@ export function getActiveLiveRun(workspacePath, runId) {
 
 export function clearActiveLiveRun(workspacePath, runId) {
   try {
-    const dir = getLiveLogDir(workspacePath);
-    const activeFile = path.join(dir, "active.json");
-    if (fs.existsSync(activeFile)) {
-      const data = JSON.parse(fs.readFileSync(activeFile, "utf-8"));
-      if (data.runId && (!runId || data.runId === runId)) {
-        fs.unlinkSync(activeFile);
-        return;
-      }
-      if (runId && data[runId]) {
-        delete data[runId];
-      } else if (!runId) {
-        for (const k of Object.keys(data)) delete data[k];
-      }
-      if (Object.keys(data).length === 0) {
-        fs.unlinkSync(activeFile);
-      } else {
-        atomicWriteJson(activeFile, data);
+    const dir = activeRunDir(workspacePath);
+    if (runId) {
+      assertRunId(runId);
+      const file = path.join(dir, `${runId}.json`);
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+      return;
+    }
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith(".json")) continue;
+      try {
+        fs.unlinkSync(path.join(dir, name));
+      } catch {
+        /* ignore */
       }
     }
   } catch {
     /* ignore */
+  }
+}
+
+/**
+ * Read a slice of a live worker log starting at a byte offset.
+ * Returns the decoded text plus the new offset so callers can poll forward.
+ *
+ * @param {string} workspacePath
+ * @param {string} runId
+ * @param {number} [offset=0]
+ * @returns {{ text: string, offset: number }}
+ */
+export function readLiveLogChunk(workspacePath, runId, offset = 0) {
+  const file = getLiveLogPath(workspacePath, runId);
+  let fd = null;
+  try {
+    const size = fs.statSync(file).size;
+    if (size <= offset) return { text: "", offset };
+    const length = size - offset;
+    const buf = Buffer.alloc(length);
+    fd = fs.openSync(file, "r");
+    const read = fs.readSync(fd, buf, 0, length, offset);
+    return { text: buf.subarray(0, read).toString("utf-8"), offset: offset + read };
+  } catch {
+    return { text: "", offset };
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }

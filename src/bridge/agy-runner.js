@@ -8,12 +8,17 @@
  * Authentication: relies on the user's active Google AI Pro subscription login (zero API keys).
  */
 
-import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, supportsEffort } from "../config/settings.js";
 import { formatIsoResetTime } from "../utils/ui.js";
-import { safeSpawn } from "../utils/process.js";
+import {
+  safeSpawn,
+  childEnvFor,
+  killProcessTree,
+  resolveBinary,
+} from "../utils/process.js";
+import { mustUseStdinPrompt } from "../providers/workers/cli-runner.js";
 
 /** Default timeout per invocation (5 minutes). */
 const DEFAULT_TIMEOUT_MS = clampTimeout(process.env.GEMINI_TIMEOUT_MS || "300000");
@@ -56,9 +61,14 @@ export function getCliBinary() {
 
   try {
     const config = loadConfig();
-    if (config?.cliBinary && fs.existsSync(config.cliBinary)) {
-      detectedBin = config.cliBinary;
-      return detectedBin;
+    if (config?.cliBinary) {
+      // The default is the bare name "gemini"; a plain existsSync resolves it
+      // against the CWD, so the configured binary was always discarded.
+      const resolved = resolveBinary(config.cliBinary);
+      if (path.isAbsolute(resolved) && fs.existsSync(resolved)) {
+        detectedBin = resolved;
+        return detectedBin;
+      }
     }
   } catch {
     /* fallback */
@@ -74,16 +84,12 @@ export function getCliBinary() {
     }
   }
 
-  // Check if agy is in system PATH
-  try {
-    const cmd = process.platform === "win32" ? "where.exe agy" : "which agy";
-    const found = execSync(cmd, { stdio: ["ignore", "pipe", "ignore"], encoding: "utf-8" }).trim().split("\r\n")[0];
-    if (found && fs.existsSync(found)) {
-      detectedBin = found;
-      return detectedBin;
-    }
-  } catch {
-    /* not in PATH */
+  // Check if agy is on PATH. resolveBinary returns the bare name on a miss,
+  // so an absolute result is the signal that it was actually found.
+  const found = resolveBinary("agy");
+  if (path.isAbsolute(found) && fs.existsSync(found)) {
+    detectedBin = found;
+    return detectedBin;
   }
 
   detectedBin = process.env.GEMINI_BIN || "agy";
@@ -161,8 +167,13 @@ export async function runAgy(opts) {
   }
   compositePrompt += `[Task]\n${prompt}`;
 
+  // A composite prompt cannot survive a Windows .cmd shim: cmd.exe treats the
+  // embedded newlines as command separators and caps the line at ~8191 chars.
+  const promptViaStdin = mustUseStdinPrompt(bin, compositePrompt);
+
   if (isGeminiCli) {
-    args.push("-p", compositePrompt);
+    args.push("-p");
+    if (!promptViaStdin) args.push(compositePrompt);
     if (model) {
       args.push("-m", model);
     }
@@ -175,7 +186,8 @@ export async function runAgy(opts) {
     }
   } else {
     // agy CLI flags
-    args.push("-p", compositePrompt);
+    args.push("-p");
+    if (!promptViaStdin) args.push(compositePrompt);
     if (model) {
       args.push("--model", model);
     }
@@ -191,12 +203,13 @@ export async function runAgy(opts) {
     }
   }
 
-  const childEnv = {
-    ...process.env,
-  };
-  if (trustWorkspace) {
-    childEnv.GEMINI_CLI_TRUST_WORKSPACE = "true";
-  }
+  // This child runs with permission-bypass flags, so it must not receive every
+  // credential in the operator's shell. Antigravity authenticates from its own
+  // on-disk session, not from environment keys.
+  const childEnv = childEnvFor(
+    "antigravity",
+    trustWorkspace ? { GEMINI_CLI_TRUST_WORKSPACE: "true" } : {}
+  );
 
   const isTransientSocketError = (str) =>
     /wsarecv|connection was forcibly closed|connection reset|ECONNRESET|streamGenerateContent/i.test(str || "");
@@ -210,9 +223,16 @@ export async function runAgy(opts) {
 
       const proc = safeSpawn(bin, args, {
         cwd: workspace,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [promptViaStdin ? "pipe" : "ignore", "pipe", "pipe"],
         env: childEnv,
       });
+
+      if (promptViaStdin && proc.stdin) {
+        proc.stdin.on("error", () => {
+          /* the child may exit before draining stdin */
+        });
+        proc.stdin.end(compositePrompt, "utf-8");
+      }
 
       // Precise output buffering with hard cap
       proc.stdout?.on("data", (chunk) => {
@@ -243,23 +263,25 @@ export async function runAgy(opts) {
         }
       });
 
+      let escalation = null;
       const timer = setTimeout(() => {
         if (!settled) {
           timedOut = true;
-          proc.kill("SIGTERM");
-          setTimeout(() => {
-            try {
-              proc.kill("SIGKILL");
-            } catch {
-              /* ignore */
-            }
-          }, 5000);
+          try {
+            proc.kill("SIGTERM");
+          } catch {
+            /* already gone */
+          }
+          // SIGTERM reaches only the shim on Windows; escalate to the whole tree.
+          escalation = setTimeout(() => killProcessTree(proc), 5000);
+          escalation.unref?.();
         }
       }, timeoutMs);
 
       proc.on("close", (code) => {
         settled = true;
         clearTimeout(timer);
+        clearTimeout(escalation);
 
         resolve({
           ok: code === 0,
@@ -319,11 +341,7 @@ export async function getAgyUsage() {
     });
 
     const timer = setTimeout(() => {
-      try {
-        proc.kill("SIGKILL");
-      } catch {
-        /* ignore */
-      }
+      killProcessTree(proc);
       resolve(null);
     }, 6000);
 
@@ -459,11 +477,7 @@ export async function getAgyModels() {
     });
 
     const timer = setTimeout(() => {
-      try {
-        proc.kill("SIGKILL");
-      } catch {
-        /* ignore */
-      }
+      killProcessTree(proc);
       resolve(DEFAULT_WORKER_MODELS);
     }, 4000);
 

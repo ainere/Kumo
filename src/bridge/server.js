@@ -1,21 +1,34 @@
 /**
  * server.js — MCP stdio bridge server with dynamic workspace support.
  *
- * Exposes Gemini 3.8 Flash capabilities as MCP tools for Codex CLI.
- * Accepts `--workspace <path>` command line argument or reads
- * ORCHESTRATOR_WORKSPACE environment variable to target any project folder.
+ * Exposes five role-based worker tools (explore, implement, test, research,
+ * review) to any MCP-capable orchestrator and routes each call to one of the
+ * fifteen supported worker providers — subscription CLIs (Antigravity/Gemini,
+ * Codex, Claude Code, OpenCode, CommandCode, Copilot, Cursor, Gemini CLI,
+ * Ollama) or direct HTTP APIs (openai/anthropic/gemini/compat).
+ *
+ * The target workspace comes from `--workspace <path>`, else `KUMO_WORKSPACE`,
+ * else the legacy `ORCHESTRATOR_WORKSPACE`, else the process working directory.
  */
 
 import { execSync } from "node:child_process";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { runAgy } from "./agy-runner.js";
-import { getWorker } from "../providers/workers/registry.js";
-import { SYSTEM_PROMPTS, getSystemPrompt } from "./prompts.js";
+import { getWorker, KNOWN_WORKERS } from "../providers/workers/registry.js";
+import { getSystemPrompt } from "./prompts.js";
 import { loadConfig, detectProviderForModel } from "../config/settings.js";
-import { getLiveLogPath, setActiveLiveRun, clearActiveLiveRun } from "../data/sessions.js";
+import {
+  getLiveLogPath,
+  setActiveLiveRun,
+  clearActiveLiveRun,
+  getApprovalDir,
+} from "../data/sessions.js";
+import { atomicWriteJson } from "../config/paths.js";
 import { VERSION } from "../cli.js";
 
 // Parse CLI flags
@@ -70,8 +83,14 @@ export function pruneExpiredPreviews() {
 /**
  * Register a new diff preview and return its unique previewId token.
  */
+export const MAX_PENDING_PREVIEWS = 100;
+
 export function storePendingPreview(previewText, opts = {}) {
   pruneExpiredPreviews();
+  // Map iterates in insertion order, so the first key is the oldest entry.
+  while (pendingPreviews.size >= MAX_PENDING_PREVIEWS) {
+    pendingPreviews.delete(pendingPreviews.keys().next().value);
+  }
   const previewId = `prev_${crypto.randomUUID()}`;
   pendingPreviews.set(previewId, {
     previewText,
@@ -81,6 +100,17 @@ export function storePendingPreview(previewText, opts = {}) {
     createdAt: Date.now(),
   });
   return previewId;
+}
+
+/**
+ * Look up a pending preview without consuming it. Validation happens before the
+ * worker runs; deleting there makes a crashed or timed-out apply unretryable,
+ * because the previewId is already gone.
+ */
+export function peekPendingPreview(previewId) {
+  pruneExpiredPreviews();
+  if (!previewId || !pendingPreviews.has(previewId)) return null;
+  return pendingPreviews.get(previewId);
 }
 
 /**
@@ -142,6 +172,69 @@ export function getGitDiffStat(cwd) {
 }
 
 /**
+ * Capture the names of tracked files with uncommitted modifications.
+ */
+export function getGitDiffNames(cwd) {
+  try {
+    const out = execSync("git diff HEAD --name-only", {
+      cwd,
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf-8",
+    }).trim();
+    return out ? out.split("\n").map((l) => l.trim()).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function hashFileContent(file) {
+  try {
+    return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Snapshot every dirty path plus its content hash.
+ *
+ * Comparing only the *set* of dirty paths misses every file that was already
+ * dirty before the worker ran, which then gets reported as "previewed but not
+ * modified". The content hash is what actually discriminates.
+ *
+ * @param {string} cwd
+ * @returns {{ files: string[], hashes: Map<string, string|null> }}
+ */
+export function captureWorkspaceState(cwd) {
+  const files = Array.from(new Set([...getGitStatus(cwd), ...getGitDiffNames(cwd)]));
+  const hashes = new Map();
+  for (const f of files) {
+    hashes.set(f, hashFileContent(path.join(cwd, f)));
+  }
+  return { files, hashes };
+}
+
+/**
+ * Files whose content differs between two workspace snapshots.
+ *
+ * A deletion still shows up in `git status --porcelain`, so it lands in
+ * `post.files` with a null hash and is reported here as well.
+ *
+ * @param {{files: string[], hashes: Map<string, string|null>}} pre
+ * @param {{files: string[], hashes: Map<string, string|null>}} post
+ * @returns {string[]}
+ */
+export function changedFilesBetween(pre, post) {
+  const changed = [];
+  for (const f of post.files) {
+    if (!pre.hashes.has(f) || pre.hashes.get(f) !== post.hashes.get(f)) {
+      changed.push(f);
+    }
+  }
+  return changed;
+}
+
+/**
  * Extract target file paths mentioned in a unified diff or file header preview.
  */
 export function extractPreviewFiles(previewText) {
@@ -156,9 +249,11 @@ export function extractPreviewFiles(previewText) {
   }
   const fileHeaderRegex = /(?:\[FILE:\s*|\bFile:\s*|\bmodified:\s*)([^\s\],]+)/gi;
   while ((match = fileHeaderRegex.exec(previewText)) !== null) {
-    if (match[1]) {
-      files.add(match[1].replace(/[.,"' :;)]+$/g, ""));
-    }
+    if (!match[1]) continue;
+    const candidate = match[1].replace(/[.,"' :;)]+$/g, "");
+    // Prose such as "modified: several functions" must not yield the file `several`.
+    if (!/[\\/]/.test(candidate) && !/\.[A-Za-z0-9]{1,10}$/.test(candidate)) continue;
+    files.add(candidate);
   }
   return Array.from(files).filter(Boolean);
 }
@@ -250,12 +345,16 @@ const server = new McpServer({
  */
 export async function dispatchWorkerTask(opts) {
   const config = loadConfig();
-  const workerProvider =
-    opts.provider ||
+  // opts.provider is model-authored, so it may only name a known worker: the id
+  // becomes the executable the generic worker spawns. Operator-configured
+  // fallbacks may opt into an arbitrary CLI.
+  const requested = opts.provider;
+  const configured =
     process.env.KUMO_WORKER_PROVIDER ||
     config.workerProvider ||
     detectProviderForModel(opts.model || modelOverride || config.workerModel);
-  const worker = getWorker(workerProvider);
+  const workerProvider = requested || configured;
+  const worker = getWorker(workerProvider, { allowGeneric: !requested });
 
   const runId = opts.runId || crypto.randomUUID();
   const liveLogPath = getLiveLogPath(workspaceDir, runId);
@@ -268,6 +367,7 @@ export async function dispatchWorkerTask(opts) {
   try {
     return await worker.executeTask({
       ...opts,
+      config,
       runId,
       liveLogPath,
     });
@@ -294,79 +394,198 @@ async function handleExplore({ task, files, model, effort, provider }) {
   return formatResult(result, "worker_explore");
 }
 
-async function handleImplement({ task, files, confirm, previewId, model, effort, provider }) {
+/** How long the bridge waits for a human decision in `interactive` mode. */
+export const APPROVAL_TIMEOUT_MS = 300000;
+const APPROVAL_POLL_MS = 500;
+
+/**
+ * True when a Kumo REPL is listening for approval handshake files.
+ *
+ * The bridge is always a non-TTY child process, so it cannot ask the operator
+ * anything itself. `startCommand` sets this variable in the orchestrator's
+ * environment; without it, `interactive` degrades to `diff-review`.
+ */
+function interactiveApprovalAvailable() {
+  return process.env.KUMO_INTERACTIVE_APPROVAL === "1";
+}
+
+/**
+ * Ask the REPL for a human decision via a file handshake — the bridge and the
+ * REPL are separate processes with no other IPC channel.
+ *
+ * @param {{previewId: string, taskHash: string|null, tool: string, previewText: string}} request
+ * @returns {Promise<{approved: boolean, reason?: string}>}
+ */
+async function awaitHumanApproval(request) {
+  const dir = getApprovalDir(workspaceDir);
+  const requestFile = path.join(dir, `${request.previewId}.json`);
+  const decisionFile = path.join(dir, `${request.previewId}.decision.json`);
+
+  try {
+    atomicWriteJson(requestFile, { ...request, createdAt: Date.now() });
+  } catch (err) {
+    return { approved: false, reason: `could not request approval: ${err.message}` };
+  }
+
+  const deadline = Date.now() + APPROVAL_TIMEOUT_MS;
+  try {
+    while (Date.now() < deadline) {
+      if (fs.existsSync(decisionFile)) {
+        try {
+          const decision = JSON.parse(fs.readFileSync(decisionFile, "utf-8"));
+          return decision?.approved === true
+            ? { approved: true }
+            : { approved: false, reason: "the operator declined the change" };
+        } catch {
+          return { approved: false, reason: "approval decision file was unreadable" };
+        }
+      }
+      await new Promise((r) => setTimeout(r, APPROVAL_POLL_MS));
+    }
+    return {
+      approved: false,
+      reason: `no operator response within ${Math.round(APPROVAL_TIMEOUT_MS / 1000)}s`,
+    };
+  } finally {
+    for (const f of [requestFile, decisionFile]) {
+      try {
+        if (fs.existsSync(f)) fs.unlinkSync(f);
+      } catch {
+        /* best effort */
+      }
+    }
+  }
+}
+
+function errorResult(text) {
+  return { content: [{ type: "text", text: `[ERROR] ${text}` }], isError: true };
+}
+
+/**
+ * Shared implementation for the two write tools.
+ *
+ * `worker_implement` and `worker_test` differ only in tool name, system-prompt
+ * key and confirmation wording; every safety rule below must hold for both, so
+ * they share one code path instead of two copies that drift apart.
+ *
+ * @param {"implement"|"test"} kind
+ * @param {Object} args
+ */
+async function handleWriteTool(kind, { task, files, confirm, previewId, model, effort, provider }) {
+  const toolName = kind === "implement" ? "worker_implement" : "worker_test";
   const config = loadConfig();
   const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
   const activeModel = model || modelOverride || undefined;
   const activeEffort = effort || effortOverride || undefined;
+  const gated = safetyMode === "diff-review" || safetyMode === "interactive";
 
-  // If in diff-review mode and confirmation has not been provided
-  if (safetyMode === "diff-review" && !confirm) {
+  const systemPrompt = () =>
+    getSystemPrompt(kind, {
+      workerModel: activeModel,
+      workerEffort: activeEffort,
+      workspace: workspaceDir,
+    });
+
+  // ── Phase 1: preview only ──
+  if (gated && !confirm) {
     const result = await dispatchWorkerTask({
-      toolName: "worker_implement",
+      toolName,
       prompt: task,
       mode: "read-only",
       previewDiff: true,
-      safetyMode: "diff-review",
+      safetyMode,
       files: files || [],
       workspace: workspaceDir,
       model: activeModel,
       effort: activeEffort,
       provider,
-      systemPrompt: getSystemPrompt("implement", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
+      systemPrompt: systemPrompt(),
     });
 
-    const formatted = formatResult(result, "worker_implement");
+    const formatted = formatResult(result, toolName);
     if (result.ok && result.stdout) {
-      const generatedId = storePendingPreview(result.stdout, { taskHash: hashTask(task), safetyMode, workspaceDir });
+      const generatedId = storePendingPreview(result.stdout, {
+        taskHash: hashTask(task),
+        safetyMode,
+        workspaceDir,
+      });
       if (formatted.content && formatted.content[0]) {
-        formatted.content[0].text += `\n\n---\n[STATUS: PENDING_CONFIRMATION]\nSafety mode is 'diff-review'. The worker generated a proposed change preview without modifying files on disk.\nPreview ID: "${generatedId}"\nTo review and apply these changes, call worker_implement again with confirm: true and previewId: "${generatedId}".`;
+        const what = kind === "implement" ? "a proposed change preview" : "a test proposal";
+        const how =
+          safetyMode === "interactive" && interactiveApprovalAvailable()
+            ? `Safety mode is 'interactive'. Calling ${toolName} again with confirm: true and previewId: "${generatedId}" asks the operator to approve the change before anything is written.`
+            : `Safety mode is '${safetyMode}'. To apply these changes, call ${toolName} again with confirm: true and previewId: "${generatedId}".`;
+        formatted.content[0].text +=
+          `\n\n---\n[STATUS: PENDING_CONFIRMATION]\n` +
+          `The worker generated ${what} without modifying files on disk.\n` +
+          `Preview ID: "${generatedId}"\n${how}`;
       }
     }
     return formatted;
   }
 
-  const preFiles = getGitStatus(workspaceDir);
+  // ── Phase 2: validate the confirmation, then apply ──
   let confirmedPreview = null;
-  if (safetyMode === "diff-review" && confirm) {
+  if (gated && confirm) {
     if (!previewId) {
-      return { content: [{ type: "text", text: "[ERROR] diff-review confirmation requires previewId." }], isError: true };
+      return errorResult(`${safetyMode} confirmation requires previewId.`);
     }
-    const cached = consumePendingPreview(previewId);
+    // Peek, never consume: a failed apply must stay retryable with the same id.
+    const cached = peekPendingPreview(previewId);
     if (!cached) {
-      return { content: [{ type: "text", text: "[ERROR] unknown or expired previewId." }], isError: true };
+      return errorResult("unknown or expired previewId.");
     }
     if (cached.taskHash && cached.taskHash !== hashTask(task)) {
-      return { content: [{ type: "text", text: "[ERROR] previewId does not match this task." }], isError: true };
+      return errorResult("previewId does not match this task.");
     }
     if (cached.workspaceDir && cached.workspaceDir !== workspaceDir) {
-      return { content: [{ type: "text", text: "[ERROR] preview was generated for a different workspace." }], isError: true };
+      return errorResult("preview was generated for a different workspace.");
     }
     confirmedPreview = cached.previewText;
+
+    if (safetyMode === "interactive" && interactiveApprovalAvailable()) {
+      const decision = await awaitHumanApproval({
+        previewId,
+        taskHash: cached.taskHash,
+        tool: toolName,
+        previewText: cached.previewText,
+      });
+      if (!decision.approved) {
+        // The preview stays cached so the call can be retried.
+        return errorResult(`change not applied: ${decision.reason}.`);
+      }
+    }
   }
 
+  const preState = captureWorkspaceState(workspaceDir);
+
   const result = await dispatchWorkerTask({
-    toolName: "worker_implement",
+    toolName,
     prompt: task,
     mode: "workspace-write",
-    safetyMode: "autonomous",
+    // Never widen permissions on confirmation: applying an approved preview must
+    // not run with fewer restrictions than the mode the operator selected.
+    safetyMode,
     files: files || [],
     workspace: workspaceDir,
     model: activeModel,
     effort: activeEffort,
     provider,
-    systemPrompt: getSystemPrompt("implement", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
+    systemPrompt: systemPrompt(),
   });
 
-  const formatted = formatResult(result, "worker_implement");
-  const postFiles = getGitStatus(workspaceDir);
-  const delta = postFiles.filter((f) => !preFiles.includes(f));
+  if (result.ok && previewId) {
+    consumePendingPreview(previewId);
+  }
+
+  const formatted = formatResult(result, toolName);
+  const postState = captureWorkspaceState(workspaceDir);
+  const delta = changedFilesBetween(preState, postState);
   const diffStat = getGitDiffStat(workspaceDir);
 
   if (formatted.content && formatted.content[0]) {
-    const previewText = confirmedPreview || (previewId ? consumePendingPreview(previewId)?.previewText : null);
-    if (previewText) {
-      const fidelityWarning = checkDiffFidelity(previewText, delta);
+    if (confirmedPreview) {
+      const fidelityWarning = checkDiffFidelity(confirmedPreview, delta);
       if (fidelityWarning) {
         formatted.content[0].text += fidelityWarning;
       }
@@ -379,88 +598,12 @@ async function handleImplement({ task, files, confirm, previewId, model, effort,
   return formatted;
 }
 
-async function handleTest({ task, files, confirm, previewId, model, effort, provider }) {
-  const config = loadConfig();
-  const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
-  const activeModel = model || modelOverride || undefined;
-  const activeEffort = effort || effortOverride || undefined;
+async function handleImplement(args) {
+  return handleWriteTool("implement", args);
+}
 
-  if (safetyMode === "diff-review" && !confirm) {
-    const result = await dispatchWorkerTask({
-      toolName: "worker_test",
-      prompt: task,
-      mode: "read-only",
-      previewDiff: true,
-      safetyMode: "diff-review",
-      files: files || [],
-      workspace: workspaceDir,
-      model: activeModel,
-      effort: activeEffort,
-      provider,
-      systemPrompt: getSystemPrompt("test", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
-    });
-
-    const formatted = formatResult(result, "worker_test");
-    if (result.ok && result.stdout) {
-      const generatedId = storePendingPreview(result.stdout, { taskHash: hashTask(task), safetyMode, workspaceDir });
-      if (formatted.content && formatted.content[0]) {
-        formatted.content[0].text += `\n\n---\n[STATUS: PENDING_CONFIRMATION]\nSafety mode is 'diff-review'. The worker generated a test proposal without modifying files on disk.\nPreview ID: "${generatedId}"\nTo execute and apply these tests, call worker_test again with confirm: true and previewId: "${generatedId}".`;
-      }
-    }
-    return formatted;
-  }
-
-  const preFiles = getGitStatus(workspaceDir);
-  let confirmedPreview = null;
-  if (safetyMode === "diff-review" && confirm) {
-    if (!previewId) {
-      return { content: [{ type: "text", text: "[ERROR] diff-review confirmation requires previewId." }], isError: true };
-    }
-    const cached = consumePendingPreview(previewId);
-    if (!cached) {
-      return { content: [{ type: "text", text: "[ERROR] unknown or expired previewId." }], isError: true };
-    }
-    if (cached.taskHash && cached.taskHash !== hashTask(task)) {
-      return { content: [{ type: "text", text: "[ERROR] previewId does not match this task." }], isError: true };
-    }
-    if (cached.workspaceDir && cached.workspaceDir !== workspaceDir) {
-      return { content: [{ type: "text", text: "[ERROR] preview was generated for a different workspace." }], isError: true };
-    }
-    confirmedPreview = cached.previewText;
-  }
-
-  const result = await dispatchWorkerTask({
-    toolName: "worker_test",
-    prompt: task,
-    mode: "workspace-write",
-    safetyMode: "autonomous",
-    files: files || [],
-    workspace: workspaceDir,
-    model: activeModel,
-    effort: activeEffort,
-    provider,
-    systemPrompt: getSystemPrompt("test", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
-  });
-
-  const formatted = formatResult(result, "worker_test");
-  const postFiles = getGitStatus(workspaceDir);
-  const delta = postFiles.filter((f) => !preFiles.includes(f));
-  const diffStat = getGitDiffStat(workspaceDir);
-
-  if (formatted.content && formatted.content[0]) {
-    const previewText = confirmedPreview || (previewId ? consumePendingPreview(previewId)?.previewText : null);
-    if (previewText) {
-      const fidelityWarning = checkDiffFidelity(previewText, delta);
-      if (fidelityWarning) {
-        formatted.content[0].text += fidelityWarning;
-      }
-    }
-    if (delta.length > 0 || diffStat) {
-      formatted.content[0].text += `\n\n[Applied Files & Diff Summary]\nFiles: ${delta.join(", ") || "(none)"}\n${diffStat}`;
-    }
-  }
-
-  return formatted;
+async function handleTest(args) {
+  return handleWriteTool("test", args);
 }
 
 async function handleResearch({ task, files, model, effort, provider }) {
@@ -501,7 +644,9 @@ const taskField = z.string().min(1).max(8000).refine((v) => !/^\s*$/.test(v), "t
 const filesField = z.array(z.string().min(1).max(500).refine((f) => !/[\r\n\0]/.test(f), "newline-free")).max(20).optional();
 const modelField = z.string().max(120).refine((v) => !v.startsWith("-") && !v.includes("\0"), "invalid model").optional();
 const effortField = z.enum(["low", "medium", "high", "max"]).optional();
-const providerField = z.string().max(60).regex(/^[a-z0-9][a-z0-9-]*$/i).optional();
+// Enumerated from the worker registry: an unknown id would become the name of
+// the executable the generic worker spawns.
+const providerField = z.enum(KNOWN_WORKERS).optional();
 
 const schemas = {
   explore: {

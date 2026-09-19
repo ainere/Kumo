@@ -68,7 +68,7 @@ gemini --skip-trust
    ```
    Or in `.codex/config.toml`:
    ```toml
-   [mcp_servers.gemini-bridge.env]
+   [mcp_servers.kumo-bridge.env]
    GEMINI_TIMEOUT_MS = "600000"
    ```
 

@@ -6,18 +6,24 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
+import { kumoHome, atomicWriteJson } from "../config/paths.js";
 
-const CACHE_FILE = path.join(os.homedir(), ".kumo", "quota_cache.json");
+function cacheFile() {
+  return path.join(kumoHome(), "quota_cache.json");
+}
 
 export const QUOTA_TTL_MS = 5 * 60 * 1000;
 
 export function getCachedQuotas() {
   try {
-    if (fs.existsSync(CACHE_FILE)) {
-      const data = JSON.parse(fs.readFileSync(CACHE_FILE, "utf-8"));
+    const file = cacheFile();
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, "utf-8"));
       const updatedAt = typeof data.updatedAt === "number" ? data.updatedAt : null;
-      const stale = !updatedAt || Date.now() - updatedAt > QUOTA_TTL_MS;
+      const now = Date.now();
+      // `now < updatedAt` catches a backwards clock step, which would otherwise
+      // produce a negative age and pin the cache as fresh forever.
+      const stale = !updatedAt || now < updatedAt || now - updatedAt > QUOTA_TTL_MS;
       return { codex: data.codex ?? null, agy: data.agy ?? null, updatedAt, stale };
     }
   } catch {
@@ -30,14 +36,11 @@ export function getCachedQuotas() {
 
 export function saveCachedQuotas(codexLimits, agyUsage) {
   try {
-    const dir = path.dirname(CACHE_FILE);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    const file = cacheFile();
     let old = {};
     try {
-      if (fs.existsSync(CACHE_FILE)) {
-        old = JSON.parse(fs.readFileSync(CACHE_FILE, "utf-8"));
+      if (fs.existsSync(file)) {
+        old = JSON.parse(fs.readFileSync(file, "utf-8"));
       }
     } catch {
       old = {};
@@ -47,9 +50,7 @@ export function saveCachedQuotas(codexLimits, agyUsage) {
       agy: agyUsage ?? old.agy ?? null,
       updatedAt: codexLimits || agyUsage ? Date.now() : old.updatedAt || Date.now(),
     };
-    const tmp = `${CACHE_FILE}.tmp.${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify(next, null, 2), "utf-8");
-    fs.renameSync(tmp, CACHE_FILE);
+    atomicWriteJson(file, next);
   } catch {
     /* ignore write errors */
   }

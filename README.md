@@ -9,7 +9,7 @@
 
 **Kumo** is a modular CLI application that pairs frontier reasoning models with high-throughput execution workers across independent AI ecosystems.
 
-It coordinates frontier models across **Anthropic Claude** (Claude Opus 4.6 Thinking, Claude Sonnet 4.6), **OpenAI ChatGPT / Codex** (ChatGPT 6 Astra, Sol, Terra, Luna, GPT-5.5), and **Google Gemini** (Gemini 3.8 / 3.7 Flash & Pro) — allowing **any of 13 providers to serve as Orchestrator or Worker** (e.g. Claude Opus Orchestrator + Codex Worker, or Codex Orchestrator + Gemini Worker) running on your existing subscriptions by default, with optional direct API usage (metered env-var keys, never stored).
+It coordinates frontier models across **Anthropic Claude** (Claude Opus 4.6 Thinking, Claude Sonnet 4.6), **OpenAI ChatGPT / Codex** (ChatGPT 6 Astra, Sol, Terra, Luna, GPT-5.5), and **Google Gemini** (Gemini 3.8 / 3.7 / 3.6 Flash, Gemini 3.1 Pro) — allowing **any of 13 providers to serve as Orchestrator or Worker** (e.g. Claude Opus Orchestrator + Codex Worker, or Codex Orchestrator + Gemini Worker) running on your existing subscriptions by default, with optional direct API usage (metered env-var keys, never stored).
 
 ---
 
@@ -131,18 +131,19 @@ The orchestrator is forbidden from performing delegated tasks in-thread; actual 
 
 ## Safety Modes & Guardrails
 
-Kumo provides two headless safety modes for worker execution (`kumo config set safetyMode <mode>` or `KUMO_SAFETY_MODE`):
+Kumo provides three safety modes for worker execution (`kumo config set safetyMode <mode>` or `KUMO_SAFETY_MODE`), governing both `worker_implement` and `worker_test`:
 
 | Safety Mode | Behavior | Use Case |
 |---|---|---|
-| `autonomous` (Default) | Automatically applies approved edits via `worker_implement` and appends verified post-execution `[Applied Files & Diff Summary]` to tool output. | Fast headless execution, prototyping, internal repos. |
-| `diff-review` | Two-phase preview gate: Phase 1 generates a proposed unified diff preview without touching files (`confirm: false`). Phase 2 applies changes when explicitly approved (`confirm: true`), running a diff-fidelity sanity check. | Critical client work, high-stakes codebases, NDA projects. |
+| `autonomous` (Default) | Automatically applies file changes with no approval gate, then appends verified post-execution `[Applied Files & Diff Summary]` to tool output. | Fast headless execution, prototyping, internal repos. |
+| `diff-review` | Two-phase programmatic preview gate: Phase 1 generates a proposed unified diff preview without modifying files (`confirm: false`). Phase 2 applies changes only when the *calling orchestrator model* programmatically re-invokes with `confirm: true` and a matching `previewId`, backed by diff-fidelity verification. | Multi-turn programmatic validation, headless CI pipelines. |
+| `interactive` | Two-phase human approval gate: generates a proposed unified diff preview (Phase 1) and prompts a human operator on the interactive TTY in the `kumo` REPL (`Apply changes? [y/N/d]`) before changes apply (Phase 2). In non-TTY environments, behaves identically to `diff-review`. | Critical client work, production codebases, high-stakes manual oversight. |
 
 ---
 
 ## Features & Capabilities
 
-- **Subscriptions by Default**: Connects directly to your logged-in consumer subscriptions across 9 CLI providers (`codex, antigravity, claude, opencode, commandcode, copilot, cursor, gemini-cli, ollama`) — zero keys on disk.
+- **Subscriptions by Default**: Connects directly to your logged-in consumer subscriptions across 9 CLI providers (`codex, antigravity, claude, opencode, commandcode, copilot, cursor, gemini-cli, ollama`) — zero keys on disk. Kumo never persists your keys. Only the API keys relevant to the selected provider are forwarded to the provider CLIs Kumo launches; other secret-looking environment variables are stripped from the child environment.
 - **Direct API (optional, env keys never stored)**: `openai-api (OPENAI_API_KEY), anthropic-api (ANTHROPIC_API_KEY), gemini-api (GEMINI_API_KEY), compat-api (COMPAT_BASE_URL + optional COMPAT_API_KEY)` — per-role or per-call (`provider: "anthropic-api"`), mixed with subscriptions; non-secret base-URL overrides via `kumo config set <name>BaseUrl`.
 - **Multi-Provider Architecture**: Frontier reasoning orchestrator breaks down complex architecture and dispatches bounded execution tasks to high-throughput workers via local MCP stdio bridge.
 - **Dynamic Model Tracking & Role Synchronization**: Changing active models via `/model` or presets immediately updates worker prompts and subagent instructions (`.codex/agents/reviewer.toml`), ensuring each role dynamically reflects which model is operating.
@@ -215,9 +216,9 @@ kumo effort worker low
 kumo effort worker medium
 
 # Apply a preset profile
-kumo preset default
-kumo preset opus-astra
-kumo preset opus-flash
+kumo model use default
+kumo model use opus-astra
+kumo model use opus-flash
 kumo model use pro
 kumo model use test
 
@@ -263,24 +264,60 @@ Inside an interactive Kumo session (`kumo ›`), manage sessions, workspaces, mo
 |---|---|
 | `kumo` | Launch interactive session in dedicated window |
 | `kumo --here` | Launch interactive session directly in current terminal |
-| `kumo -d <path>` | Launch interactive session in a specified directory |
-| `kumo run "<prompt>"` | Execute a single task non-interactively across providers |
-| `kumo status` | View live account rate limits, usage quotas, and provider health |
+| `kumo -d, --dir <path>` | Launch interactive session in a specified directory |
+| `kumo start [-d, --dir <path>] [--here]` | Start an interactive orchestration session in the target workspace |
+| `kumo run "<prompt>" [-d, --dir <path>]` | Execute a single task non-interactively across providers |
+| `kumo status [-d, --dir <path>]` | View live account rate limits, usage quotas, and provider health |
+| `kumo quota [-d, --dir <path>]` | Display live orchestrator and worker quotas (alias for `status`) |
+| `kumo usage [-d, --dir <path>]` | Display live orchestrator and worker quotas (alias for `status`) |
 | `kumo model` | Open interactive arrow-key selector (`/model` in session) |
 | `kumo model list` | Print complete list of available models and presets |
 | `kumo model orchestrator <model> [effort] [provider]` | Configure orchestrator model, effort, and explicit provider (13 ids) |
 | `kumo model worker <model> [effort] [provider]` | Configure worker model, effort, and explicit provider (13 ids) |
+| `kumo model use <preset>` | Apply configuration preset (`default`, `pro`, `speed`, `opus-astra`, `opus-flash`, `gemini-3.7`, `test`) |
 | `kumo effort <level>` | Set orchestrator reasoning effort (`low`, `medium`, `high`, `max`) |
 | `kumo effort worker <level>` | Set worker reasoning effort (`low`, `medium`, `high`) |
-| `kumo model use <preset>` | Apply configuration preset (`default`, `pro`, `speed`, `gemini-3.7`, `test`) |
-| `kumo graph` | Inspect Graphify knowledge graph freshness and lifecycle status |
+| `kumo reasoning [target] [value]` | Inspect or set reasoning effort for orchestrator or worker (alias for `effort`) |
+| `kumo graph [-d, --dir <path>]` | Inspect Graphify knowledge graph freshness and lifecycle status |
 | `kumo graph --check` | Verify graph freshness and exit with code 1 if stale (CI-safe) |
 | `kumo graph --refresh` | View instructions to regenerate the knowledge graph |
+| `kumo graph --json` | Output Graphify knowledge graph status as JSON |
 | `kumo doctor` | Perform diagnostic check on system environment, logins, and direct-API key presence |
 | `kumo config list` | View global configuration keys and values (`~/.kumo/config.json`) |
+| `kumo config get <key>` | View the value of a specific configuration property |
 | `kumo config set <key> <val>` | Update a specific configuration property (incl. `<name>BaseUrl` overrides) |
 | `kumo config reset` | Reset global configuration to defaults |
-| `kumo init` | (Optional) Initialize repository rule files (`AGENTS.md`, `GEMINI.md`) |
+| `kumo init [-d, --dir <path>]` | (Optional) Initialize repository rule files (`AGENTS.md`, `GEMINI.md`) |
+| `kumo init --dry-run` | Preview rule files (`AGENTS.md`, `GEMINI.md`) without writing to disk |
+| `kumo banner` | Display the KUMO Cloud Cumulus banner |
+| `kumo version` | Print the Kumo version |
+
+---
+
+## Environment Variables
+
+Kumo inspects the following environment variables to configure workspaces, execution parameters, endpoints, and runtime behavior:
+
+| Variable | Read At | Purpose |
+|---|---|---|
+| `KUMO_WORKSPACE` | `src/bridge/server.js`, `src/bridge/agy-runner.js` | Target workspace directory for the MCP bridge |
+| `ORCHESTRATOR_WORKSPACE` | `src/bridge/server.js`, `src/bridge/agy-runner.js` | Legacy fallback for `KUMO_WORKSPACE` |
+| `KUMO_HOME` | `src/config/paths.js` | Overrides the `~/.kumo` state directory (used for testing and isolated sessions) |
+| `KUMO_NO_SYNC` | `src/config/sync.js` | Set to `1` to disable provider config synchronization (`syncAgentConfigs` no-op) |
+| `KUMO_SAFETY_MODE` | `src/bridge/server.js`, `src/bridge/agy-runner.js` | Override safety mode (`autonomous`, `diff-review`, `interactive`) |
+| `KUMO_HERE` | `src/commands/start.js` | Run interactive session directly in current terminal (equivalent to `--here`) |
+| `KUMO_DEBUG` | `src/providers/orchestrators/agy-client.js`, `src/providers/orchestrators/codex-client.js` | Enable verbose client notification and tool-call logging |
+| `KUMO_TRUST_WORKSPACE` | `src/bridge/agy-runner.js` | Set to `false` to stop passing `--skip-trust` to worker subprocesses |
+| `KUMO_SKIP_TRUST` | `src/bridge/agy-runner.js` | Alias for `KUMO_TRUST_WORKSPACE` |
+| `KUMO_WORKER_PROVIDER` | `src/bridge/server.js` | Per-environment worker provider override (takes precedence over `config.workerProvider`) |
+| `KUMO_SYNC_GLOBAL_GEMINI` | `src/config/sync.js` | Set to `1` to opt in to writing global `~/.gemini/config/mcp_config.json` |
+| `KUMO_OBSIDIAN_VAULT` | `src/config/settings.js` | Absolute path to your Obsidian knowledge vault |
+| `GEMINI_MODEL` | `src/bridge/server.js`, `src/bridge/agy-runner.js` | Override worker model for execution worker dispatches |
+| `GEMINI_EFFORT` / `WORKER_EFFORT` | `src/bridge/agy-runner.js` | Override worker reasoning effort (`low`, `medium`, `high`) |
+| `GEMINI_TIMEOUT_MS` | `src/bridge/agy-runner.js` | Execution worker subprocess timeout in milliseconds (default: 300000 / 5m) |
+| `OPENAI_BASE_URL` | `src/providers/api/api-transport.js` | Endpoint override for `openai-api` provider |
+| `ANTHROPIC_BASE_URL` | `src/providers/api/api-transport.js` | Endpoint override for `anthropic-api` provider |
+| `GEMINI_BASE_URL` / `GOOGLE_GENERATIVE_AI_BASE_URL` | `src/providers/api/api-transport.js` | Endpoint override for `gemini-api` provider |
 
 ---
 

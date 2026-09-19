@@ -36,23 +36,23 @@ The **Model Context Protocol (MCP)** provides an open, standardized RPC protocol
 ┌────────────────────────────────────────────────────────┐
 │ Execution Worker (any of 13 providers)                 │
 │ - Model: Dynamic (e.g. Gemini 3.8 Flash, Claude Opus)  │
-│ - Sandbox: read-only | workspace-write (CLI workers)   │
+│ - Mode: read-only | workspace-write (CLI workers)       │
 │ - Subscription CLI login, or direct-API env key        │
 └────────────────────────────────────────────────────────┘
 ```
 ### 1. Subscription-First Authentication (Direct API Optional)
 - Subscription CLIs need no API keys in files or network headers: orchestrator relies on `codex login`, worker on `agy auth login` (or Google account credentials).
-- Optional direct-API providers (`openai-api`, `anthropic-api`, `gemini-api`, `compat-api`) take keys from env vars only (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `COMPAT_API_KEY` optional + `COMPAT_BASE_URL`); keys are never written to disk, cache, logs, or `~/.kumo/*`.
+- Optional direct-API providers (`openai-api`, `anthropic-api`, `gemini-api`, `compat-api`) take keys from env vars only (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `COMPAT_API_KEY` optional + `COMPAT_BASE_URL`). Kumo never persists your keys. Only the API keys relevant to the selected provider are forwarded to the provider CLIs Kumo launches; other secret-looking environment variables are stripped from the child environment.
 - The subprocess inherits the user's OS user session and profile environment.
 
-### 2. Sandbox Mode Enforcement
+### 2. Execution Permissions & Safety Modes
 - **Read-Only Tools (`worker_explore`, `worker_research`, `worker_review`)**:
-  - Spawned with `--sandbox read-only` (or `--approval-mode plan`).
-  - Ensures the worker cannot accidentally delete or alter files when merely searching or checking facts.
+  - No permission, sandbox, or approval flags are passed to the CLI subprocess.
+  - Read-only behavior is enforced solely by prompt wording and is strictly **advisory**, not a process-level or OS sandbox. Workers are instructed not to edit files, but the underlying CLI process runs with standard filesystem access.
 - **Write-Enabled Tools (`worker_implement`, `worker_test`)**:
-  - Spawned with `--sandbox workspace-write` (or `--approval-mode yolo`).
-  - Allows targeted code generation and test execution within the workspace boundaries.
-
+  - When running in write mode with `safetyMode: "autonomous"`, Kumo passes `-y --approval-mode yolo` to the Gemini CLI and `--dangerously-skip-permissions --mode accept-edits` to `agy`.
+  - When `trustWorkspace` is enabled (default `true`), `--skip-trust` is passed and `GEMINI_CLI_TRUST_WORKSPACE=true` is set in the child environment.
+  - Under `safetyMode: "diff-review"`, write tools run in diff-preview mode and require the calling orchestrator model to explicitly confirm with `confirm: true` and a matching `previewId`. Under `safetyMode: "interactive"`, a human approval prompt on the REPL TTY gates application.
 ### 3. Rate Limit Optimization for Frontier Models
 - Frontier orchestrators enforce message caps per rolling window.
 - In traditional single-provider workflows, every file read, symbol search, and small code iteration consumes valuable orchestrator turns.
