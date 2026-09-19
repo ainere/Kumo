@@ -38,6 +38,9 @@ export function isWindowsBatch(bin, platform = process.platform) {
  * Safe chars pass through; otherwise double-quote, double inner quotes,
  * and neutralize `%VAR%` expansion. `& | < > ^` are inert inside quotes.
  *
+ * `~` is in the safe set: it is inert to cmd.exe and appears in every 8.3
+ * short path (`C:\Users\RUNNER~1\...`), so quoting it buys nothing.
+ *
  * CR/LF cannot be quoted at all — `cmd.exe` treats a newline as a command
  * separator regardless of quoting, so such an argument is rejected outright.
  *
@@ -49,12 +52,21 @@ export function quoteCmdArg(s) {
   if (/[\r\n]/.test(str)) {
     throw new Error("Argument contains a newline and cannot be passed through cmd.exe safely");
   }
-  if (/^[A-Za-z0-9_+=:;,.\\/@-]+$/.test(str)) return str;
+  if (/^[A-Za-z0-9_+=:;,.~\\/@-]+$/.test(str)) return str;
   return `"` + str.replace(/"/g, '""').replace(/%/g, "%%") + `"`;
 }
 
 /**
  * Prepares invocation arguments and options for child_process.spawn.
+ *
+ * On Windows the batch path hands cmd.exe a single, already-quoted command
+ * line. Node would otherwise apply MSVCRT argument escaping to it and turn our
+ * `"` into `\"`, which cmd.exe does not understand — the symptom is
+ * `'\"C:\path\tool.cmd\"' is not recognized as an internal or external
+ * command`, hit by any binary path containing a space, `(`, or other character
+ * that forces quoting. `windowsVerbatimArguments` passes the line through
+ * untouched, and the outer quote pair is the wrapper `/s` strips before
+ * parsing. This mirrors what Node itself does for `shell: true`.
  *
  * @param {string} bin - Path or command name to execute
  * @param {string[]} [args=[]] - Command arguments
@@ -67,12 +79,14 @@ export function prepareSpawn(bin, args = [], options = {}, platform = process.pl
 
   if (isWindowsBatch(bin, platform)) {
     const comspec = process.env.ComSpec || "cmd.exe";
+    const commandLine = [bin, ...args].map(quoteCmdArg).join(" ");
     return {
       file: comspec,
-      args: ["/d", "/s", "/c", [bin, ...args].map(quoteCmdArg).join(" ")],
+      args: ["/d", "/s", "/c", `"${commandLine}"`],
       options: {
         ...cleanOptions,
         shell: false,
+        windowsVerbatimArguments: true,
       },
     };
   }
