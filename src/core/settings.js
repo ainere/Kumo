@@ -9,7 +9,9 @@
  * another.
  */
 
+import { isDeepStrictEqual } from "node:util";
 import { normalizeConfigValue } from "../config/settings.js";
+import { emptyRoles } from "../config/roles.js";
 
 /** @typedef {import("./events.js").SessionSettings} SessionSettings */
 
@@ -24,6 +26,9 @@ export const SESSION_SETTING_KEYS = /** @type {const} */ ([
   "safetyMode",
   "timeoutMs",
   "turnTimeoutMs",
+  // Per-role model assignments and custom roles. A patch replaces the whole
+  // value; roles.js has helpers that build the next one.
+  "roles",
 ]);
 
 /**
@@ -36,6 +41,8 @@ export function snapshotSettings(config) {
   /** @type {Record<string, any>} */
   const out = {};
   for (const key of SESSION_SETTING_KEYS) out[key] = config[key];
+  // A copy: a session's roles must not alias the config object it came from.
+  out.roles = config.roles ? structuredClone(config.roles) : emptyRoles();
   return /** @type {SessionSettings} */ (out);
 }
 
@@ -57,7 +64,7 @@ export function applySettingsPatch(current, patch) {
       throw new Error(`'${key}' is not a session setting. Allowed: ${SESSION_SETTING_KEYS.join(", ")}`);
     }
     const value = normalizeConfigValue(key, raw);
-    if (/** @type {Record<string, unknown>} */ (next)[key] !== value) {
+    if (!isDeepStrictEqual(/** @type {Record<string, unknown>} */ (next)[key], value)) {
       /** @type {Record<string, unknown>} */ (next)[key] = value;
       changed.push(key);
     }

@@ -20,6 +20,30 @@ const base = { sessionId: z.string(), at: z.number() };
 /** A quota snapshot as the orchestrator client reports it (see QuotaMonitor). */
 const limits = z.record(z.string(), z.unknown()).nullable();
 
+const RoleAssignmentSchema = z.object({ provider: z.string(), model: z.string(), effort: z.string().optional() });
+
+const CustomRoleSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  prompt: z.string(),
+  access: z.enum(["read", "write"]),
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  effort: z.string().optional(),
+});
+
+/** Per-role assignments (a missing role runs on the shared worker) and custom roles; see src/config/roles.js. */
+export const RolesSchema = z.object({
+  scout: RoleAssignmentSchema.optional(),
+  builder: RoleAssignmentSchema.optional(),
+  tester: RoleAssignmentSchema.optional(),
+  researcher: RoleAssignmentSchema.optional(),
+  reviewer: RoleAssignmentSchema.optional(),
+  designer: RoleAssignmentSchema.optional(),
+  custom: z.array(CustomRoleSchema),
+});
+
 export const SessionSettingsSchema = z.object({
   orchestratorProvider: z.string(),
   orchestratorModel: z.string(),
@@ -30,6 +54,7 @@ export const SessionSettingsSchema = z.object({
   safetyMode: z.string(),
   timeoutMs: z.number(),
   turnTimeoutMs: z.number(),
+  roles: RolesSchema,
 });
 
 export const EventSchemas = {
@@ -85,6 +110,8 @@ export const EventSchemas = {
     turnId: z.string().nullable(),
     toolId: z.string(),
     name: z.string(),
+    // The role the tool belongs to (scout, builder, …, or a custom role's id); null for other tools.
+    role: z.string().nullable(),
     task: z.string(),
     model: z.string().nullable(),
     effort: z.string().nullable(),

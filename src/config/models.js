@@ -14,6 +14,68 @@
 
 /** @typedef {{ id: string, name: string, desc?: string, alias?: string }} ModelEntry */
 
+/** Provider ids accepted for the lead, the shared worker and each role. */
+export const ALLOWED_PROVIDERS = [
+  "codex",
+  "antigravity",
+  "claude",
+  "opencode",
+  "commandcode",
+  "copilot",
+  "cursor",
+  "gemini-cli",
+  "ollama",
+  "openai-api",
+  "anthropic-api",
+  "gemini-api",
+  "compat-api",
+];
+
+/**
+ * Fold provider aliases onto their canonical id. `gemini` and `agy` are both
+ * spellings of the Antigravity CLI provider.
+ *
+ * @param {string} id
+ * @returns {string}
+ */
+export function canonicalizeProvider(id) {
+  const norm = String(id ?? "").toLowerCase().trim();
+  if (norm === "gemini" || norm === "agy") return "antigravity";
+  return norm;
+}
+
+/** How each provider is named to people (tool descriptions, `kumo role list`). */
+const PROVIDER_NAMES = {
+  codex: "Codex",
+  antigravity: "Antigravity",
+  claude: "Claude Code",
+  opencode: "OpenCode",
+  commandcode: "CommandCode",
+  copilot: "Copilot CLI",
+  cursor: "Cursor",
+  "gemini-cli": "Gemini CLI",
+  ollama: "Ollama",
+  "openai-api": "OpenAI API",
+  "anthropic-api": "Anthropic API",
+  "gemini-api": "Gemini API",
+  "compat-api": "OpenAI-compatible API",
+};
+
+/**
+ * @param {string} provider
+ * @returns {string}
+ */
+export function providerDisplayName(provider) {
+  const id = canonicalizeProvider(provider);
+  return PROVIDER_NAMES[id] || id;
+}
+
+/**
+ * Model ids are interpolated raw into generated TOML and passed to provider
+ * CLIs, so they are limited to this alphabet.
+ */
+export const MODEL_ID_PATTERN = /^[A-Za-z0-9._-]{1,120}$/;
+
 /**
  * Claude models, current generation first. Claude Code takes the full id or
  * an alias (`fable`, `opus`, `sonnet`, `haiku` — each the latest of its line).
@@ -199,6 +261,37 @@ export function providerOffersModel(provider, model) {
   const list = MODEL_CATALOG[provider];
   if (!list) return true; // an operator-configured generic CLI
   return list.some((m) => m.id === model);
+}
+
+/**
+ * The provider whose catalog lists `model` when `provider` keeps a catalog
+ * that does not; null when `provider` may well run it. Catches a model id
+ * handed to the wrong CLI (a Claude id on Codex), which fails only at the
+ * first call, without refusing ids that are merely newer than the catalog.
+ *
+ * @param {string} provider
+ * @param {string} model
+ * @returns {string|null}
+ */
+export function modelBelongsElsewhere(provider, model) {
+  if (providerOffersModel(provider, model)) return null;
+  for (const [other, list] of Object.entries(MODEL_CATALOG)) {
+    if (other !== provider && list.some((m) => m.id === model)) return other;
+  }
+  return null;
+}
+
+/**
+ * A model's catalog name ("Claude Sonnet 5.5"), or its id when uncatalogued.
+ *
+ * @param {string} model
+ * @param {string|null} [provider]
+ * @returns {string}
+ */
+export function modelDisplayName(model, provider = null) {
+  const own = provider ? MODEL_CATALOG[canonicalizeProvider(provider)] : null;
+  const entry = own?.find((m) => m.id === model) || allKnownModels().find((m) => m.id === model);
+  return entry ? entry.name : String(model || "");
 }
 
 /**

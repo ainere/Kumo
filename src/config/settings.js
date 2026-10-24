@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { isDeepStrictEqual } from "node:util";
 import {
   kumoHome,
   configFile,
@@ -14,41 +15,22 @@ import {
   quarantineCorruptFile,
 } from "./paths.js";
 import { BANNER_DESIGNS } from "../utils/ui.js";
-import { EFFORT_LEVELS, LEGACY_MODEL_IDS } from "./models.js";
+import {
+  ALLOWED_PROVIDERS,
+  EFFORT_LEVELS,
+  LEGACY_MODEL_IDS,
+  MODEL_ID_PATTERN,
+  canonicalizeProvider,
+} from "./models.js";
+import { emptyRoles, normalizeRoles, sanitizeRoles } from "./roles.js";
 
 // Legacy path for seamless migration. Deliberately anchored to the real home
 // directory: the migration must not follow KUMO_HOME.
 const LEGACY_FILE = path.join(os.homedir(), ".orchestrator", "config.json");
 
-/** Provider ids accepted for `orchestratorProvider` / `workerProvider`. */
-export const ALLOWED_PROVIDERS = [
-  "codex",
-  "antigravity",
-  "claude",
-  "opencode",
-  "commandcode",
-  "copilot",
-  "cursor",
-  "gemini-cli",
-  "ollama",
-  "openai-api",
-  "anthropic-api",
-  "gemini-api",
-  "compat-api",
-];
-
-/**
- * Fold provider aliases onto their canonical id. `gemini` and `agy` are both
- * spellings of the Antigravity CLI provider.
- *
- * @param {string} id
- * @returns {string}
- */
-export function canonicalizeProvider(id) {
-  const norm = String(id ?? "").toLowerCase().trim();
-  if (norm === "gemini" || norm === "agy") return "antigravity";
-  return norm;
-}
+// The provider list and its aliases live in the catalog (the role
+// validation reads them there); re-exported for existing importers.
+export { ALLOWED_PROVIDERS, canonicalizeProvider };
 
 /** Safety modes understood by the MCP bridge's write tools. */
 export const SAFETY_MODES = ["autonomous", "diff-review", "interactive"];
@@ -96,6 +78,9 @@ export const DEFAULT_CONFIG = {
   anthropicBaseUrl: "",
   geminiBaseUrl: "",
   compatBaseUrl: "",
+  // Per-role model assignments and custom roles (see roles.js). Empty: every
+  // role runs on the worker above, as before roles existed.
+  roles: emptyRoles(),
 };
 
 /**
@@ -111,9 +96,26 @@ export function getObsidianVaultPath(config = null) {
 }
 
 /**
+ * The `claude` preset's roles, after the design-build split: Opus designs and
+ * reviews (and leads), Sonnet builds and tests, Haiku scouts and researches.
+ */
+const CLAUDE_ROLES = {
+  designer: { provider: "claude", model: "claude-opus-5-5", effort: "medium" },
+  reviewer: { provider: "claude", model: "claude-opus-5-5", effort: "medium" },
+  builder: { provider: "claude", model: "claude-sonnet-5-5", effort: "medium" },
+  tester: { provider: "claude", model: "claude-sonnet-5-5", effort: "low" },
+  scout: { provider: "claude", model: "claude-haiku-5-5", effort: "low" },
+  researcher: { provider: "claude", model: "claude-haiku-5-5", effort: "low" },
+};
+
+/**
  * Named model pairings. Each names its provider explicitly: Claude models run
  * through Claude Code (`claude`) or through Antigravity, and the preset says
  * which. Models checked against Claude Code 2.1.307 and agy 1.2.7 (2026-10).
+ *
+ * A preset's `roles` lists the built-in roles it assigns; applying it puts
+ * every other built-in role back on the shared worker and keeps the user's
+ * custom roles (see presetConfig).
  */
 export const PRESETS = {
   default: {
@@ -153,8 +155,9 @@ export const PRESETS = {
     },
   },
   claude: {
-    name: "Opus 5.5 + Haiku 5.5 (Claude Code)",
-    description: "Everything on your Claude subscription, through the official Claude Code CLI",
+    name: "Opus 5.5 lead + Sonnet/Haiku roles (Claude Code)",
+    description:
+      "Opus leads, designs and reviews; Sonnet builds and tests; Haiku scouts and researches. All on your Claude subscription",
     config: {
       orchestratorProvider: "claude",
       orchestratorModel: "claude-opus-5-5",
@@ -162,6 +165,7 @@ export const PRESETS = {
       workerProvider: "claude",
       workerModel: "claude-haiku-5-5",
       workerEffort: "low",
+      roles: CLAUDE_ROLES,
     },
   },
   "claude-sonnet": {
@@ -242,6 +246,14 @@ function ensureConfigDir() {
   ensureDir(kumoHome());
 }
 
+/** A fresh copy of the defaults: nothing nested is shared with DEFAULT_CONFIG. */
+function defaultConfig() {
+  return { ...DEFAULT_CONFIG, roles: emptyRoles() };
+}
+
+/** Problems already reported, so a config read on every call warns once. */
+const reportedRoleProblems = new Set();
+
 /**
  * Load settings from <KUMO_HOME>/config.json, merging with defaults.
  * Automatically migrates from ~/.orchestrator/config.json if present.
@@ -261,7 +273,7 @@ export function loadConfig() {
 
   if (!fs.existsSync(file)) {
     saveConfig(DEFAULT_CONFIG);
-    return { ...DEFAULT_CONFIG };
+    return defaultConfig();
   }
 
   let parsed;
@@ -275,7 +287,7 @@ export function loadConfig() {
         ? `[Warning] Could not parse ${file}; moved to ${moved} and using defaults.`
         : `[Warning] Could not parse ${file}, using defaults.`
     );
-    return { ...DEFAULT_CONFIG };
+    return defaultConfig();
   }
 
   const merged = { ...DEFAULT_CONFIG, ...parsed };
@@ -287,6 +299,15 @@ export function loadConfig() {
   // are read as the model they meant; the file itself is left as it is.
   for (const key of ["orchestratorModel", "workerModel"]) {
     if (LEGACY_MODEL_IDS[merged[key]]) merged[key] = LEGACY_MODEL_IDS[merged[key]];
+  }
+  // A hand-edited role that does not validate is left out (and reported)
+  // rather than failing every command; the other roles still apply.
+  const { roles, problems } = sanitizeRoles(merged.roles);
+  merged.roles = roles;
+  for (const problem of problems) {
+    if (reportedRoleProblems.has(problem)) continue;
+    reportedRoleProblems.add(problem);
+    console.warn(`[Warning] Ignoring part of 'roles' in ${file}: ${problem}`);
   }
   return merged;
 }
@@ -363,7 +384,7 @@ export function normalizeConfigValue(key, value) {
   } else if (key === "orchestratorModel" || key === "workerModel") {
     // Interpolated raw into generated TOML and passed to provider CLIs.
     const val = String(value ?? "").trim();
-    if (!/^[A-Za-z0-9._-]{1,120}$/.test(val)) {
+    if (!MODEL_ID_PATTERN.test(val)) {
       throw new Error(
         `Value for '${key}' must be 1-120 chars of letters, digits, '.', '_' or '-'`
       );
@@ -418,20 +439,49 @@ export function normalizeConfigValue(key, value) {
       );
     }
     value = val;
+  } else if (key === "roles") {
+    value = normalizeRoles(value);
   }
   return value;
+}
+
+/**
+ * The settings a preset applies, given the roles in use now: its built-in
+ * role assignments replace the current ones (a role it does not name goes
+ * back to the shared worker), and custom roles are kept — they are the
+ * user's own, not part of any pairing.
+ *
+ * @param {string} presetName
+ * @param {{ custom?: object[] }} [currentRoles]
+ * @returns {Record<string, any>}
+ */
+export function presetConfig(presetName, currentRoles) {
+  const preset = PRESETS[presetName];
+  if (!preset) {
+    throw new Error(`Unknown preset '${presetName}'. Available: ${Object.keys(PRESETS).join(", ")}`);
+  }
+  const custom = Array.isArray(currentRoles?.custom) ? currentRoles.custom : [];
+  return { ...preset.config, roles: structuredClone({ ...(preset.config.roles || {}), custom }) };
+}
+
+/**
+ * Whether `settings` are what `presetName` would set.
+ *
+ * @param {string} presetName
+ * @param {Record<string, any>} settings
+ */
+export function presetMatches(presetName, settings) {
+  return Object.entries(presetConfig(presetName, settings.roles)).every(([key, value]) =>
+    isDeepStrictEqual(settings[key], value)
+  );
 }
 
 /**
  * Apply a named preset.
  */
 export function applyPreset(presetName) {
-  const preset = PRESETS[presetName];
-  if (!preset) {
-    throw new Error(`Unknown preset '${presetName}'. Available: ${Object.keys(PRESETS).join(", ")}`);
-  }
   const current = loadConfig();
-  const updated = { ...current, ...preset.config };
+  const updated = { ...current, ...presetConfig(presetName, current.roles) };
   saveConfig(updated);
   return updated;
 }
@@ -441,7 +491,7 @@ export function applyPreset(presetName) {
  */
 export function resetConfig() {
   saveConfig(DEFAULT_CONFIG);
-  return { ...DEFAULT_CONFIG };
+  return defaultConfig();
 }
 
 export function getConfigPath() {

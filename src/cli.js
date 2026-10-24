@@ -13,8 +13,22 @@ import { modelCommand, effortCommand } from "./commands/model.js";
 import { bannerCommand } from "./commands/banner.js";
 import { statusCommand } from "./commands/status.js";
 import { graphCommand } from "./commands/graph.js";
+import { roleListCommand, roleSetCommand, roleAddCommand, roleRemoveCommand } from "./commands/role.js";
+import { badge } from "./utils/ui.js";
 
 export { VERSION };
+
+/** Run a command that throws on bad input: print the message and exit 1. */
+function failing(fn) {
+  return async (...args) => {
+    try {
+      await fn(...args);
+    } catch (err) {
+      console.error(`${badge.fail} ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
+  };
+}
 
 export function createCli() {
   const program = new Command();
@@ -89,6 +103,34 @@ export function createCli() {
     .action(async (action, target, value, extra) => {
       await modelCommand(action, target, value, extra);
     });
+
+  // Role command: which model runs the lead and each worker role
+  const role = program
+    .command("role")
+    .description("Show or change which model runs the lead and each role (scout, builder, tester, researcher, reviewer, designer, custom)");
+  role
+    .command("list", { isDefault: true })
+    .description("List the lead, every role, its tool and the model it runs on")
+    .action(failing(() => roleListCommand()));
+  role
+    .command("set <role> <model> [effort] [provider]")
+    .description("Assign a model to a role ('lead' sets the orchestrator; model 'default' puts a role back on the shared worker)")
+    .action(failing((name, model, effort, provider) => roleSetCommand(name, model, effort, provider)));
+  role
+    .command("add <id>")
+    .description("Add a custom role, exposed to the lead as the tool worker_<id>")
+    .requiredOption("--prompt-file <file>", "File with the role's instructions (its system prompt)")
+    .option("--access <access>", "read or write", "read")
+    .option("--model <model>", "Model the role runs on (default: the shared worker)")
+    .option("--effort <effort>", "Reasoning effort for that model")
+    .option("--provider <provider>", "Provider for that model (default: inferred from the model)")
+    .option("--name <name>", "Display name")
+    .option("--description <text>", "One line telling the lead when to use the role")
+    .action(failing((id, opts) => roleAddCommand(id, opts)));
+  role
+    .command("remove <id>")
+    .description("Remove a custom role")
+    .action(failing((id) => roleRemoveCommand(id)));
 
   // Effort command (inspect or set reasoning effort for orchestrator or worker)
   program

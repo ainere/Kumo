@@ -18,6 +18,7 @@ import { isValidId } from "../data/sessions.js";
  * @typedef {{
  *   id: string,
  *   name: string,
+ *   role: string|null,
  *   task: string,
  *   model: string|null,
  *   effort: string|null,
@@ -44,7 +45,8 @@ export class ToolTracker {
    * Register a call from an `item_started` item. Non-tool items return null.
    *
    * @param {any} item
-   * @param {{ model?: string|null, effort?: string|null }} [defaults] - the configured worker
+   * @param {{ role?: string|null, model?: string|null, effort?: string|null }} [defaults]
+   *   the role the tool belongs to and the worker configured for it
    * @returns {ToolCall|null}
    */
   start(item, defaults = {}) {
@@ -55,6 +57,7 @@ export class ToolTracker {
       // The id names a log file in the fallback path, so it must be safe there.
       id: isValidId(item?.id) ? item.id : randomUUID(),
       name: toolNameOf(item),
+      role: defaults.role ?? null,
       task: typeof args.task === "string" ? args.task : "",
       model: args.model || item?.model || defaults.model || null,
       effort: args.effort || item?.effort || defaults.effort || null,
