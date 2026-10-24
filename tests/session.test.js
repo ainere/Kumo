@@ -478,3 +478,117 @@ test("a bridge without an engine connection gets its approval through the reques
     await cleanup();
   }
 });
+
+test("adding or removing a custom role restarts the orchestrator on the same thread; a model change does not", async () => {
+  const { withCustomRole, withoutCustomRole, withRoleAssignment } = await import("../src/config/roles.js");
+  const docs = { id: "docs", name: "Docs", description: "", prompt: "Write the docs.", access: "write" };
+  const { session, created, events, cleanup, client } = makeSession();
+  try {
+    await session.send("first turn");
+    const thread = client().thread;
+
+    const changed = await session.updateSettings({ roles: withCustomRole(session.settings.roles, docs) });
+    assert.deepStrictEqual(changed, ["roles"]);
+    assert.strictEqual(created.length, 2, "a new tool list needs a new orchestrator");
+    assert.ok(created[0].client.calls.includes("stop"), "the old one is stopped");
+    assert.deepStrictEqual(client().calls.find((c) => Array.isArray(c) && c[0] === "resumeThread"), ["resumeThread", thread]);
+    await session.send("second turn");
+    assert.strictEqual(client().thread, thread, "the conversation carries on");
+    assert.deepStrictEqual(events.find((e) => e.type === "settings.changed").settings.roles.custom.map((c) => c.id), ["docs"]);
+
+    // The bridge resolves models on every call: nothing to restart.
+    await session.updateSettings({
+      roles: withRoleAssignment(session.settings.roles, "builder", { provider: "codex", model: "gpt-6-sol" }),
+    });
+    await session.updateSettings({
+      roles: withRoleAssignment(session.settings.roles, "docs", { provider: "codex", model: "gpt-6-luna" }),
+    });
+    assert.strictEqual(created.length, 2);
+
+    await session.updateSettings({ roles: withoutCustomRole(session.settings.roles, "docs") });
+    assert.strictEqual(created.length, 3);
+    assert.deepStrictEqual(client().calls.find((c) => Array.isArray(c) && c[0] === "resumeThread"), ["resumeThread", thread]);
+
+    await assert.rejects(
+      session.updateSettings({ roles: { builder: { provider: "ollama", model: "llama3.1" }, custom: [] } }),
+      /text-only/,
+      "a session validates roles like the saved config does"
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a custom role added during a turn takes effect from the next turn, on the same thread", async () => {
+  const { withCustomRole } = await import("../src/config/roles.js");
+  let release;
+  const { session, created, cleanup, client } = makeSession(
+    {},
+    {
+      turn: (c) => {
+        release = () => c.emit("turn_completed", { ok: true });
+      },
+    }
+  );
+  try {
+    await session.start();
+    const pending = session.send("long turn");
+    await sleep(30);
+    await session.updateSettings({
+      roles: withCustomRole(session.settings.roles, { id: "ops", name: "Ops", description: "", prompt: "Run ops.", access: "read" }),
+    });
+    assert.strictEqual(created.length, 1, "the running turn keeps its orchestrator");
+    const thread = client().thread;
+    release();
+    await pending;
+    const next = session.send("next turn");
+    await sleep(30);
+    release();
+    await next;
+    assert.strictEqual(created.length, 2);
+    assert.strictEqual(client().thread, thread);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("tool.started names the call's role and the model that role runs on", async () => {
+  const { normalizeRoles } = await import("../src/config/roles.js");
+  const roles = normalizeRoles({
+    builder: { provider: "claude", model: "claude-sonnet-5-5", effort: "medium" },
+    custom: [{ id: "docs", name: "Docs", prompt: "Write the docs.", access: "read" }],
+  });
+  const call = (id, tool, args = {}) => ({ item: { id, type: "mcpToolCall", server: "kumo-bridge", tool, arguments: { task: id, ...args } } });
+  const { session, events, cleanup } = makeSession(
+    { settings: { roles } },
+    {
+      turn: (c) => {
+        for (const item of [
+          call("a", "worker_implement"),
+          call("b", "worker_explore"),
+          call("c", "worker_docs"),
+          call("d", "worker_implement", { provider: "codex" }),
+        ]) {
+          c.emit("item_started", item);
+          c.emit("item_completed", item);
+        }
+        c.emit("turn_completed", { ok: true });
+      },
+    }
+  );
+  try {
+    await session.send("go");
+    const started = Object.fromEntries(
+      events.filter((e) => e.type === "tool.started").map((e) => [e.toolId, [e.role, e.model, e.effort]])
+    );
+    assert.deepStrictEqual(started, {
+      a: ["builder", "claude-sonnet-5-5", "medium"],
+      b: ["scout", "gpt-6-luna", "low"],
+      c: ["docs", "gpt-6-luna", "low"],
+      // Another provider than the role's: its model is not claimed.
+      d: ["builder", null, null],
+    });
+  } finally {
+    await cleanup();
+  }
+});

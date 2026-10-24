@@ -43,7 +43,7 @@ function writeFloodStub(dir, bytes) {
   return stub;
 }
 
-test("MCP bridge server starts and exposes all 5 tools with workspace parameter", async () => {
+test("MCP bridge server starts and exposes one tool per built-in role", async () => {
   const dummyWorkspace = path.resolve(__dirname, "../");
 
   const transport = new StdioClientTransport({
@@ -70,9 +70,10 @@ test("MCP bridge server starts and exposes all 5 tools with workspace parameter"
       "worker_test",
       "worker_research",
       "worker_review",
+      "worker_design",
     ];
 
-    assert.strictEqual(toolNames.length, 5, `Expected exactly 5 tools, got ${toolNames.length}`);
+    assert.strictEqual(toolNames.length, 6, `Expected exactly 6 tools, got ${toolNames.length}`);
 
     for (const exp of expectedTools) {
       assert.ok(

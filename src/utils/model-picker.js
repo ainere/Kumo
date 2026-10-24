@@ -10,6 +10,7 @@ import {
   loadConfig,
   setConfigValue,
   applyPreset,
+  presetMatches,
   PRESETS,
 } from "../config/settings.js";
 import { getAgyModels } from "../bridge/agy-runner.js";
@@ -475,11 +476,7 @@ export async function openInteractiveModelPicker(opts = {}) {
     if (action === "preset") {
       mainIndex = 0;
       const presetItems = Object.entries(PRESETS).map(([key, p]) => {
-        const isCurrent =
-          config.orchestratorModel === p.config.orchestratorModel &&
-          config.workerModel === p.config.workerModel &&
-          config.reasoningEffort === p.config.reasoningEffort &&
-          (config.workerEffort || "medium") === (p.config.workerEffort || "medium");
+        const isCurrent = presetMatches(key, config);
         return {
           label: p.name,
           value: key,

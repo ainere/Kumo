@@ -10,7 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import { loadConfig, PRESETS, resolveModel, providerForModel } from "../config/settings.js";
+import { loadConfig, PRESETS, presetConfig, presetMatches, resolveModel, providerForModel } from "../config/settings.js";
 import { EFFORT_LEVELS, planLabel } from "../config/models.js";
 import { Session } from "../core/session.js";
 import { SESSION_SETTING_KEYS } from "../core/settings.js";
@@ -20,6 +20,8 @@ import { openInteractiveModelPicker, promptSelect } from "../utils/model-picker.
 import { createSpinner } from "../utils/spinner.js";
 import { loadHistory, saveHistory, cleanHistory, clearHistory } from "../utils/history.js";
 import { runOnboarding } from "./onboarding.js";
+import { roleSetPatch, formatRoles } from "./role.js";
+import { BUILTIN_ROLE_IDS, roleAssignment, describeTarget } from "../config/roles.js";
 import { listProjects } from "../data/sessions.js";
 import { configFile } from "../config/paths.js";
 import { VERSION } from "../version.js";
@@ -127,6 +129,16 @@ function renderHeader(workspace, settings, quotas) {
   console.log(`  ${g1}${"Workspace:".padEnd(24)}${c.reset}${workspace}`);
   console.log(`  ${g1}${"Orchestrator:".padEnd(24)}${c.reset}${c.brightCyan}${orchModelFull}${c.reset}${c.gray} (${orchSub})${c.reset}`);
   console.log(`  ${g2}${"Worker:".padEnd(24)}${c.reset}${c.brightBlue}${workerModelFull}${c.reset}${c.gray} (${workerSub})${c.reset}`);
+  // Roles with their own model; the rest run on the worker above.
+  const assigned = [...BUILTIN_ROLE_IDS, ...(settings.roles?.custom || []).map((r) => r.id)]
+    .map((id) => [id, roleAssignment(settings, id)])
+    .filter(([, a]) => a);
+  if (assigned.length > 0) {
+    const list = assigned
+      .map(([id, a]) => `${id} ${c.brightBlue}${a.model}${a.effort ? `-${a.effort}` : ""}${c.reset}`)
+      .join(`${c.gray} • ${c.reset}`);
+    console.log(`  ${g2}${"Roles:".padEnd(24)}${c.reset}${list}`);
+  }
 
   for (const [role, color, title] of [["orchestrator", g2, "Orchestrator"], ["worker", g3, "Worker"]]) {
     for (const line of quotaLinesFor(role, settings, quotas)) {
@@ -148,13 +160,13 @@ function renderHeader(workspace, settings, quotas) {
   }
   console.log(separator(64));
   console.log(
-    `  ${c.gray}Commands:${c.reset} ${c.cyan}/model${c.reset}, ${c.cyan}/preset${c.reset}, ${c.cyan}/new${c.reset}, ${c.cyan}/chats${c.reset}, ${c.cyan}/projects${c.reset}, ${c.cyan}/status${c.reset}, ${c.cyan}/help${c.reset}`
+    `  ${c.gray}Commands:${c.reset} ${c.cyan}/model${c.reset}, ${c.cyan}/role${c.reset}, ${c.cyan}/preset${c.reset}, ${c.cyan}/new${c.reset}, ${c.cyan}/chats${c.reset}, ${c.cyan}/projects${c.reset}, ${c.cyan}/status${c.reset}, ${c.cyan}/help${c.reset}`
   );
   console.log(separator(64) + "\n");
 }
 
 const SLASH_COMMANDS = [
-  "/model", "/effort", "/preset", "/new", "/chats", "/projects", "/cd", "/save", "/rename",
+  "/model", "/role", "/effort", "/preset", "/new", "/chats", "/projects", "/cd", "/save", "/rename",
   "/status", "/quota", "/usage", "/refresh", "/clear", "/cls", "/history", "/clear-history",
   "/help", "/exit", "/quit",
 ];
@@ -308,7 +320,7 @@ export async function startCommand(opts = {}) {
         const task = e.task.length > 80 ? e.task.slice(0, 77) + "..." : e.task;
         const taskDisplay = task ? `\n    ${c.dim}${task}${c.reset}` : "";
         spinner.stop();
-        const text = `\n  ${c.dim}[worker]${c.reset} ${c.brightCyan}${e.name}${c.reset}${modelDisplay}${taskDisplay}\n`;
+        const text = `\n  ${c.dim}[${e.role || "worker"}]${c.reset} ${c.brightCyan}${e.name}${c.reset}${modelDisplay}${taskDisplay}\n`;
         appendToBuffer("orchestrator", text);
         process.stdout.write(text);
         updateWorkerTitle();
@@ -494,7 +506,9 @@ export async function startCommand(opts = {}) {
         console.log(`  ${c.bold}Models & Reasoning:${c.reset}`);
         console.log(`    ${c.cyan}/model${c.reset}                   Interactive arrow-key model & provider picker`);
         console.log(`    ${c.cyan}/model <name>${c.reset}            Quick-switch orchestrator model`);
-        console.log(`    ${c.cyan}/model worker <name>${c.reset}     Quick-switch worker model`);
+        console.log(`    ${c.cyan}/model worker <name>${c.reset}     Quick-switch the shared worker model`);
+        console.log(`    ${c.cyan}/role${c.reset}                    Show which model runs the lead and each role`);
+        console.log(`    ${c.cyan}/role <role> <model>${c.reset}     Assign a model to a role ('default' clears it)`);
         console.log(`    ${c.cyan}/preset [name]${c.reset}           Apply or list configuration presets`);
         console.log(`    ${c.cyan}/effort <level>${c.reset}           Set orchestrator effort (${EFFORT_LEVELS.join(", ")})`);
         console.log(`    ${c.cyan}/effort worker <lvl>${c.reset}      Set worker effort`);
@@ -543,7 +557,7 @@ export async function startCommand(opts = {}) {
         if (!arg1) {
           console.log(`\n  ${c.bold}Available Presets:${c.reset}`);
           for (const [key, p] of Object.entries(PRESETS)) {
-            const active = Object.entries(p.config).every(([k, v]) => s[k] === v) ? ` ${c.brightGreen}[ACTIVE]${c.reset}` : "";
+            const active = presetMatches(key, s) ? ` ${c.brightGreen}[ACTIVE]${c.reset}` : "";
             console.log(`    ${c.cyan}${key.padEnd(14)}${c.reset}${p.description}${active}`);
           }
           console.log(`\n  ${c.dim}Usage:${c.reset} /preset <name>\n`);
@@ -553,7 +567,7 @@ export async function startCommand(opts = {}) {
           console.log(`  ${badge.warn} Unknown preset '${arg1}'. Available: ${Object.keys(PRESETS).join(", ")}\n`);
           return;
         }
-        await changeSettings(PRESETS[arg1].config, () => `Applied preset '${arg1}': ${modelLine()}`);
+        await changeSettings(presetConfig(arg1, s.roles), () => `Applied preset '${arg1}': ${modelLine()}`);
         return;
       }
 
@@ -702,7 +716,7 @@ export async function startCommand(opts = {}) {
         }
         const target = arg1 === "orchestrator" ? arg2 : arg1;
         if (PRESETS[target]) {
-          await changeSettings(PRESETS[target].config, () => `Applied preset '${target}': ${modelLine()}`);
+          await changeSettings(presetConfig(target, s.roles), () => `Applied preset '${target}': ${modelLine()}`);
           return;
         }
         const model = resolveModel(target);
@@ -710,6 +724,40 @@ export async function startCommand(opts = {}) {
           { orchestratorModel: model, orchestratorProvider: providerForModel(model, s.orchestratorProvider) },
           () => `Orchestrator switched to ${c.brightCyan}${model}-${session.settings.reasoningEffort}${c.reset} [${session.settings.orchestratorProvider}]`
         );
+        return;
+      }
+
+      case "role":
+      case "roles": {
+        if (!arg1) {
+          console.log(`\n  ${c.bold}Roles${c.reset} ${c.dim}(this session)${c.reset}`);
+          for (const roleLine of formatRoles(s)) console.log(roleLine);
+          console.log(`\n  ${c.dim}Usage:${c.reset} /role <role> <model> [effort] [provider] ${c.dim}('default' puts a role back on the shared worker)${c.reset}\n`);
+          return;
+        }
+        if (!arg2) {
+          console.log(`  ${c.dim}Usage:${c.reset} /role <role> <model> [effort] [provider]\n`);
+          return;
+        }
+        let patch;
+        try {
+          patch = roleSetPatch(s, arg1, arg2, parts[3], parts[4]);
+        } catch (err) {
+          console.log(`  ${badge.warn} ${err.message}\n`);
+          return;
+        }
+        const name = arg1.toLowerCase();
+        await changeSettings(patch, () => {
+          const now = session.settings;
+          if (name === "lead" || name === "orchestrator") {
+            const lead = { provider: now.orchestratorProvider, model: now.orchestratorModel, effort: now.reasoningEffort };
+            return `The lead runs on ${c.brightCyan}${describeTarget(lead)}${c.reset}`;
+          }
+          const own = roleAssignment(now, name);
+          return own
+            ? `${name} runs on ${c.brightBlue}${describeTarget({ ...own, effort: own.effort || now.workerEffort })}${c.reset}`
+            : `${name} runs on the shared worker (${c.brightBlue}${now.workerModel}-${now.workerEffort}${c.reset})`;
+        });
         return;
       }
 

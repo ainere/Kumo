@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Session } from "../src/core/session.js";
+import { normalizeRoles, withRoleAssignment, withCustomRole } from "../src/config/roles.js";
 import { makeFixture } from "./helpers/bridge-fixture.js";
 
 const serverPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/bridge/server.js");
@@ -44,7 +45,15 @@ function bridgeBackedClient({ dir, stub, bridgeHome, script }) {
       c.mcp = new Client({ name: "fake-orchestrator", version: "1.0.0" }, { capabilities: {} });
       await c.mcp.connect(transport);
     };
-    c.startThread = async () => {};
+    // A thread id the session can hand back on a restart, as real clients do.
+    c.startThread = async () => {
+      c.thread = "thread-1";
+    };
+    c.resumeThread = async ({ threadId }) => {
+      c.resumedFrom = threadId;
+      c.thread = threadId;
+    };
+    c.currentThreadId = () => c.thread || null;
     c.startTurn = async () => {
       setImmediate(async () => {
         try {
@@ -186,6 +195,72 @@ test("interactive mode: a declined change is not written", { timeout: 60000 }, a
     await session.send("change target.txt");
     assert.match(textOf(applied), /declined/);
     assert.strictEqual(fs.readFileSync(path.join(fixture.dir, "target.txt"), "utf-8").replace(/\r\n/g, "\n"), "old\n");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("roles reach the bridge over the engine connection: its tools, their models, and changes between turns", { timeout: 90000 }, async () => {
+  const modelOf = (call) => call.args[call.args.indexOf("--model") + 1];
+  const roles = normalizeRoles({
+    builder: { provider: "codex", model: "gpt-6-sol", effort: "medium" },
+    custom: [{ id: "docs", name: "Docs", description: "Summarize documentation", prompt: "Summarize the docs you are given.", access: "read", provider: "codex", model: "gpt-6.1-sol" }],
+  });
+  const seen = {};
+  const turns = [
+    async (mcp, client) => {
+      const { tools } = await mcp.listTools();
+      seen.first = Object.fromEntries(tools.map((t) => [t.name, t.description]));
+      await callTool(mcp, client, "call-1", "worker_docs", { task: "summarize the readme" });
+      await callTool(mcp, client, "call-2", "worker_explore", { task: "list the files" });
+    },
+    async (mcp, client) => {
+      await callTool(mcp, client, "call-3", "worker_docs", { task: "summarize it again" });
+      const { tools } = await mcp.listTools();
+      seen.second = Object.fromEntries(tools.map((t) => [t.name, t.description]));
+    },
+    async (mcp) => {
+      const { tools } = await mcp.listTools();
+      seen.third = tools.map((t) => t.name);
+    },
+  ];
+  let turn = 0;
+  const { session, events, fixture, cleanup } = setup({
+    settings: { roles },
+    script: (mcp, client) => turns[turn++](mcp, client),
+  });
+  try {
+    // The saved config has no roles at all: everything below comes from the session.
+    assert.strictEqual((await session.send("first")).ok, true);
+    assert.ok(seen.first.worker_docs, "the custom role's tool comes from the session's settings");
+    assert.match(seen.first.worker_implement, /^Builder role, runs on GPT-6 Sol \(Codex\), medium effort/);
+    assert.match(seen.first.worker_docs, /^Docs role \(custom\), runs on GPT-6\.1 Sol \(Codex\)/);
+    const [docs, explore] = fixture.calls();
+    assert.strictEqual(modelOf(docs), "gpt-6.1-sol");
+    assert.match(docs.stdin + docs.args.join(" "), /Summarize the docs you are given/);
+    assert.strictEqual(modelOf(explore), "gpt-6-luna", "an unassigned role runs on the session's shared worker");
+    const started = events.filter((e) => e.type === "tool.started").map((e) => [e.toolId, e.role, e.model]);
+    assert.deepStrictEqual(started, [
+      ["call-1", "docs", "gpt-6.1-sol"],
+      ["call-2", "scout", "gpt-6-luna"],
+    ]);
+
+    // A model switch applies to the very next call, with no restart.
+    await session.updateSettings({ roles: withRoleAssignment(session.settings.roles, "docs", { provider: "codex", model: "gpt-6-astra" }) });
+    const before = session.client;
+    assert.strictEqual((await session.send("second")).ok, true);
+    assert.strictEqual(session.client, before, "the orchestrator was not restarted");
+    assert.strictEqual(modelOf(fixture.calls()[2]), "gpt-6-astra");
+    assert.match(seen.second.worker_docs, /GPT-6 Astra/, "the tool's description follows the new model");
+
+    // A new custom role needs a new tool list: the orchestrator restarts on the same thread.
+    await session.updateSettings({
+      roles: withCustomRole(session.settings.roles, { id: "ops", name: "Ops", description: "", prompt: "Check the deploy.", access: "read" }),
+    });
+    assert.notStrictEqual(session.client, before);
+    assert.strictEqual(session.client.resumedFrom, "thread-1", "the conversation is resumed, not restarted");
+    assert.strictEqual((await session.send("third")).ok, true);
+    assert.ok(seen.third.includes("worker_ops"), seen.third.join(", "));
   } finally {
     await cleanup();
   }

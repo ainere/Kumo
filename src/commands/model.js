@@ -7,6 +7,7 @@ import {
   loadConfig,
   setConfigValue,
   applyPreset,
+  presetMatches,
   PRESETS,
   resolveModel,
   detectProviderForModel,
@@ -232,11 +233,7 @@ function printModelList(config) {
 
   console.log(`\n${c.bold}Available Presets:${c.reset}`);
   for (const [key, preset] of Object.entries(PRESETS)) {
-    const isCurrent =
-      config.orchestratorModel === preset.config.orchestratorModel &&
-      config.workerModel === preset.config.workerModel &&
-      config.reasoningEffort === preset.config.reasoningEffort &&
-      config.workerEffort === preset.config.workerEffort;
+    const isCurrent = presetMatches(key, config);
     const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
     console.log(`  ${marker}${c.bold}${key.padEnd(12)}${c.reset} ${badge.arrow} ${preset.name}`);
     console.log(`     ${c.skyBlue}${preset.description}${c.reset}`);
@@ -273,5 +270,6 @@ function printModelList(config) {
   console.log(`  ${c.gray}kumo model worker <model> [effort] [provider]${c.reset}        Set worker model, effort, and explicit provider`);
   console.log(`  ${c.gray}kumo effort <${EFFORT_LEVELS.join("|")}>${c.reset}                      Set orchestrator reasoning effort`);
   console.log(`  ${c.gray}kumo effort worker <${EFFORT_LEVELS.join("|")}>${c.reset}                   Set worker reasoning effort`);
-  console.log(`  ${c.gray}kumo model use <preset>${c.reset}                                Apply preset (e.g. kumo model use test)\n`);
+  console.log(`  ${c.gray}kumo model use <preset>${c.reset}                                Apply preset (e.g. kumo model use test)`);
+  console.log(`  ${c.gray}kumo role${c.reset}                                              Show or set the model each role runs on\n`);
 }

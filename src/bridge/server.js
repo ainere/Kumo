@@ -1,11 +1,19 @@
 /**
  * server.js — MCP stdio bridge server with dynamic workspace support.
  *
- * Exposes five role-based worker tools (explore, implement, test, research,
- * review) to any MCP-capable orchestrator and routes each call to one of the
- * 13 supported worker providers — subscription CLIs (Antigravity, Codex,
- * Claude Code, OpenCode, CommandCode, Copilot, Cursor, Gemini CLI, Ollama) or
- * direct HTTP APIs (openai/anthropic/gemini/compat).
+ * Exposes one tool per worker role to any MCP-capable orchestrator — scout
+ * (`worker_explore`), builder (`worker_implement`), tester (`worker_test`),
+ * researcher (`worker_research`), reviewer (`worker_review`), designer
+ * (`worker_design`) and each custom role (`worker_<id>`) — and routes every
+ * call to the model assigned to that role, on one of the 13 supported worker
+ * providers: subscription CLIs (Antigravity, Codex, Claude Code, OpenCode,
+ * CommandCode, Copilot, Cursor, Gemini CLI, Ollama) or direct HTTP APIs
+ * (openai/anthropic/gemini/compat). A role with no assignment runs on the
+ * shared worker (`workerProvider` / `workerModel` / `workerEffort`).
+ *
+ * The tool list is built in startServer() from the session's settings, and
+ * each description names the role's model, so the lead can route by the
+ * actual assignment.
  *
  * The target workspace comes from `--workspace <path>`, else `KUMO_WORKSPACE`,
  * else the legacy `ORCHESTRATOR_WORKSPACE`, else the process working directory.
@@ -29,6 +37,7 @@ import { getWorker, workerCapabilities, KNOWN_WORKERS } from "../providers/worke
 import { getSystemPrompt } from "./prompts.js";
 import { loadConfig, detectProviderForModel, canonicalizeProvider } from "../config/settings.js";
 import { EFFORT_LEVELS } from "../config/models.js";
+import { listRoles, findRole, resolveRoleTarget, describeTarget } from "../config/roles.js";
 import {
   getLiveLogPath,
   setActiveLiveRun,
@@ -523,32 +532,30 @@ export function readWorkspaceFiles(workspace, files) {
 /**
  * Decide which worker runs a call, and with which model and effort.
  *
- * A per-call provider override wins, then KUMO_WORKER_PROVIDER, then config.
- * The model and effort are read from config on every call so a `/model worker`
- * switch applies to the next call; they are only used when the call runs on
- * the configured provider — handing a Gemini model id to a per-call `claude`
- * override would just make that CLI fail.
+ * The role's own assignment (`config.roles[role]`) comes first; a role
+ * without one runs on the shared worker — KUMO_WORKER_PROVIDER, else the
+ * configured `workerProvider`. A per-call provider override wins over both.
+ * Settings are read on every call, so a `/role` or `/model worker` switch
+ * applies to the next call; a configured model and effort are only used when
+ * the call runs on the provider they were configured for — handing a Gemini
+ * model id to a per-call `claude` override would just make that CLI fail.
  *
- * @param {{ provider?: string, model?: string, effort?: string }} opts
+ * @param {{ role?: string|null, provider?: string, model?: string, effort?: string }} opts
  * @param {object} config
  */
 export function resolveWorkerTarget(opts, config) {
-  const requested = opts.provider || null;
-  const configured = canonicalizeProvider(
-    process.env.KUMO_WORKER_PROVIDER ||
-      config.workerProvider ||
-      detectProviderForModel(opts.model || modelOverride || config.workerModel)
-  );
-  const provider = requested || configured;
-  const onConfigured = !requested || canonicalizeProvider(requested) === configured;
-  return {
-    provider,
-    requested,
-    // --model / GEMINI_MODEL are overrides of the configured worker, so they
-    // follow the same rule as the config values.
-    model: opts.model || (onConfigured ? modelOverride || config.workerModel : undefined) || undefined,
-    effort: opts.effort || (onConfigured ? effortOverride || config.workerEffort : undefined) || undefined,
+  const worker = {
+    provider: canonicalizeProvider(
+      process.env.KUMO_WORKER_PROVIDER ||
+        config.workerProvider ||
+        detectProviderForModel(opts.model || modelOverride || config.workerModel)
+    ),
+    // --model / GEMINI_MODEL / --effort override the shared worker, so they
+    // follow the same rule as its config values.
+    model: modelOverride || config.workerModel,
+    effort: effortOverride || config.workerEffort,
   };
+  return resolveRoleTarget(config, opts.role || null, opts, worker);
 }
 
 /**
@@ -595,7 +602,13 @@ export async function dispatchWorkerTask(opts) {
   const systemPrompt =
     opts.systemPrompt ??
     (opts.role
-      ? getSystemPrompt(opts.role, { workerModel: target.model, workerEffort: target.effort, workspace })
+      ? getSystemPrompt(opts.role, {
+          config,
+          model: target.model,
+          effort: target.effort,
+          workspace,
+          customRole: opts.customRole || null,
+        })
       : undefined);
 
   const runId = opts.runId || crypto.randomUUID();
@@ -719,33 +732,6 @@ export function applyApprovedDiff(cwd, previewText) {
   }
 }
 
-// Handler implementations
-async function handleReadTool(kind, { task, files, model, effort, provider }) {
-  const toolName = `worker_${kind}`;
-  const result = await dispatchWorkerTask({
-    toolName,
-    prompt: task,
-    permission: "read",
-    files: files || [],
-    workspace: workspaceDir,
-    model,
-    effort,
-    provider,
-    role: kind,
-  });
-  return formatResult(result, toolName);
-}
-
-async function handleExplore(args) {
-  return handleReadTool("explore", args);
-}
-
-const server = new McpServer({
-  name: "kumo-worker-bridge",
-  version: VERSION,
-  description: "Bridges frontier orchestrators to execution workers across providers with dynamic workspace resolution and safety guardrails.",
-});
-
 /** How long the bridge waits for a human decision in `interactive` mode. */
 export const APPROVAL_TIMEOUT_MS = 300000;
 const APPROVAL_POLL_MS = 500;
@@ -830,39 +816,52 @@ function errorResult(text) {
 }
 
 /**
- * Shared implementation for the two write tools.
+ * Run one call of a role's tool.
  *
- * `worker_implement` and `worker_test` differ only in tool name, system-prompt
- * key and confirmation wording; every safety rule below must hold for both, so
- * they share one code path instead of two copies that drift apart.
+ * Every role goes through here. Read roles run the worker read-only. Write
+ * roles — builder, tester, designer and custom write roles — differ only in
+ * tool name, system prompt and confirmation wording; every safety rule below
+ * must hold for all of them, so they share one code path instead of copies
+ * that drift apart.
  *
- * @param {"implement"|"test"} kind
+ * @param {import("../config/roles.js").RoleInfo} registered - the role as its tool was registered
  * @param {Object} args
+ * @param {{ onConfig?: (config: object) => void }} [hooks] - sees the effective settings of each call
  */
-async function handleWriteTool(kind, { task, files, confirm, previewId, model, effort, provider }) {
-  const toolName = kind === "implement" ? "worker_implement" : "worker_test";
+export async function handleRoleTool(registered, { task, files, confirm, previewId, model, effort, provider }, hooks = {}) {
+  const toolName = registered.tool;
   const config = await effectiveConfig();
-  const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
-  const gated = safetyMode === "diff-review" || safetyMode === "interactive";
+  hooks.onConfig?.(config);
+  // The role as it is now — a custom role's prompt may have been edited since
+  // the bridge started. Its access stays as registered: it fixed the schema.
+  const current = findRole(config, registered.id);
+  const role = current && current.access === registered.access ? current : registered;
 
   const dispatch = (extra) =>
     dispatchWorkerTask({
       toolName,
       prompt: task,
-      safetyMode,
       config,
       files: files || [],
       workspace: workspaceDir,
       model,
       effort,
       provider,
-      role: kind,
+      role: role.id,
+      customRole: role.custom,
       ...extra,
     });
 
+  if (role.access === "read") {
+    return formatResult(await dispatch({ permission: "read" }), toolName);
+  }
+
+  const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
+  const gated = safetyMode === "diff-review" || safetyMode === "interactive";
+
   // ── Phase 1: preview only ──
   if (gated && !confirm) {
-    const result = await dispatch({ permission: "read", previewDiff: true });
+    const result = await dispatch({ permission: "read", previewDiff: true, safetyMode });
 
     const formatted = formatResult(result, toolName);
     if (result.ok && result.stdout) {
@@ -872,7 +871,7 @@ async function handleWriteTool(kind, { task, files, confirm, previewId, model, e
         workspaceDir,
       });
       if (formatted.content && formatted.content[0]) {
-        const what = kind === "implement" ? "a proposed change preview" : "a test proposal";
+        const what = role.id === "tester" ? "a test proposal" : "a proposed change preview";
         const how =
           safetyMode === "interactive" && interactiveApprovalAvailable()
             ? `Safety mode is 'interactive'. Calling ${toolName} again with confirm: true and previewId: "${generatedId}" asks the operator to approve the change before anything is written.`
@@ -946,10 +945,10 @@ async function handleWriteTool(kind, { task, files, confirm, previewId, model, e
       note =
         `\n\n[NOTE: the approved diff could not be applied verbatim (${applied.reason}); ` +
         `the worker re-ran the task, so the result may differ from the preview.]`;
-      result = await dispatch({ permission: "write" });
+      result = await dispatch({ permission: "write", safetyMode });
     }
   } else {
-    result = await dispatch({ permission: "write" });
+    result = await dispatch({ permission: "write", safetyMode });
   }
 
   if (result.ok && previewId) {
@@ -979,22 +978,6 @@ async function handleWriteTool(kind, { task, files, confirm, previewId, model, e
   return formatted;
 }
 
-async function handleImplement(args) {
-  return handleWriteTool("implement", args);
-}
-
-async function handleTest(args) {
-  return handleWriteTool("test", args);
-}
-
-async function handleResearch(args) {
-  return handleReadTool("research", args);
-}
-
-async function handleReview(args) {
-  return handleReadTool("review", args);
-}
-
 const taskField = z.string().min(1).max(8000).refine((v) => !/^\s*$/.test(v), "task must be non-empty");
 const filesField = z.array(z.string().min(1).max(500).refine((f) => !/[\r\n\0]/.test(f), "newline-free")).max(20).optional();
 const modelField = z.string().max(120).refine((v) => !v.startsWith("-") && !v.includes("\0"), "invalid model").optional();
@@ -1003,90 +986,108 @@ const effortField = z.enum(EFFORT_LEVELS).optional();
 // the executable the generic worker spawns.
 const providerField = z.enum(KNOWN_WORKERS).optional();
 
-const schemas = {
-  explore: {
-    task: taskField.describe("What to explore or search for in the codebase"),
-    files: filesField.describe("Optional file paths to focus on"),
-    model: modelField.describe("Execution worker model"),
-    effort: effortField.describe("Execution worker reasoning effort"),
-    provider: providerField.describe("Execution worker provider override"),
-  },
-  implement: {
-    task: taskField.describe("A bounded implementation task with clear acceptance criteria"),
-    files: filesField.describe("Optional context file paths"),
-    confirm: z.boolean().optional().describe("When safetyMode is diff-review, set to true to apply approved changes to disk. When omitted or false, generates a proposed diff preview."),
-    previewId: z.string().optional().describe("Unique preview token returned by Phase 1 preview call for diff-fidelity verification upon confirmation."),
-    model: modelField.describe("Execution worker model"),
-    effort: effortField.describe("Execution worker reasoning effort"),
-    provider: providerField.describe("Execution worker provider override"),
-  },
-  test: {
-    task: taskField.describe("What to test or which test suite to run"),
-    files: filesField.describe("Optional file paths under test"),
-    confirm: z.boolean().optional().describe("When safetyMode is diff-review, set to true to apply changes on disk."),
-    previewId: z.string().optional().describe("Unique preview token returned by Phase 1 preview call for diff-fidelity verification upon confirmation."),
-    model: modelField.describe("Execution worker model"),
-    effort: effortField.describe("Execution worker reasoning effort"),
-    provider: providerField.describe("Execution worker provider override"),
-  },
-  research: {
-    task: taskField.describe("The technical research question or documentation lookup"),
-    files: filesField.describe("Optional context files"),
-    model: modelField.describe("Execution worker model"),
-    effort: effortField.describe("Execution worker reasoning effort"),
-    provider: providerField.describe("Execution worker provider override"),
-  },
-  review: {
-    task: taskField.describe("What changes or files to review"),
-    files: filesField.describe("Files to review"),
-    model: modelField.describe("Execution worker model"),
-    effort: effortField.describe("Execution worker reasoning effort"),
-    provider: providerField.describe("Execution worker provider override"),
-  },
+/** What `task` and `files` mean for each built-in role; custom roles get the generic wording. */
+const FIELD_HINTS = {
+  scout: ["What to explore or search for in the codebase", "Optional file paths to focus on"],
+  builder: ["A bounded implementation task with clear acceptance criteria", "Optional context file paths"],
+  tester: ["What to test or which test suite to run", "Optional file paths under test"],
+  researcher: ["The technical research question or documentation lookup", "Optional context files"],
+  reviewer: ["What changes or files to review", "Files to review"],
+  designer: ["The design task: what to design or change, for whom, and how it should look and feel", "Optional files the design touches"],
 };
 
-// Primary role-based worker tools
-server.tool(
-  "worker_explore",
-  "Read-only codebase exploration via execution worker. Locates files, symbols, execution paths, dependencies, and tests.",
-  schemas.explore,
-  handleExplore
-);
+/**
+ * The input schema of a role's tool. Write roles also take the two-phase
+ * confirmation fields of the gated safety modes.
+ *
+ * @param {import("../config/roles.js").RoleInfo} role
+ */
+function schemaFor(role) {
+  const [taskHint, filesHint] = FIELD_HINTS[role.id] || [
+    "The task for this role, with clear acceptance criteria",
+    "Optional context file paths",
+  ];
+  const shape = {
+    task: taskField.describe(taskHint),
+    files: filesField.describe(filesHint),
+  };
+  if (role.access === "write") {
+    shape.confirm = z.boolean().optional().describe("When safetyMode is diff-review or interactive, set to true to apply the approved changes to disk. When omitted or false, generates a proposed diff preview.");
+    shape.previewId = z.string().optional().describe("Unique preview token returned by Phase 1 preview call for diff-fidelity verification upon confirmation.");
+  }
+  shape.model = modelField.describe("Run this call on another model than the role's assignment");
+  shape.effort = effortField.describe("Run this call at another reasoning effort than the role's assignment");
+  shape.provider = providerField.describe("Run this call on another worker provider than the role's assignment");
+  return shape;
+}
 
-server.tool(
-  "worker_implement",
-  "Execute a bounded coding task via execution worker. Modifies/creates workspace files.",
-  schemas.implement,
-  handleImplement
-);
+/**
+ * A role tool's description: the role, the model it runs on and what it is
+ * for — "Reviewer role, runs on GPT-6 Astra (Codex), high effort. …" — so
+ * the lead routes by the actual assignment.
+ *
+ * @param {import("../config/roles.js").RoleInfo} role
+ * @param {object} config - the effective settings
+ * @returns {string}
+ */
+export function describeRoleTool(role, config) {
+  const target = resolveWorkerTarget({ role: role.id }, config);
+  const where = `runs on ${describeTarget(target)}${target.assigned ? "" : " (the shared worker)"}`;
+  const kind = role.custom ? `${role.title} role (custom)` : `${role.title} role`;
+  const summary = role.summary ? ` ${/[.!?]$/.test(role.summary) ? role.summary : `${role.summary}.`}` : "";
+  const access = role.custom ? (role.access === "write" ? " Can modify workspace files." : " Read-only.") : "";
+  return `${kind}, ${where}.${summary}${access}`;
+}
 
-server.tool(
-  "worker_test",
-  "Write and/or run tests via execution worker. Generates tests and executes them using native project commands.",
-  schemas.test,
-  handleTest
-);
+/**
+ * Build the MCP server with one tool per role in `config`: the built-in roles
+ * and the custom ones. A description is refreshed on the next call when its
+ * role's model changed meanwhile; adding or removing a custom role needs a
+ * new bridge (the session restarts its orchestrator and resumes the thread).
+ *
+ * @param {object} config - the effective settings
+ * @returns {McpServer}
+ */
+export function createBridgeServer(config) {
+  const server = new McpServer({
+    name: "kumo-worker-bridge",
+    version: VERSION,
+    description: "Bridges frontier orchestrators to execution workers across providers with dynamic workspace resolution and safety guardrails.",
+  });
 
-server.tool(
-  "worker_research",
-  "Technical research via execution worker. Look up documentation, API specs, and technical patterns.",
-  schemas.research,
-  handleResearch
-);
+  /** @type {Map<string, { role: import("../config/roles.js").RoleInfo, tool: any, description: string }>} */
+  const tools = new Map();
+  const refreshDescriptions = (current) => {
+    for (const role of listRoles(current)) {
+      const entry = tools.get(role.tool);
+      if (!entry || entry.role.access !== role.access) continue;
+      const description = describeRoleTool(role, current);
+      if (description === entry.description) continue;
+      entry.description = description;
+      entry.tool.update({ description });
+    }
+  };
 
-server.tool(
-  "worker_review",
-  "Independent code review via execution worker. Identifies correctness, security, and regression risks.",
-  schemas.review,
-  handleReview
-);
+  for (const role of listRoles(config)) {
+    const description = describeRoleTool(role, config);
+    const tool = server.registerTool(
+      role.tool,
+      { title: `${role.title} role`, description, inputSchema: schemaFor(role) },
+      (args) => handleRoleTool(role, args, { onConfig: refreshDescriptions })
+    );
+    tools.set(role.tool, { role, tool, description });
+  }
+  return server;
+}
 
 export async function startServer() {
   // Set here, not at import: only a running bridge spawns workers, and a
   // module-level write would leak into any process that merely imports this.
   process.env[NESTED_ENV] = "1";
-  // Connect before serving: the first tool call must already know its session.
+  // Connect before serving: the first tool call must already know its
+  // session, and the tool list is built from that session's roles.
   engine = await connectEngine({ version: VERSION });
+  const server = createBridgeServer(await effectiveConfig());
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

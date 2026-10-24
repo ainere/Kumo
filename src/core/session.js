@@ -22,6 +22,8 @@ import { randomUUID } from "node:crypto";
 import { loadConfig, setConfigValue } from "../config/settings.js";
 import { syncAgentConfigs } from "../config/sync.js";
 import { createOrchestratorClient, orchestratorDelegates } from "../providers/orchestrators/registry.js";
+import { isToolCallItem, toolNameOf, toolArgsOf } from "../providers/orchestrators/items.js";
+import { emptyRoles, roleForTool, resolveRoleTarget, roleToolSignature } from "../config/roles.js";
 import { runTurn } from "../providers/orchestrators/turn-wait.js";
 import * as defaultStore from "../data/sessions.js";
 import { makeEvent } from "./events.js";
@@ -68,7 +70,10 @@ export class Session extends EventEmitter {
     this.id = opts.id || randomUUID();
     this.workspace = path.resolve(opts.workspace);
     /** @type {SessionSettings} */
-    this.settings = opts.settings ? { ...opts.settings } : snapshotSettings(loadConfig());
+    this.settings = opts.settings
+      ? // Settings from before roles existed have none: every role on the shared worker.
+        { ...opts.settings, roles: opts.settings.roles ? structuredClone(opts.settings.roles) : emptyRoles() }
+      : snapshotSettings(loadConfig());
     this.persist = opts.persist !== false;
     this.interactive = Boolean(opts.interactive);
     this.useIpc = opts.ipc !== false;
@@ -434,12 +439,18 @@ export class Session extends EventEmitter {
 
   /** @param {any} item */
   _onToolStarted(item) {
-    const call = this.tools.start(item, { model: this.settings.workerModel, effort: this.settings.workerEffort });
+    if (!isToolCallItem(item)) return;
+    // The model shown is the one the bridge will pick: the role's own, else
+    // the shared worker's, with the call's arguments on top.
+    const role = roleForTool(toolNameOf(item), this.settings.roles);
+    const target = resolveRoleTarget(this.settings, role, /** @type {any} */ (toolArgsOf(item)));
+    const call = this.tools.start(item, { role, model: target.model || null, effort: target.effort || null });
     if (!call) return;
     this._emit("tool.started", {
       turnId: this._turn?.id || null,
       toolId: call.id,
       name: call.name,
+      role: call.role,
       task: call.task,
       model: call.model,
       effort: call.effort,
@@ -789,9 +800,12 @@ export class Session extends EventEmitter {
   // ── settings ──
 
   /**
-   * Change this session's settings. Worker and safety settings apply to the
-   * next worker call (the bridge asks the session for them each time). A
+   * Change this session's settings. Worker, role and safety settings apply to
+   * the next worker call (the bridge asks the session for them each time). A
    * model switch keeps the conversation; a provider switch starts a new one.
+   * Adding or removing a custom role changes the bridge's tool list, which
+   * the orchestrator reads when it starts: the client restarts and resumes
+   * the same thread, so the conversation survives.
    *
    * @param {Partial<Record<string, unknown>>} patch
    * @param {{ persist?: boolean }} [opts] - also save as the global defaults
@@ -804,6 +818,7 @@ export class Session extends EventEmitter {
     if (changed.includes("orchestratorProvider") && this.busy) {
       throw new Error("The orchestrator cannot change while a turn is running.");
     }
+    const toolsChanged = roleToolSignature(this.settings.roles) !== roleToolSignature(next.roles);
     this.settings = next;
     if (persist) {
       for (const key of changed) setConfigValue(key, /** @type {Record<string, unknown>} */ (next)[key]);
@@ -812,6 +827,10 @@ export class Session extends EventEmitter {
     if (changed.includes("orchestratorProvider")) {
       this.quotas.providerChanged();
       if (this.client || this._ready) await this._connect({});
+    } else if (toolsChanged && this.client) {
+      // A running turn keeps its tools; the next one starts on the new list.
+      if (this.busy) this.needsReconnect = true;
+      else await this._connect({ threadId: this._clientThreadId() });
     } else if (changed.includes("orchestratorModel") || changed.includes("reasoningEffort")) {
       await this.client?.applyModel?.({ model: next.orchestratorModel, reasoningEffort: next.reasoningEffort });
     } else if (changed.includes("safetyMode") && this.settings.orchestratorProvider === "antigravity" && !this.busy) {

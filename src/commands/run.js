@@ -50,7 +50,9 @@ export async function runCommand(taskPrompt, opts = {}, deps = {}) {
         endsWithNewline = e.text.endsWith("\n");
         break;
       case "tool.started":
-        console.error(`${c.dim}[worker] ${e.name}${e.task ? `: ${e.task.slice(0, 80)}` : ""}${c.reset}`);
+        console.error(
+          `${c.dim}[${e.role || "worker"}] ${e.name}${e.model ? ` (${e.model})` : ""}${e.task ? `: ${e.task.slice(0, 80)}` : ""}${c.reset}`
+        );
         break;
       case "session.warning":
         console.error(`\n${badge.warn} ${e.message}`);
