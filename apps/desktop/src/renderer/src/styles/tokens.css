@@ -1,0 +1,51 @@
+/* Night sky tokens. Themes (Phase 3c) override these per mode. */
+:root,
+[data-mode="dark"] {
+  --bg: #05070d;
+  --text: #e6ecf5;
+  --muted: rgb(214 224 240 / 0.62);
+  --faint: rgb(214 224 240 / 0.42);
+  --glass-rgb: 12 18 32;
+  --glass-strong-rgb: 14 22 40;
+  --chip: rgb(160 190 240 / 0.07);
+  --selected: rgb(160 190 240 / 0.12);
+  --border: rgb(160 190 240 / 0.14);
+  --track: rgb(160 190 240 / 0.14);
+  --accent: #5fd4f4;
+  --ok: #9ece6a;
+  --bad: #f7768e;
+  --warn: #f2b866;
+  --halo: transparent;
+  color-scheme: dark;
+}
+
+[data-mode="light"] {
+  --bg: #f5f6f8;
+  --text: #0e1626;
+  --muted: rgb(14 22 38 / 0.62);
+  --faint: rgb(14 22 38 / 0.45);
+  --glass-rgb: 255 255 255;
+  --glass-strong-rgb: 255 255 255;
+  --chip: rgb(14 30 60 / 0.04);
+  --selected: rgb(14 30 60 / 0.07);
+  --border: rgb(14 30 60 / 0.1);
+  --track: rgb(14 30 60 / 0.1);
+  --accent: #2f6feb;
+  --ok: #2e7d32;
+  --bad: #c62828;
+  --warn: #8a5a12;
+  --halo: radial-gradient(closest-side, rgb(245 246 248 / 0.92), rgb(245 246 248 / 0));
+  color-scheme: light;
+}
+
+:root {
+  /* Set from desktop preferences at runtime. */
+  --glass-blur: 18px;
+  --glass-opacity: 0.46;
+  --glass: rgb(var(--glass-rgb) / var(--glass-opacity));
+  --glass-strong: rgb(var(--glass-strong-rgb) / min(0.95, calc(var(--glass-opacity) + 0.18)));
+  --radius-panel: 16px;
+  --radius-control: 10px;
+  --font-ui: "Manrope Variable", "Manrope", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}

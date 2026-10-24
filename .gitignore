@@ -29,6 +29,9 @@ logs/
 dist/
 build/
 coverage/
+apps/desktop/out/
+test-results/
+playwright-report/
 
 # Antigravity session & transient IDE directories
 .system_generated/

@@ -53,3 +53,28 @@ jobs:
           --test-coverage-lines=75
           --test-coverage-branches=60
           --test-coverage-functions=65
+
+  # The desktop app: its own type-check, then the built Electron app end to
+  # end against a scripted orchestrator (apps/desktop/e2e).
+  desktop:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      # --ignore-scripts skipped Electron's own install script, which fetches its binary.
+      - run: node node_modules/electron/install.js
+      - run: npm run typecheck -w @kumo/desktop
+      # Ubuntu 24.04 blocks the unprivileged user namespaces Chromium's sandbox needs.
+      - if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:e2e -w @kumo/desktop
+      - if: runner.os != 'Linux'
+        run: npm run test:e2e -w @kumo/desktop

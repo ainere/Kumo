@@ -21,8 +21,8 @@ It coordinates frontier models across **Anthropic Claude** (Fable 5.1, Opus 5.5,
                                  │
                                  ▼
                   ┌─────────────────────────────┐
-                  │   KUMO CLI (REPL, kumo run)  │   (desktop app: planned,
-                  └──────────────┬──────────────┘    same engine)
+                  │   KUMO CLI (REPL, kumo run)  │   desktop app (apps/desktop)
+                  └──────────────┬──────────────┘   runs the same engine
                                  │ typed events / commands
                   ┌──────────────▼──────────────┐
                   │   Engine (src/core)          │
@@ -97,6 +97,31 @@ Inside the interactive session (`kumo ›`):
 
 ---
 
+## Desktop App
+
+`apps/desktop` is an Electron app on the same engine as the CLI, Windows first. Milestone 3a, the shell and chat, is done; roles, theme packages and the rest of Phase 3 come next.
+
+- **Studio layout:** a glass title bar, a sidebar with projects, chats and usage meters, the conversation, a glass composer, and a Workers panel that docks right, bottom, floating or hidden. A new chat opens on the "what should we build?" screen.
+- **Glass over a live scene:** panels, messages and the composer are translucent and blurred over a background scene. The built-in scenes are **Clouds**, **Night sky** and **None** (grid only). They drift on their own, gather toward the Workers panel while workers run, and ripple when one finishes.
+- **Light and dark** follow the system unless you pick one. Blur, glass opacity, scene, dock and grid are in the Appearance menu (the sliders button) and saved to `~/.kumo/desktop.json`. The OS "reduce transparency" and "reduce motion" settings are honored.
+- **Chat:** answers stream as Markdown. Each worker call shows as a card with its model and time, and its live output streams into the Workers panel. Approvals appear as cards with a fixed amber strip that themes can't restyle. Chats resume with their provider conversation.
+
+Run it from the repository (the root `npm install` installs the app through npm workspaces):
+
+```powershell
+npm run dev -w @kumo/desktop        # development, with hot reload
+npm run build -w @kumo/desktop      # build to apps/desktop/out
+npm run start -w @kumo/desktop      # run the build
+```
+
+How it fits together:
+- **Engine:** runs in an Electron utility process, so a stuck provider CLI can't freeze the window. If it crashes it restarts, and the window reconnects.
+- **Window:** sandboxed, with context isolation and a strict CSP. The preload exposes only `kumo.invoke(command, args)` and `kumo.onEvent(cb)`. They run over a `MessagePort` to the engine, which validates every command against [`src/core/commands.js`](src/core/commands.js); events follow [`src/core/events.js`](src/core/events.js).
+- **Scenes:** run in an iframe sandboxed to scripts only, served from their own `kumo-scene://` origin under a CSP with no network access. They get the theme, panel positions and a filtered activity feed (event types, tool names and models; never prompt or response text). A scene is a `defineScene({ id, name, mount(ctx) })` script; the types are in [`packages/scene-sdk`](packages/scene-sdk/index.d.ts).
+- **The bridge under Electron:** inside Electron, `process.execPath` is Electron itself, so [`src/core/node-command.js`](src/core/node-command.js) adds `ELECTRON_RUN_AS_NODE=1` when launching the bridge. Configs that persist in a workspace use a system Node instead.
+
+---
+
 ## Orchestration Protocol & Delegation Gate
 
 Kumo adopts the proven role specialization and delegation structure of frontier agent orchestrators (such as [donvito/codex-astra-luna-orchestrator](https://github.com/donvito/codex-astra-luna-orchestrator)), mapped across independent providers:
@@ -154,7 +179,7 @@ The worker's permission is decided per call by the bridge, not by the safety mod
 - **Subscriptions by Default**: Connects directly to your logged-in consumer subscriptions across 9 CLI providers (`codex, antigravity, claude, opencode, commandcode, copilot, cursor, gemini-cli, ollama`) — zero keys on disk. Kumo never persists your keys. When it launches a worker CLI it forwards only the API keys that provider needs and strips other secret-looking environment variables (`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*PASSWORD*`, `*CREDENTIAL*`). This is best-effort defense in depth, not isolation: the name match can miss credentials (e.g. a `DATABASE_URL` with a password), most orchestrator CLIs receive your full environment (Claude Code does not get `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`, so it stays on your subscription login), and a worker with write access can read any file your user can.
 - **Direct API (optional, env keys never stored)**: `openai-api (OPENAI_API_KEY), anthropic-api (ANTHROPIC_API_KEY), gemini-api (GEMINI_API_KEY), compat-api (COMPAT_BASE_URL + optional COMPAT_API_KEY)` — per-role or per-call (`provider: "anthropic-api"`), mixed with subscriptions; non-secret base-URL overrides via `kumo config set <name>BaseUrl`.
 - **Multi-Provider Architecture**: Frontier reasoning orchestrator breaks down complex architecture and dispatches bounded execution tasks to high-throughput workers via local MCP stdio bridge.
-- **Per-Session Settings & Role Synchronization**: Each session (a REPL window, a `kumo run`, later each desktop chat) starts from the saved config and then keeps its own settings. The bridge asks its session for them on every call, so `/model worker …` applies to the next worker call without a restart, and switching the worker or safety mode in one window never changes a turn running in another. Model switches keep the conversation on every provider; a provider switch starts a new one. CLI changes are also saved as the new defaults. Worker prompts name the active models. Project files (`.codex/config.toml`, `.codex/agents/reviewer.toml`, `.agents/mcp_config.json`) are **opt-in**: `kumo init` creates them, and sessions then keep them current — Kumo never writes them into a workspace you have not initialized, never into the directory you happen to run `kumo config` from, never overwrites a `reviewer.toml` it did not create, and never redefines a key you set yourself in `config.toml`. The one exception is `.agents/mcp_config.json` (merged, not overwritten) when Antigravity is the orchestrator, because that is the only way it can reach the worker tools.
+- **Per-Session Settings & Role Synchronization**: Each session (a REPL window, a `kumo run`, a desktop window) starts from the saved config and then keeps its own settings. The bridge asks its session for them on every call, so `/model worker …` applies to the next worker call without a restart, and switching the worker or safety mode in one window never changes a turn running in another. Model switches keep the conversation on every provider; a provider switch starts a new one. CLI changes are also saved as the new defaults. Worker prompts name the active models. Project files (`.codex/config.toml`, `.codex/agents/reviewer.toml`, `.agents/mcp_config.json`) are **opt-in**: `kumo init` creates them, and sessions then keep them current — Kumo never writes them into a workspace you have not initialized, never into the directory you happen to run `kumo config` from, never overwrites a `reviewer.toml` it did not create, and never redefines a key you set yourself in `config.toml`. The one exception is `.agents/mcp_config.json` (merged, not overwritten) when Antigravity is the orchestrator, because that is the only way it can reach the worker tools.
 - **Multi-Chat Session Persistence**: Persistent local conversation index and turn logging under `~/.kumo/sessions/` (prompt and response per turn), chat switching (`/chats`) and Markdown export (`/save`). Each chat records its provider thread, and switching back resumes it, so the orchestrator has its earlier turns again (Codex `thread/resume`, Claude Code `--resume`, Antigravity `--conversation`). Providers without resume start a fresh conversation, and Kumo says so.
 - **Global Project Registry**: Automatically tracks workspaces with quick switching (`/projects` or `/cd <path>`).
 - **Provider-First Model Picker**: Arrow-key dialog (`/model` or `kumo model`) grouping Subscription CLIs and Direct API providers (see Model Configuration below) with atomic flicker-free redraw and back navigation.
@@ -355,6 +380,8 @@ Kumo inspects the following environment variables to configure workspaces, execu
 | `GEMINI_BASE_URL` / `GOOGLE_GENERATIVE_AI_BASE_URL` | `src/providers/api/api-transport.js` | Endpoint override for `gemini-api` provider |
 | `KUMO_ENGINE_ENDPOINT` / `KUMO_SESSION_TOKEN` | `src/bridge/server.js` | Set by a Kumo session for the orchestrator it starts, so the bridge can reach that session (named pipe or 0700 unix socket, per-session token). Not for manual use. |
 | `KUMO_STRICT_EVENTS` | `src/core/events.js` | Set to `1` to validate every engine event against its schema (the test suite does) |
+| `KUMO_ENGINE_ROOT` | `apps/desktop/src/main/` | The engine's `src/` directory for the desktop app (defaults to the repository's) |
+| `KUMO_E2E` / `KUMO_E2E_CLIENT` | `apps/desktop/src/main/engine-host.ts` | Desktop end-to-end tests only: with both set, the engine uses the scripted client module at that path instead of a provider |
 
 Timeouts are configured separately: `timeoutMs` (default 5 min) bounds each worker call, `turnTimeoutMs` (default 30 min) bounds a whole orchestrator turn. A timed-out or Ctrl+C'd turn is interrupted at the orchestrator, and the prompt returns only once it has actually stopped. The Antigravity provider prefers the `agy` binary; set `cliBinary` (or `AGY_BIN`) to override it, or choose the `gemini-cli` provider to use the Gemini CLI as a worker.
 
@@ -363,13 +390,23 @@ Timeouts are configured separately: `timeoutMs` (default 5 min) bounds each work
 ## Architecture & Extensibility
 
 The codebase implements a decoupled, unhardcoded provider and data persistence structure:
-- **Engine** ([`src/core/`](src/core/)) — shared by the CLI and, later, the desktop app:
+- **Engine** ([`src/core/`](src/core/)) — shared by the CLI and the desktop app:
   - `session.js`: `Session`, one conversation in one workspace. It owns the orchestrator client, turns, worker calls and their output, approvals, the chat record and its provider thread, quotas and its own settings, and reports everything as events. Its commands: `start`, `send`, `interrupt`, `newChat`, `openChat`, `setWorkspace`, `updateSettings`, `resolveApproval`, `exportMarkdown`, `stop`.
   - `session-manager.js`: several sessions side by side, one event stream.
   - `events.js`: the event contract (`turn.*`, `tool.*`, `approval.*`, `quota.updated`, `session.*`, `settings.changed`, `chat.changed`) as zod schemas, with the JSDoc types inferred from them.
   - `ipc/`: the engine ↔ bridge connection, NDJSON JSON-RPC over a named pipe or unix socket, with a per-session token. The bridge asks for settings and approvals there and streams each run's output tagged with its run.
   - `tool-tracker.js`, `live-log-tailer.js`, `quota-monitor.js`, `settings.js`: call/run matching, the file fallback for bridges without an engine, quota polling, and per-session settings.
+  - `commands.js`: the commands a front end may send (`session.create`, `session.send`, `prefs.set`, …) as strict zod schemas, and a router that validates each one before calling the `SessionManager`.
+  - `prefs.js`: desktop preferences (`~/.kumo/desktop.json`), validated value by value.
+  - `node-command.js`: how to launch a Node script from wherever the engine runs (Node, or Electron with `ELECTRON_RUN_AS_NODE`).
   - `vendor/codex-protocol/`: Codex app-server types generated by `npm run refresh:codex-protocol`.
+- **Desktop app** ([`apps/desktop/`](apps/desktop/)):
+  - `src/main/index.ts`: the window (frameless, native caption buttons over the glass title bar), the engine's utility process, the folder picker and native theme.
+  - `src/main/engine-host.ts`: the engine in the utility process, serving commands and events over `MessagePort`s.
+  - `src/main/scene-protocol.ts`, `src/main/scenes/`: the `kumo-scene://` origin, the scene runtime and the built-in scenes.
+  - `src/preload/index.ts`: `window.kumo`, the renderer's only way out.
+  - `src/renderer/`: React UI; `store.ts` shapes engine events into state, `styles/tokens.css` holds the Night sky tokens, and components carry `data-part` names for theming.
+  - `e2e/`: Playwright tests against the built app with a scripted orchestrator.
 - **Model catalog** ([`src/config/models.js`](src/config/models.js)): every provider's models, aliases, provider detection and plan labels in one place.
 - **Orchestrators** ([`src/providers/orchestrators/`](src/providers/orchestrators/)):
   - `codex-client.js`: OpenAI Codex app-server client supporting streaming turns, live rate limits, turn status, and server→client approval requests (shapes follow `codex app-server generate-json-schema`).
@@ -423,6 +460,9 @@ npm test            # the suite
 npm run lint        # ESLint
 npm run typecheck   # tsc over JSDoc, strict for files with // @ts-check (all of src/core)
 npm run check       # all three
+
+npm run typecheck -w @kumo/desktop   # the desktop app's TypeScript
+npm run test:e2e -w @kumo/desktop    # build it and run it end to end (Playwright + Electron)
 ```
 
 Kumo needs Node 22 or later. The suite runs offline against stub CLIs and a sandboxed `KUMO_HOME`. It drives the real paths end to end: the MCP bridge over stdio (worker permissions per call, `git apply` of approved previews, refusals for text-only workers), the engine (`Session`) against scripted clients, a real bridge connected back to a real session over the named pipe (per-session settings, streamed output, approvals), the interactive REPL over pipes (saved transcripts), `kumo run` with fake clients, Claude Code's stream-json output from a recorded turn, and argument passing through real `cmd.exe` `.cmd` shims on Windows. Codex event fixtures in `tests/fixtures/codex-protocol.json` follow the app-server schema.
@@ -433,4 +473,6 @@ To also run the tests that use real CLIs and accounts (Codex rate limits, and a 
 $env:KUMO_LIVE_TESTS = "1"; npm test
 ```
 
-CI runs lint and the type check once, and the suite on Windows and Linux with Node 22 and 24, with a coverage floor for `src/bridge`, `src/providers` and `src/core`. After upgrading Codex, refresh the vendored protocol types with `npm run refresh:codex-protocol`.
+The desktop end-to-end tests launch the built app against a scripted orchestrator in a throwaway `KUMO_HOME`. They send a prompt and check the streamed answer, the tool card and the Workers panel, approve a request and check the file it writes, switch theme, scene and dock, confirm the scene frame can't reach the window, the network or Node, and kill the engine to check that the window recovers.
+
+CI runs lint and the type check once, and the suite on Windows and Linux with Node 22 and 24, with a coverage floor for `src/bridge`, `src/providers` and `src/core`. A desktop job type-checks the app and runs its end-to-end tests on Windows and Linux. After upgrading Codex, refresh the vendored protocol types with `npm run refresh:codex-protocol`.
