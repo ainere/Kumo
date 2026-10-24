@@ -1,0 +1,20 @@
+{
+  // Type-checks JavaScript through its JSDoc; nothing is emitted. Files opt in
+  // with `// @ts-check` at the top, so the engine (src/core) can be strict
+  // while older modules are converted one at a time.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "strict": true,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.js", "src/**/*.ts", "bin/**/*.js"]
+}

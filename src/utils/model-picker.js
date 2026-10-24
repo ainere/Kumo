@@ -5,7 +5,7 @@
  */
 
 import readline from "node:readline";
-import { c, badge, separator } from "./ui.js";
+import { c, badge } from "./ui.js";
 import {
   loadConfig,
   setConfigValue,
@@ -47,6 +47,7 @@ export const DIRECT_API_PROVIDERS = [
 
 /** Strip ANSI color sequences for accurate visible length calculation */
 function stripAnsi(str) {
+  // eslint-disable-next-line no-control-regex -- matching ESC is the point
   return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
 }
 
@@ -746,6 +747,4 @@ export async function openInteractiveModelPicker(opts = {}) {
       }
     }
   }
-
-  return config;
 }

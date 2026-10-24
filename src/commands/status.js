@@ -1,8 +1,11 @@
+import fs from "node:fs";
 import path from "node:path";
 import { VERSION } from "../version.js";
 import { loadConfig, isCodexModel } from "../config/settings.js";
+import { planLabel } from "../config/models.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
 import { checkAgyHealth, getAgyUsage } from "../bridge/agy-runner.js";
+import { findClaudeBinary } from "../providers/workers/claude.js";
 import { getCachedQuotas, saveCachedQuotas } from "../utils/quota-cache.js";
 import { getApiKey, getKeyEnvVarName, resolveBaseUrl } from "../providers/api/api-transport.js";
 import {
@@ -26,7 +29,6 @@ export async function statusCommand(opts = {}) {
 
   const g1 = c.brightCyan;
   const g2 = c.cyan;
-  const g3 = c.brightBlue;
 
   const cached = getCachedQuotas();
   let codexLimits = cached.codex;
@@ -131,31 +133,62 @@ export async function statusCommand(opts = {}) {
     console.log(separator(64));
   }
 
-  // 2. Query Antigravity live usage & health when a non-API role needs it.
-  let workerHealth = null;
+  // 2. Antigravity usage and health, only for roles that run on Antigravity.
+  const usesAgy = config.orchestratorProvider === "antigravity" || config.workerProvider === "antigravity";
+  let agyHealth = null;
   let agyUsage = null;
-  if ((!isWorkerCodex && !isWorkerApi) || (!isOrchCodex && !isOrchApi)) {
+  if (usesAgy) {
     // One usage query serves both: it is the quota and the login check.
     const freshAgy = await getAgyUsage().catch(() => null);
-    workerHealth = await checkAgyHealth({ usage: freshAgy }).catch((e) => ({ authenticated: false, error: e.message }));
+    agyHealth = await checkAgyHealth({ usage: freshAgy }).catch((e) => ({ authenticated: false, error: e.message }));
     if (freshAgy) agyUsage = freshAgy;
   }
 
   saveCachedQuotas(codexLimits, agyUsage);
 
-  // If Orchestrator is Antigravity, render its Antigravity limits
-  if (!isOrchApi && !isOrchCodex && agyUsage) {
-    const isClaude = /claude|anthropic/i.test(config.orchestratorModel);
-    const weeklyPercent = isClaude ? agyUsage.claudeGptWeeklyPercent : agyUsage.geminiWeeklyPercent;
-    const weeklyReset = isClaude ? (agyUsage.claudeGptWeeklyResetFormatted || "weekly") : (agyUsage.geminiWeeklyResetFormatted || "weekly");
-    console.log(`  ${c.bold}Orchestrator (${orchSub}):${c.reset}`);
-    if (weeklyPercent !== null && weeklyPercent !== undefined) {
-      console.log(`    ${"Weekly Remaining:".padEnd(24)}${progressBar(weeklyPercent, 14)} (${weeklyReset})`);
+  // Claude Code reports its account's limits with every turn; Kumo keeps the
+  // last report. Asking for fresh ones would mean running a model turn.
+  const claudeLimits = cached.orchestrators?.claude || null;
+
+  /** @param {object} usage @param {string} model */
+  const renderAgyUsage = (usage, model) => {
+    const claudeOrGpt = /claude|gpt|anthropic/i.test(model || "");
+    const rows = claudeOrGpt
+      ? [["Weekly", usage.claudeGptWeeklyPercent, usage.claudeGptWeeklyResetFormatted], ["5-Hour", usage.claudeGpt5HourPercent, usage.claudeGpt5HourResetFormatted]]
+      : [["Weekly", usage.geminiWeeklyPercent, usage.geminiWeeklyResetFormatted], ["5-Hour", usage.gemini5HourPercent, usage.gemini5HourResetFormatted]];
+    for (const [label, percent, reset] of rows) {
+      if (percent === null || percent === undefined) continue;
+      console.log(`    ${`${label} Remaining:`.padEnd(24)}${progressBar(percent, 14)} (${reset || label.toLowerCase()})`);
     }
+  };
+
+  const renderClaude = () => {
+    const bin = findClaudeBinary();
+    const installed = path.isAbsolute(bin) && fs.existsSync(bin);
+    console.log(
+      `    ${"Claude Code:".padEnd(24)}${installed ? `${badge.ok} ${c.gray}${bin}${c.reset}` : `${badge.warn} 'claude' was not found on PATH`}`
+    );
+    if (claudeLimits?.remainingPercent !== undefined) {
+      const period = claudeLimits.windowMinutes <= 360 ? "5-Hour" : "Weekly";
+      console.log(`    ${`${period} Remaining:`.padEnd(24)}${progressBar(claudeLimits.remainingPercent, 14)} (resets ${claudeLimits.resetFormatted})`);
+      console.log(`    ${c.gray}From the last Claude turn${staleNote}.${c.reset}`);
+    } else {
+      console.log(`    ${c.gray}Usage is reported after the first Claude turn.${c.reset}`);
+    }
+  };
+
+  // Orchestrator on Antigravity or Claude Code (Codex and API roles rendered above).
+  if (config.orchestratorProvider === "antigravity") {
+    console.log(`  ${c.bold}Orchestrator (${orchSub}):${c.reset}`);
+    if (agyUsage) renderAgyUsage(agyUsage, config.orchestratorModel);
+    console.log(separator(64));
+  } else if (config.orchestratorProvider === "claude") {
+    console.log(`  ${c.bold}Orchestrator (${orchSub}):${c.reset}`);
+    renderClaude();
     console.log(separator(64));
   }
 
-  // Render Worker Limits (API workers already rendered above; never fall through to subscription).
+  // Worker (API workers already rendered above; never fall through to subscription).
   if (isWorkerApi) {
     // Already rendered: presence + base URL. No subscription quota fetch for this role.
   } else if (isWorkerCodex) {
@@ -167,52 +200,23 @@ export async function statusCommand(opts = {}) {
         : ((codexLimits.resetsAt - Date.now() / 1000) / 86400 > 8 ? "Monthly" : "Weekly");
       console.log(`    ${`${workerPeriod} Remaining:`.padEnd(24)}${progressBar(codexLimits.remainingPercent, 14)}`);
       console.log(`    ${"Reset Time:".padEnd(24)}${c.brightYellow}${codexLimits.resetFormatted}${c.reset}`);
-      if (codexLimits.creditsAvailable > 0) {
-        console.log(`    ${"Reset Credits:".padEnd(24)}${c.brightGreen}${codexLimits.creditsAvailable} reset available${c.reset}`);
-      } else {
-        console.log(`    ${"Reset Credits:".padEnd(24)}${c.gray}0 resets available${c.reset}`);
-      }
     }
+  } else if (config.workerProvider === "claude") {
+    console.log(`  ${c.bold}Worker Provider (${workerSub}):${c.reset}`);
+    renderClaude();
+  } else if (config.workerProvider === "antigravity") {
+    console.log(`  ${c.bold}Worker Provider (${workerSub}):${c.reset}`);
+    if (agyHealth?.authenticated) {
+      console.log(`    ${"Health:".padEnd(24)}${badge.ok} Connected & Authenticated`);
+      console.log(`    ${"Binary:".padEnd(24)}${c.gray}${agyHealth.binary}${c.reset}`);
+    } else {
+      console.log(`    ${"Health:".padEnd(24)}${badge.warn} ${agyHealth?.installed === false ? "agy not found" : "CLI available, check login"}`);
+      if (agyHealth?.error) console.log(`    ${"Detail:".padEnd(24)}${c.gray}${agyHealth.error.slice(0, 100)}${c.reset}`);
+    }
+    if (agyUsage) renderAgyUsage(agyUsage, config.workerModel);
   } else {
     console.log(`  ${c.bold}Worker Provider (${workerSub}):${c.reset}`);
-    if (workerHealth?.authenticated) {
-      console.log(`    ${"Health:".padEnd(24)}${badge.ok} Connected & Authenticated`);
-      console.log(`    ${"Binary:".padEnd(24)}${c.gray}${workerHealth.binary}${c.reset}`);
-    } else {
-      console.log(`    ${"Health:".padEnd(24)}${badge.warn} CLI available, check login`);
-      if (workerHealth?.error) {
-        console.log(`    ${"Detail:".padEnd(24)}${c.gray}${workerHealth.error.slice(0, 100)}${c.reset}`);
-      }
-    }
-
-    if (agyUsage) {
-      const isClaudeOrGpt = /claude|gpt|anthropic/i.test(config.workerModel) || config.workerProvider === "claude";
-      const weeklyPercent = isClaudeOrGpt
-        ? agyUsage.claudeGptWeeklyPercent
-        : agyUsage.geminiWeeklyPercent;
-      const weeklyReset = isClaudeOrGpt
-        ? (agyUsage.claudeGptWeeklyResetFormatted || "weekly")
-        : (agyUsage.geminiWeeklyResetFormatted || "weekly");
-
-      if (weeklyPercent !== null && weeklyPercent !== undefined) {
-        console.log(
-          `    ${"Weekly Remaining:".padEnd(24)}${progressBar(weeklyPercent, 14)} (${weeklyReset})`
-        );
-      }
-
-      const fiveHourPercent = isClaudeOrGpt
-        ? agyUsage.claudeGpt5HourPercent
-        : agyUsage.gemini5HourPercent;
-      const fiveHourReset = isClaudeOrGpt
-        ? (agyUsage.claudeGpt5HourResetFormatted || "5-hour")
-        : (agyUsage.gemini5HourResetFormatted || "5-hour");
-
-      if (fiveHourPercent !== null && fiveHourPercent !== undefined) {
-        console.log(
-          `    ${"5-Hour Remaining:".padEnd(24)}${progressBar(fiveHourPercent, 14)} (${fiveHourReset})`
-        );
-      }
-    }
+    console.log(`    ${c.gray}This provider reports no quota to Kumo.${c.reset}`);
   }
 
   console.log(separator(64) + "\n");

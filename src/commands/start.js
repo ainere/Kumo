@@ -1,60 +1,30 @@
 /**
- * start.js — Independent interactive terminal UI (REPL) for KUMO.
- * Runs Codex and Antigravity purely in the background via hidden channels,
- * providing clean streaming output, live dual-provider quotas, 30-second silent refreshes,
- * and in-session model & reasoning controls.
+ * start.js — Kumo's interactive terminal (REPL), a client of the engine.
+ *
+ * Everything stateful — the orchestrator, turns, worker calls, approvals,
+ * chats and their provider threads, quotas, settings — lives in a Session
+ * (src/core/session.js). This file renders its events and turns slash
+ * commands into Session calls; the desktop app drives the same Session.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import { randomUUID } from "node:crypto";
-import {
-  loadConfig,
-  setConfigValue,
-  PRESETS,
-  applyPreset,
-  resolveModel,
-  detectProviderForModel,
-  isCodexModel,
-} from "../config/settings.js";
-import { createOrchestratorClient, orchestratorDelegates } from "../providers/orchestrators/registry.js";
-import { isToolCallItem, toolNameOf, toolArgsOf } from "../providers/orchestrators/items.js";
-import { syncAgentConfigs } from "../config/sync.js";
-import { getAgyUsage } from "../bridge/agy-runner.js";
+import { loadConfig, PRESETS, resolveModel, providerForModel } from "../config/settings.js";
+import { EFFORT_LEVELS, planLabel } from "../config/models.js";
+import { Session } from "../core/session.js";
+import { SESSION_SETTING_KEYS } from "../core/settings.js";
 import { launchInNewWindow } from "../utils/window-launcher.js";
-import { getCachedQuotas, saveCachedQuotas } from "../utils/quota-cache.js";
-import {
-  getBanner,
-  c,
-  badge,
-  separator,
-  progressBar,
-} from "../utils/ui.js";
+import { getBanner, c, badge, separator, progressBar } from "../utils/ui.js";
 import { openInteractiveModelPicker, promptSelect } from "../utils/model-picker.js";
 import { createSpinner } from "../utils/spinner.js";
 import { loadHistory, saveHistory, cleanHistory, clearHistory } from "../utils/history.js";
 import { runOnboarding } from "./onboarding.js";
-import {
-  registerProject,
-  createChat,
-  appendTurn,
-  updateChat,
-  listChats,
-  listProjects,
-  generateChatTitle,
-  loadTurnLog,
-  getLiveLogPath,
-  getActiveLiveRun,
-  readLiveLogChunk,
-  getApprovalDir,
-  isValidId,
-} from "../data/sessions.js";
-import { runTurn } from "../providers/orchestrators/turn-wait.js";
+import { listProjects } from "../data/sessions.js";
 import { configFile } from "../config/paths.js";
 import { VERSION } from "../version.js";
 
-function getOrchestratorPeriod(limits) {
+function getQuotaPeriod(limits) {
   if (!limits) return "Monthly";
   if (limits.windowMinutes) {
     if (limits.windowMinutes <= 360) return "5-Hour";
@@ -84,143 +54,84 @@ function getSmartExamples(ws) {
   const examples = [];
   const exists = (p) => fs.existsSync(path.join(ws, p));
 
-  // Detect project type
   const srcDir = exists("src") ? "src/" : exists("lib") ? "lib/" : exists("app") ? "app/" : null;
-  if (srcDir) {
-    examples.push(`Explore ${srcDir} and outline the application architecture`);
-  } else {
-    examples.push("Explore the codebase and outline the application architecture");
-  }
+  examples.push(
+    srcDir
+      ? `Explore ${srcDir} and outline the application architecture`
+      : "Explore the codebase and outline the application architecture"
+  );
 
-  // Detect test runner
-  if (exists("package.json")) {
-    examples.push("Run npm test and fix any failing test cases");
-  } else if (exists("pyproject.toml") || exists("setup.py")) {
-    examples.push("Run pytest and fix any failing test cases");
-  } else if (exists("Cargo.toml")) {
-    examples.push("Run cargo test and fix any failing test cases");
-  } else if (exists("go.mod")) {
-    examples.push("Run go test ./... and fix any failing test cases");
-  } else {
-    examples.push("Run the test suite and fix any failures");
-  }
+  if (exists("package.json")) examples.push("Run npm test and fix any failing test cases");
+  else if (exists("pyproject.toml") || exists("setup.py")) examples.push("Run pytest and fix any failing test cases");
+  else if (exists("Cargo.toml")) examples.push("Run cargo test and fix any failing test cases");
+  else if (exists("go.mod")) examples.push("Run go test ./... and fix any failing test cases");
+  else examples.push("Run the test suite and fix any failures");
 
-  // Git / review suggestion
   examples.push("Review the most recent git changes for issues or refactoring");
-
   return examples;
 }
 
 /**
- * Render the startup header with cloud cumulus kanji banner and live dual-provider quotas.
- * Formats every line with a clean 24-character label and 14-block progress bars.
+ * Antigravity's figures for a model: Claude/GPT models share one pool, Gemini
+ * and open-weights models another.
  */
-function renderHeader(workspace, config, codexLimits = null, agyUsage = null) {
-  const orchModelFull = config.reasoningEffort ? `${config.orchestratorModel}-${config.reasoningEffort}` : config.orchestratorModel;
-  const workerModelFull = config.workerEffort ? `${config.workerModel}-${config.workerEffort}` : config.workerModel;
+function antigravityLines(usage, model) {
+  if (!usage) return [];
+  const claudeOrGpt = /claude|gpt|anthropic/i.test(model || "");
+  const pick = (weekly) =>
+    claudeOrGpt
+      ? [weekly ? usage.claudeGptWeeklyPercent : usage.claudeGpt5HourPercent, weekly ? usage.claudeGptWeeklyResetFormatted : usage.claudeGpt5HourResetFormatted]
+      : [weekly ? usage.geminiWeeklyPercent : usage.gemini5HourPercent, weekly ? usage.geminiWeeklyResetFormatted : usage.gemini5HourResetFormatted];
+  const lines = [];
+  for (const [label, weekly] of [["Weekly", true], ["5-Hour", false]]) {
+    const [percent, reset] = pick(weekly);
+    if (percent !== null && percent !== undefined) lines.push({ label, percent, reset: reset || label.toLowerCase() });
+  }
+  return lines;
+}
+
+/**
+ * The quota lines for one role: the orchestrator client's own limits when
+ * the role runs on that provider, Antigravity's usage for Antigravity roles.
+ */
+function quotaLinesFor(role, settings, quotas) {
+  const provider = role === "orchestrator" ? settings.orchestratorProvider : settings.workerProvider;
+  const model = role === "orchestrator" ? settings.orchestratorModel : settings.workerModel;
+  if (provider === "antigravity") return antigravityLines(quotas.antigravity, model);
+  // The orchestrator client reports its provider's account limits; a worker
+  // on the same provider draws on the same account.
+  if (provider === settings.orchestratorProvider && quotas.orchestrator?.remainingPercent !== undefined) {
+    const limits = quotas.orchestrator;
+    return [{ label: getQuotaPeriod(limits), percent: limits.remainingPercent, reset: limits.resetFormatted }];
+  }
+  return [];
+}
+
+/**
+ * Render the startup header: banner, models, quotas, how-to and examples.
+ */
+function renderHeader(workspace, settings, quotas) {
+  const orchModelFull = settings.reasoningEffort ? `${settings.orchestratorModel}-${settings.reasoningEffort}` : settings.orchestratorModel;
+  const workerModelFull = settings.workerEffort ? `${settings.workerModel}-${settings.workerEffort}` : settings.workerModel;
 
   const sub = `${c.brightCyan}${orchModelFull}${c.reset} ${c.skyBlue}◄───[MCP]───►${c.reset} ${c.brightBlue}${workerModelFull}${c.reset}`;
-
   console.log("\n" + getBanner(VERSION, "cloud", sub));
   console.log(separator(64));
 
-  // Luminous blueish gradient sequence for metadata labels matching the banner & separator
   const g1 = c.brightCyan;
   const g2 = c.cyan;
   const g3 = c.brightBlue;
-
-  const isOrchCodex = isCodexModel(config.orchestratorModel, config.orchestratorProvider);
-  const isWorkerCodex = isCodexModel(config.workerModel, config.workerProvider);
-
-  const orchSub = isOrchCodex
-    ? (codexLimits?.planType || (config.orchestratorProvider === "codex" ? "ChatGPT Plus" : "Codex"))
-    : (/claude|anthropic/i.test(config.orchestratorModel)
-      ? "Anthropic via Antigravity"
-      : /gpt|openai/i.test(config.orchestratorModel)
-      ? "OpenAI via Antigravity"
-      : "Google AI Pro");
-
-  const workerSub = isWorkerCodex
-    ? (codexLimits?.planType || (config.workerProvider === "codex" ? "ChatGPT Plus" : "Codex"))
-    : (/claude|anthropic/i.test(config.workerModel)
-      ? "Anthropic via Antigravity"
-      : /gpt|openai/i.test(config.workerModel)
-      ? "OpenAI via Antigravity"
-      : "Google AI Pro");
+  const orchSub = planLabel(settings.orchestratorProvider, settings.orchestratorModel, quotas.orchestrator);
+  const workerSub = planLabel(settings.workerProvider, settings.workerModel, settings.workerProvider === settings.orchestratorProvider ? quotas.orchestrator : null);
 
   console.log(`  ${g1}${"Workspace:".padEnd(24)}${c.reset}${workspace}`);
-  console.log(
-    `  ${g1}${"Orchestrator:".padEnd(24)}${c.reset}${c.brightCyan}${orchModelFull}${c.reset}${c.gray} (${orchSub})${c.reset}`
-  );
-  console.log(
-    `  ${g2}${"Worker:".padEnd(24)}${c.reset}${c.brightBlue}${workerModelFull}${c.reset}${c.gray} (${workerSub})${c.reset}`
-  );
+  console.log(`  ${g1}${"Orchestrator:".padEnd(24)}${c.reset}${c.brightCyan}${orchModelFull}${c.reset}${c.gray} (${orchSub})${c.reset}`);
+  console.log(`  ${g2}${"Worker:".padEnd(24)}${c.reset}${c.brightBlue}${workerModelFull}${c.reset}${c.gray} (${workerSub})${c.reset}`);
 
-  // 1. Orchestrator quota line
-  if (isOrchCodex) {
-    if (codexLimits) {
-      const bar = progressBar(codexLimits.remainingPercent, 14);
-      const orchPeriod = getOrchestratorPeriod(codexLimits);
-      const orchLabel = `Orchestrator ${orchPeriod}:`.padEnd(24);
-      console.log(
-        `  ${g2}${orchLabel}${c.reset}${bar} ${c.gray}• Resets ${codexLimits.resetFormatted}${c.reset}`
-      );
-    }
-  } else if (agyUsage) {
-    const isClaudeOrGpt = /claude|anthropic/i.test(config.orchestratorModel);
-    const weeklyPercent = isClaudeOrGpt ? agyUsage.claudeGptWeeklyPercent : agyUsage.geminiWeeklyPercent;
-    const weeklyReset = isClaudeOrGpt ? (agyUsage.claudeGptWeeklyResetFormatted || "weekly") : (agyUsage.geminiWeeklyResetFormatted || "weekly");
-    if (weeklyPercent !== null && weeklyPercent !== undefined) {
-      const wBar = progressBar(weeklyPercent, 14);
-      console.log(`  ${g2}${"Orchestrator Weekly:".padEnd(24)}${c.reset}${wBar} ${c.gray}• Resets ${weeklyReset}${c.reset}`);
-    }
-    const fiveHourPercent = isClaudeOrGpt ? agyUsage.claudeGpt5HourPercent : agyUsage.gemini5HourPercent;
-    const fiveHourReset = isClaudeOrGpt ? (agyUsage.claudeGpt5HourResetFormatted || "5-hour") : (agyUsage.gemini5HourResetFormatted || "5-hour");
-    if (fiveHourPercent !== null && fiveHourPercent !== undefined) {
-      const hBar = progressBar(fiveHourPercent, 14);
-      console.log(`  ${g2}${"Orchestrator 5-Hour:".padEnd(24)}${c.reset}${hBar} ${c.gray}• Resets ${fiveHourReset}${c.reset}`);
-    }
-  }
-
-  // 2. Worker quota line
-  if (isWorkerCodex) {
-    if (codexLimits) {
-      const bar = progressBar(codexLimits.remainingPercent, 14);
-      const workerPeriod = getOrchestratorPeriod(codexLimits);
-      const workerLabel = `Worker ${workerPeriod}:`.padEnd(24);
-      console.log(
-        `  ${g3}${workerLabel}${c.reset}${bar} ${c.gray}• Resets ${codexLimits.resetFormatted}${c.reset}`
-      );
-    }
-  } else if (agyUsage) {
-    const isClaudeOrGpt = /claude|gpt|anthropic/i.test(config.workerModel) || config.workerProvider === "claude";
-
-    const weeklyPercent = isClaudeOrGpt
-      ? agyUsage.claudeGptWeeklyPercent
-      : agyUsage.geminiWeeklyPercent;
-    const weeklyReset = isClaudeOrGpt
-      ? (agyUsage.claudeGptWeeklyResetFormatted || "weekly")
-      : (agyUsage.geminiWeeklyResetFormatted || "weekly");
-
-    if (weeklyPercent !== null && weeklyPercent !== undefined) {
-      const wBar = progressBar(weeklyPercent, 14);
-      console.log(
-        `  ${g3}${"Worker Weekly:".padEnd(24)}${c.reset}${wBar} ${c.gray}• Resets ${weeklyReset}${c.reset}`
-      );
-    }
-
-    const fiveHourPercent = isClaudeOrGpt
-      ? agyUsage.claudeGpt5HourPercent
-      : agyUsage.gemini5HourPercent;
-    const fiveHourReset = isClaudeOrGpt
-      ? (agyUsage.claudeGpt5HourResetFormatted || "5-hour")
-      : (agyUsage.gemini5HourResetFormatted || "5-hour");
-
-    if (fiveHourPercent !== null && fiveHourPercent !== undefined) {
-      const hBar = progressBar(fiveHourPercent, 14);
-      console.log(
-        `  ${g3}${"Worker 5-Hour:".padEnd(24)}${c.reset}${hBar} ${c.gray}• Resets ${fiveHourReset}${c.reset}`
-      );
+  for (const [role, color, title] of [["orchestrator", g2, "Orchestrator"], ["worker", g3, "Worker"]]) {
+    for (const line of quotaLinesFor(role, settings, quotas)) {
+      const label = `${title} ${line.label}:`.padEnd(24);
+      console.log(`  ${color}${label}${c.reset}${progressBar(line.percent, 14)} ${c.gray}• Resets ${line.reset}${c.reset}`);
     }
   }
 
@@ -242,612 +153,121 @@ function renderHeader(workspace, config, codexLimits = null, agyUsage = null) {
   console.log(separator(64) + "\n");
 }
 
-export async function startCommand(opts = {}) {
-  let currentWorkspace = path.resolve(opts.dir || process.cwd());
+const SLASH_COMMANDS = [
+  "/model", "/effort", "/preset", "/new", "/chats", "/projects", "/cd", "/save", "/rename",
+  "/status", "/quota", "/usage", "/refresh", "/clear", "/cls", "/history", "/clear-history",
+  "/help", "/exit", "/quit",
+];
 
-  // Check for first-run onboarding
-  const configPath = configFile();
-  if (!fs.existsSync(configPath)) {
+function completer(line) {
+  if (line.startsWith("/")) {
+    const hits = SLASH_COMMANDS.filter((cmd) => cmd.startsWith(line));
+    return [hits.length ? hits : SLASH_COMMANDS, line];
+  }
+  return [[], line];
+}
+
+export async function startCommand(opts = {}) {
+  const startDir = path.resolve(opts.dir || process.cwd());
+
+  if (!fs.existsSync(configFile())) {
     await runOnboarding();
   }
 
-  let config = loadConfig();
-
-  // If not running in child window and not explicitly told to stay here, launch dedicated window
+  // Unless told to stay here, open Kumo in its own terminal window.
   const shouldNewWindow = !opts.here && process.stdout.isTTY && !process.env.KUMO_HERE;
   if (shouldNewWindow) {
-    const launched = await launchInNewWindow({
-      workspace: currentWorkspace,
-      args: process.argv.slice(2),
-    });
+    const launched = await launchInNewWindow({ workspace: startDir, args: process.argv.slice(2) });
     if (launched) return;
   }
 
-  // Register project & start session
-  registerProject(currentWorkspace);
-  let currentChatId = createChat(currentWorkspace, {
-    model: config.orchestratorModel,
-    effort: config.reasoningEffort,
-  });
-  let turnCount = 0;
+  const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const session = new Session({ workspace: startDir, interactive: tty });
+  const ws = () => session.workspace;
+  const header = () => renderHeader(ws(), session.settings, session.quotas.snapshot());
 
-  // Set terminal title
-  setKumoTitle(currentWorkspace);
+  setKumoTitle(ws());
+  header();
 
-  // Load instant cached quotas for sub-millisecond menu render
-  const cached = getCachedQuotas();
-  let codexLimits = cached.codex;
-  let agyUsage = cached.agy;
-
-  // Render header IMMEDIATELY (<5ms)
-  renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-
-  let client = null;
-  let clientReady = null;
+  // ── turn view state ──
   let isTurnActive = false;
-  // The running turn's handle (from runTurn) — Ctrl+C asks it to stop.
-  let activeTurn = null;
-  // The orchestrator's answer text for the running turn. It is kept apart from
-  // streamBuffers (the Tab-focus replay buffer): a turn_completed listener used
-  // to clear those before the turn's own code read them, so every saved
-  // transcript had an empty response.
-  let turnTranscript = null;
-  // Set when the orchestrator process exits; the next prompt restarts it.
-  let needsReconnect = false;
+  /** Worker calls of the running turn, in the order they started. */
   const activeTools = new Map();
+  /** Recent text per stream ("orchestrator" or a tool id), replayed on Tab. */
   const streamBuffers = new Map();
-  const tailIntervals = new Map();
   let focusedStream = "orchestrator";
-  let quotaInterval = null;
+  let titleTimer = null;
   const spinner = createSpinner("Thinking");
 
-  // appendToBuffer is called once per streamed delta chunk, so a chunk-count cap
-  // silently discards the beginning of any long response. Budget characters instead.
+  // One budget in characters: a chunk count would drop the start of long answers.
   const MAX_BUFFER_CHARS = 200_000;
   function appendToBuffer(streamId, text) {
-    if (!streamBuffers.has(streamId)) {
-      streamBuffers.set(streamId, []);
-    }
+    if (!streamBuffers.has(streamId)) streamBuffers.set(streamId, []);
     const buf = streamBuffers.get(streamId);
     buf.push(text);
     let total = 0;
     for (const part of buf) total += part.length;
-    while (buf.length > 1 && total > MAX_BUFFER_CHARS) {
-      total -= buf.shift().length;
-    }
+    while (buf.length > 1 && total > MAX_BUFFER_CHARS) total -= buf.shift().length;
   }
 
-  function updateWorkerTitle(toolInfo) {
-    if (!process.stdout.isTTY || !isTurnActive) return;
-    const elapsed = Math.floor((Date.now() - (toolInfo.startedAt || Date.now())) / 1000);
-    const toolModel = toolInfo.model || config.workerModel || "worker";
-    const toolName = toolInfo.name || "worker_task";
-    const focusHint = focusedStream === toolInfo.id ? "focused" : "Tab to focus";
-    process.stdout.write(`\x1b]0;KUMO — [${toolName}: ${toolModel}] ${elapsed}s (${focusHint})\x07`);
-  }
-
-  function startTailing(itemId, toolInfo) {
-    if (tailIntervals.has(itemId)) return;
-    if (!streamBuffers.has(itemId)) {
-      streamBuffers.set(itemId, []);
-    }
-
-    let offset = 0;
-    let runId = null;
-
-    // Copy whatever the worker has written since the last read.
-    const pump = () => {
-      if (!runId) return;
-      const chunk = readLiveLogChunk(currentWorkspace, runId, offset);
-      offset = chunk.offset;
-      if (chunk.text) {
-        appendToBuffer(itemId, chunk.text);
-        if (focusedStream === itemId) {
-          process.stdout.write(chunk.text);
-        }
-      }
-    };
-
-    const interval = setInterval(() => {
-      try {
-        if (!runId) {
-          if (fs.existsSync(getLiveLogPath(currentWorkspace, itemId))) {
-            runId = itemId;
-          } else {
-            const activeRun = getActiveLiveRun(currentWorkspace, toolInfo.runId);
-            if (activeRun?.runId && fs.existsSync(getLiveLogPath(currentWorkspace, activeRun.runId))) {
-              toolInfo.runId = activeRun.runId;
-              runId = activeRun.runId;
-            }
-          }
-        }
-        pump();
-        updateWorkerTitle(toolInfo);
-      } catch {
-        /* ignore transient tailing errors */
-      }
-    }, 80);
-
-    tailIntervals.set(itemId, {
-      interval,
-      toolInfo,
-      pump,
-      getRunId: () => runId,
-      cleanup: () => clearInterval(interval),
-    });
-  }
-
-  function stopTailing(itemId) {
-    const tailer = tailIntervals.get(itemId);
-    if (!tailer) return;
-
-    tailIntervals.delete(itemId);
-    tailer.cleanup();
-
-    try {
-      tailer.pump(); // drain the tail of the log
-      const runId = tailer.getRunId();
-      // The tailer may have adopted another call's run (the bridge does not yet
-      // learn the orchestrator's call id); never delete a log still being written.
-      if (runId && !getActiveLiveRun(currentWorkspace, runId)) {
-        fs.unlinkSync(getLiveLogPath(currentWorkspace, runId));
-      }
-    } catch {
-      /* best effort */
-    }
-
-    if (focusedStream === itemId) {
-      focusedStream = "orchestrator";
-      console.log(`\n  ${badge.ok} ${c.dim}[worker] ${tailer.toolInfo?.name || "tool"} finished${c.reset}`);
-      console.log(`  ${badge.info} ${c.bold}Focus returned to Orchestrator (${config.orchestratorModel})${c.reset}\n`);
-    }
-
-    if (activeTools.size === 0) {
-      setKumoTitle(currentWorkspace);
-    }
+  function updateWorkerTitle() {
+    if (!process.stdout.isTTY || !isTurnActive || activeTools.size === 0) return;
+    const tool = activeTools.get(focusedStream) || [...activeTools.values()].at(-1);
+    const elapsed = Math.floor((Date.now() - tool.startedAt) / 1000);
+    const focusHint = focusedStream === tool.toolId ? "focused" : "Tab to focus";
+    process.stdout.write(`\x1b]0;KUMO — [${tool.name}: ${tool.model || session.settings.workerModel}] ${elapsed}s (${focusHint})\x07`);
   }
 
   function cycleStreamFocus() {
     if (!isTurnActive) return;
     const streams = ["orchestrator", ...activeTools.keys()];
     if (streams.length <= 1) return;
-
-    const currentIndex = streams.indexOf(focusedStream);
-    const nextIndex = (currentIndex + 1) % streams.length;
-    focusedStream = streams[nextIndex];
-
+    focusedStream = streams[(streams.indexOf(focusedStream) + 1) % streams.length];
     spinner.stop();
-
     if (focusedStream === "orchestrator") {
-      const orchModel = config.orchestratorModel;
-      console.log(`\n\n  ${badge.info} ${c.bold}Focused on Orchestrator (${orchModel})${c.reset} ${c.dim}(Tab to switch)${c.reset}\n`);
-      const recent = (streamBuffers.get("orchestrator") || []).slice(-30).join("");
-      if (recent) {
-        process.stdout.write(recent);
-      }
+      console.log(`\n\n  ${badge.info} ${c.bold}Focused on Orchestrator (${session.settings.orchestratorModel})${c.reset} ${c.dim}(Tab to switch)${c.reset}\n`);
     } else {
       const tool = activeTools.get(focusedStream);
-      const toolName = tool?.name || "worker";
-      const toolModel = tool?.model || config.workerModel;
-      console.log(`\n\n  ${badge.info} ${c.bold}Focused on Worker: ${toolName} (${toolModel})${c.reset} ${c.dim}(Tab to switch)${c.reset}\n`);
-      const recent = (streamBuffers.get(focusedStream) || []).slice(-30).join("");
-      if (recent) {
-        process.stdout.write(recent);
-      }
+      console.log(`\n\n  ${badge.info} ${c.bold}Focused on Worker: ${tool?.name || "worker"} (${tool?.model || session.settings.workerModel})${c.reset} ${c.dim}(Tab to switch)${c.reset}\n`);
     }
+    const recent = (streamBuffers.get(focusedStream) || []).slice(-30).join("");
+    if (recent) process.stdout.write(recent);
+    updateWorkerTitle();
   }
 
-  function attachClientListeners(cl) {
-    cl.on("delta", (chunk) => {
-      if (cl !== client) return;
-      if (turnTranscript) turnTranscript.push(chunk);
-      appendToBuffer("orchestrator", chunk);
-      if (focusedStream === "orchestrator") {
-        spinner.stop();
-        process.stdout.write(chunk);
-      }
-    });
-
-    cl.on("reasoning", (chunk) => {
-      if (cl !== client) return;
-      if (chunk) {
-        const formatted = `${c.dim}${chunk}${c.reset}`;
-        appendToBuffer("orchestrator", formatted);
-        if (focusedStream === "orchestrator") {
-          spinner.stop();
-          process.stdout.write(formatted);
-        }
-      } else if (!spinner.isActive() && focusedStream === "orchestrator") {
-        spinner.start();
-      }
-    });
-
-    // Turn teardown (tailers, buffers, spinner) happens once, in the prompt
-    // handler's `finally`, after runTurn has settled.
-
-    cl.on("warning", (w) => {
-      if (cl !== client) return;
-      spinner.stop();
-      console.log(`\n  ${badge.warn} ${c.dim}${w?.message || w}${c.reset}`);
-    });
-
-    cl.on("notice", (text) => {
-      if (cl !== client) return;
-      console.log(`  ${badge.info} ${c.dim}${text}${c.reset}`);
-    });
-
-    cl.on("server_request", (req) => {
-      if (cl !== client) {
-        req.decline();
-        return;
-      }
-      if (!req.isApproval || !process.stdin.isTTY || !process.stdout.isTTY) {
-        req.decline();
-        return;
-      }
-      void withApprovalLock(async () => {
-        spinner.stop();
-        const approved = await askApproval({ tool: `codex: ${req.method}`, previewText: req.description });
-        if (approved) req.approve();
-        else req.decline();
-      }).catch(() => req.decline());
-    });
-
-    cl.on("item_started", (params) => {
-      if (cl !== client) return;
-      const item = params?.item || {};
-      // item.id reaches the filesystem as live-<id>.log; degrade instead of throwing.
-      const itemId = isValidId(item.id) ? item.id : randomUUID();
-      // Codex reports MCP calls as `mcpToolCall`; matching only the legacy
-      // spellings meant no Codex tool call was ever shown.
-      if (isToolCallItem(item)) {
-        const toolName = toolNameOf(item);
-        const args = toolArgsOf(item);
-        const taskPreview = typeof args.task === "string" ? args.task : "";
-
-        const workerModel = args.model || item.model || config.workerModel;
-        const workerEffort = args.effort || item.effort || config.workerEffort;
-
-        const toolInfo = {
-          id: itemId,
-          name: toolName,
-          task: taskPreview,
-          model: workerModel,
-          effort: workerEffort,
-          startedAt: Date.now(),
-        };
-
-        activeTools.set(itemId, toolInfo);
-
-        let modelDisplay = "";
-        if (workerModel) {
-          const effortPart = workerEffort ? `, effort: ${workerEffort}` : "";
-          modelDisplay = ` ${c.dim}(${workerModel}${effortPart})${c.reset}`;
-        }
-
-        const truncated = taskPreview.length > 80 ? taskPreview.slice(0, 77) + "..." : taskPreview;
-        const taskDisplay = truncated ? `\n    ${c.dim}${truncated}${c.reset}` : "";
-
-        spinner.stop();
-        const headerText = `\n  ${c.dim}[worker]${c.reset} ${c.brightCyan}${toolName}${c.reset}${modelDisplay}${taskDisplay}\n`;
-        appendToBuffer("orchestrator", headerText);
-        process.stdout.write(headerText);
-
-        startTailing(itemId, toolInfo);
-      }
-    });
-
-    cl.on("item_completed", (params) => {
-      if (cl !== client) return;
-      const item = params?.item || {};
-      let itemId = item.id;
-      if ((!itemId || !activeTools.has(itemId)) && activeTools.size > 0) {
-        const toolName = item.name || item.tool;
-        const args = toolArgsOf(item);
-        const sig = (typeof item.task === "string" ? item.task : "") ||
-          (typeof args.task === "string" ? args.task : "");
-
-        if (sig || toolName) {
-          for (const [id, tool] of activeTools.entries()) {
-            const nameMatch = !toolName || tool.name === toolName;
-            const taskMatch = sig && tool.task && (tool.task === sig || tool.task.includes(sig) || sig.includes(tool.task));
-            if (nameMatch && taskMatch) {
-              itemId = id;
-              break;
-            }
-          }
-          if (!itemId || !activeTools.has(itemId)) {
-            const matchingByName = Array.from(activeTools.entries()).filter(([_, t]) => !toolName || t.name === toolName);
-            if (matchingByName.length === 1) {
-              itemId = matchingByName[0][0];
-            }
-          }
-        }
-        // No confident match: leave activeTools alone rather than tearing down a
-        // different concurrent tool's tailer. The turn teardown cleans up.
-      }
-      if (itemId && activeTools.has(itemId)) {
-        stopTailing(itemId);
-        activeTools.delete(itemId);
-      }
-    });
-
-    // During a turn, runTurn turns these into the turn's outcome and the
-    // prompt handler reports it; resetting state here as well raced that
-    // handler and re-prompted twice. Only errors between turns print here.
-    cl.on("server_error", (err) => {
-      if (cl !== client || isTurnActive) return;
-      console.error(`\n${badge.fail} ${err?.message || JSON.stringify(err)}`);
-    });
-
-    cl.on("close", (code) => {
-      // A client replaced by initClient() reports its exit late; ignore it.
-      if (cl !== client) return;
-      needsReconnect = true;
-      if (!isTurnActive) {
-        console.error(`\n  ${badge.warn} Orchestrator process exited (code ${code}); it restarts with your next prompt.`);
-      }
-    });
-  }
-
-  async function initClient() {
-    const previous = client;
-    // Detach first: the old client's late `close` must not flag the new one.
-    client = null;
-    if (previous) {
-      try {
-        await previous.stop();
-      } catch {}
-    }
-    needsReconnect = false;
-
-    const provider = config.orchestratorProvider || detectProviderForModel(config.orchestratorModel);
-    if (!orchestratorDelegates(provider)) {
-      console.log(
-        `  ${badge.warn} ${c.dim}${provider} cannot call Kumo's worker tools; it answers prompts on its own.${c.reset}`
-      );
-    }
-    refreshProjectConfigs();
-
-    client = createOrchestratorClient({
-      provider,
-      model: config.orchestratorModel,
-      effort: config.reasoningEffort,
-      workspace: currentWorkspace,
-      env: {
-        ORCHESTRATOR_WORKSPACE: currentWorkspace,
-        KUMO_WORKSPACE: currentWorkspace,
-        // Tells the MCP bridge that a TTY operator is available to approve
-        // writes; without it `interactive` safety mode degrades to diff-review.
-        ...(config.safetyMode === "interactive" && process.stdout.isTTY
-          ? { KUMO_INTERACTIVE_APPROVAL: "1" }
-          : {}),
-      },
-    });
-
-    attachClientListeners(client);
-    try {
-      await client.start();
-      await client.startThread({
-        workspace: currentWorkspace,
-        model: config.orchestratorModel,
-        reasoningEffort: config.reasoningEffort,
-      });
-    } catch (err) {
-      // A client with no thread fails every later prompt with "No active
-      // thread"; retry the whole start on the next prompt instead.
-      needsReconnect = true;
-      throw err;
-    }
-  }
-
-  // Asynchronously initialize background client and fetch fresh live quotas.
-  // The first prompt awaits this handle so it cannot dereference a null client.
-  clientReady = (async () => {
-    try {
-      await initClient();
-
-      const [liveCodex, liveAgy] = await Promise.all([
-        client.getRateLimits().catch(() => null),
-        getAgyUsage().catch(() => null),
-      ]);
-
-      if (liveCodex) codexLimits = liveCodex;
-      if (liveAgy) agyUsage = liveAgy;
-      saveCachedQuotas(codexLimits, agyUsage);
-
-      // Update window title
-      setKumoTitle(currentWorkspace);
-    } catch (err) {
-      console.error(`\n${badge.warn} Background initialization warning: ${err.message}`);
-    }
-  })();
-
-  /**
-   * Start periodic 30-second silent banner quota refresh once user submits their first prompt.
-   */
-  function ensureQuotaRefresher() {
-    if (quotaInterval) return;
-
-    quotaInterval = setInterval(async () => {
-      try {
-        const [newCodex, newAgy] = await Promise.all([
-          client.getRateLimits().catch(() => null),
-          getAgyUsage().catch(() => null),
-        ]);
-        if (newCodex) codexLimits = newCodex;
-        if (newAgy) agyUsage = newAgy;
-        saveCachedQuotas(codexLimits, agyUsage);
-
-        setKumoTitle(currentWorkspace);
-      } catch {
-        /* ignore background refresh errors */
-      }
-    }, 30000);
-    quotaInterval.unref();
-  }
-
-
-
-  // Slash commands for auto-completion
-  const SLASH_COMMANDS = [
-    "/model",
-    "/effort",
-    "/preset",
-    "/new",
-    "/chats",
-    "/projects",
-    "/cd",
-    "/save",
-    "/rename",
-    "/status",
-    "/quota",
-    "/usage",
-    "/refresh",
-    "/clear",
-    "/cls",
-    "/history",
-    "/clear-history",
-    "/help",
-    "/exit",
-    "/quit",
-  ];
-
-  function completer(line) {
-    if (line.startsWith("/")) {
-      const hits = SLASH_COMMANDS.filter((cmd) => cmd.startsWith(line));
-      return [hits.length ? hits : SLASH_COMMANDS, line];
-    }
-    return [[], line];
-  }
-
-  // Setup Readline REPL with persistent history and tab completion
-  // Filter out non-chat slash commands so prompt cycling only shows user prompts
-  const rawHistory = loadHistory();
-  const history = rawHistory.filter((line) => !line.trim().startsWith("/"));
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: `${c.brightCyan}${c.bold}kumo${c.reset} ${c.dim}›${c.reset} `,
-    terminal: true,
-    history,
-    historySize: 500,
-    completer,
-  });
-
-  if (process.stdin.isTTY) {
-    readline.emitKeypressEvents(process.stdin);
-  }
-
-  /**
-   * Ask the running turn to stop. Input stays blocked until runTurn reports
-   * that it has actually ended — re-enabling it here let a second turn start
-   * on top of one the orchestrator was still running.
-   */
-  function interruptActiveTurn() {
-    // Both readline's SIGINT and the raw keypress listener see one Ctrl+C.
-    if (!activeTurn || activeTurn.interruptRequested) return;
-    activeTurn.interruptRequested = true;
-    console.log(`\n  ${badge.warn} Interrupting active task...`);
-    activeTurn.interrupt();
-  }
-
-  const onKeypress = (str, key) => {
-    if (!isTurnActive) return;
-    if ((key?.ctrl && key?.name === "c") || str === "\u0003") {
-      interruptActiveTurn();
-      return;
-    }
-    if (key?.name === "tab" || str === "\t") {
-      cycleStreamFocus();
-    }
-  };
-  process.stdin.on("keypress", onKeypress);
-
-  const saveReplHistory = () => {
-    // Only persist actual prompts, not slash commands or settings tweaks
-    const chatOnly = (rl.history || []).filter((line) => !line.trim().startsWith("/"));
-    saveHistory(chatOnly);
-  };
-
-  /**
-   * Put the terminal back the way we found it. `setRawMode(true)` is set on every
-   * turn and never cleared, which leaves the user's shell without local echo.
-   */
-  function restoreTerminal() {
-    if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
-      try {
-        process.stdin.setRawMode(false);
-      } catch {
-        /* stdin may already be closed */
-      }
-    }
-  }
-
-  /** Stop the orchestrator client if one was ever created. */
-  async function stopClientQuietly() {
-    if (!client) return;
-    try {
-      await client.stop();
-    } catch {
-      /* teardown must never throw on the exit path */
-    }
-  }
-
-  /**
-   * Keep provider files current in workspaces that opted in via `kumo init`.
-   * Workspaces without Kumo-managed files are never written to.
-   */
-  function refreshProjectConfigs() {
-    syncAgentConfigs(currentWorkspace, config, { onlyIfManaged: true });
-  }
-
-  // ── interactive safety mode: human approval handshake ──
-  let approvalInterval = null;
-  let approvalBusy = false;
-  const handledApprovals = new Set();
-
-  // Codex approval requests and bridge write approvals both read one key from
-  // the same terminal; they must take turns or keystrokes go to the wrong one.
+  // ── approvals ──
+  // Orchestrator requests and worker write approvals both read one key from
+  // the same terminal; they take turns.
   let approvalChain = Promise.resolve();
   function withApprovalLock(fn) {
-    const run = approvalChain.then(async () => {
-      approvalBusy = true;
-      try {
-        return await fn();
-      } finally {
-        approvalBusy = false;
-      }
-    });
+    const run = approvalChain.then(fn);
     approvalChain = run.catch(() => {});
     return run;
   }
 
   /**
-   * Render a pending write preview and read a single-key decision.
+   * Show a pending change or request and read a single-key decision.
    *
-   * @param {{previewId: string, tool: string, previewText: string}} record
+   * @param {{ tool: string, preview: string }} request
    * @returns {Promise<boolean>}
    */
-  function askApproval(record) {
+  function askApproval(request) {
     return new Promise((resolve) => {
-      const text = String(record.previewText || "");
+      const text = String(request.preview || "");
       const lines = text.split("\n");
       const shown = lines.slice(0, 40);
-
-      console.log(`\n  ${badge.warn} ${c.bold}Approval required${c.reset} ${c.dim}(${record.tool})${c.reset}`);
+      console.log(`\n  ${badge.warn} ${c.bold}Approval required${c.reset} ${c.dim}(${request.tool})${c.reset}`);
       for (const line of shown) console.log(`    ${c.dim}${line}${c.reset}`);
       if (lines.length > shown.length) {
         console.log(`    ${c.dim}… ${lines.length - shown.length} more lines — press d for the full preview${c.reset}`);
       }
-      process.stdout.write(`\n  Apply changes? ${c.bold}[y/N/d]${c.reset} `);
-
+      process.stdout.write(`\n  Approve? ${c.bold}[y/N/d]${c.reset} `);
       const onKey = (str) => {
         const ch = String(str || "").toLowerCase();
         if (ch === "d") {
           process.stdout.write("d\n");
           console.log(text);
-          process.stdout.write(`\n  Apply changes? ${c.bold}[y/N]${c.reset} `);
+          process.stdout.write(`\n  Approve? ${c.bold}[y/N]${c.reset} `);
           return;
         }
         process.stdin.off("keypress", onKey);
@@ -859,741 +279,513 @@ export async function startCommand(opts = {}) {
     });
   }
 
-  function startApprovalWatcher() {
-    // Without a TTY there is nobody to ask; the bridge falls back to diff-review.
-    if (approvalInterval || !process.stdout.isTTY || !process.stdin.isTTY) return;
-    approvalInterval = setInterval(async () => {
-      if (approvalBusy) return;
-      let dir;
-      let names;
-      try {
-        dir = getApprovalDir(currentWorkspace);
-        names = fs.readdirSync(dir);
-      } catch {
-        return;
-      }
-      for (const name of names) {
-        if (!name.endsWith(".json") || name.endsWith(".decision.json")) continue;
-        const previewId = name.slice(0, -".json".length);
-        if (handledApprovals.has(previewId)) continue;
-        if (fs.existsSync(path.join(dir, `${previewId}.decision.json`))) continue;
-
-        let record;
-        try {
-          record = JSON.parse(fs.readFileSync(path.join(dir, name), "utf-8"));
-        } catch {
-          continue;
-        }
-
-        handledApprovals.add(previewId);
-        try {
-          await withApprovalLock(async () => {
-            const approved = await askApproval(record);
-            fs.writeFileSync(
-              path.join(dir, `${previewId}.decision.json`),
-              JSON.stringify({ approved, decidedAt: Date.now() }, null, 2),
-              { encoding: "utf-8", mode: 0o600 }
-            );
-          });
-        } catch {
-          /* the bridge times out on its own if we cannot answer */
+  // ── engine events ──
+  session.on("event", (e) => {
+    switch (e.type) {
+      case "turn.delta":
+        appendToBuffer("orchestrator", e.text);
+        if (focusedStream === "orchestrator") {
+          spinner.stop();
+          process.stdout.write(e.text);
         }
         break;
+      case "turn.reasoning":
+        if (e.text) {
+          const formatted = `${c.dim}${e.text}${c.reset}`;
+          appendToBuffer("orchestrator", formatted);
+          if (focusedStream === "orchestrator") {
+            spinner.stop();
+            process.stdout.write(formatted);
+          }
+        } else if (!spinner.isActive() && focusedStream === "orchestrator") {
+          spinner.start();
+        }
+        break;
+      case "tool.started": {
+        activeTools.set(e.toolId, e);
+        const effortPart = e.effort ? `, effort: ${e.effort}` : "";
+        const modelDisplay = e.model ? ` ${c.dim}(${e.model}${effortPart})${c.reset}` : "";
+        const task = e.task.length > 80 ? e.task.slice(0, 77) + "..." : e.task;
+        const taskDisplay = task ? `\n    ${c.dim}${task}${c.reset}` : "";
+        spinner.stop();
+        const text = `\n  ${c.dim}[worker]${c.reset} ${c.brightCyan}${e.name}${c.reset}${modelDisplay}${taskDisplay}\n`;
+        appendToBuffer("orchestrator", text);
+        process.stdout.write(text);
+        updateWorkerTitle();
+        break;
       }
-    }, 500);
-    approvalInterval.unref();
-  }
-
-  function stopApprovalWatcher() {
-    clearInterval(approvalInterval);
-    approvalInterval = null;
-  }
-
-  // Registered once, outside every per-turn handler, so repeated turns cannot
-  // accumulate listeners.
-  const shutdown = () => {
-    clearInterval(quotaInterval);
-    clearInterval(approvalInterval);
-    for (const itemId of Array.from(tailIntervals.keys())) {
-      stopTailing(itemId);
+      case "tool.output":
+        appendToBuffer(e.toolId, e.text);
+        if (focusedStream === e.toolId) process.stdout.write(e.text);
+        break;
+      case "tool.completed": {
+        const tool = activeTools.get(e.toolId);
+        activeTools.delete(e.toolId);
+        if (focusedStream === e.toolId) {
+          focusedStream = "orchestrator";
+          console.log(`\n  ${badge.ok} ${c.dim}[worker] ${tool?.name || e.name} finished${c.reset}`);
+          console.log(`  ${badge.info} ${c.bold}Focus returned to Orchestrator (${session.settings.orchestratorModel})${c.reset}\n`);
+        }
+        if (activeTools.size === 0) setKumoTitle(ws());
+        break;
+      }
+      case "approval.requested":
+        void withApprovalLock(async () => {
+          spinner.stop();
+          const approved = await askApproval(e);
+          session.resolveApproval(e.approvalId, approved);
+        }).catch(() => session.resolveApproval(e.approvalId, false));
+        break;
+      case "session.warning":
+        spinner.stop();
+        console.log(`\n  ${badge.warn} ${c.dim}${e.message}${c.reset}`);
+        break;
+      case "session.notice":
+        console.log(`  ${badge.info} ${c.dim}${e.message}${c.reset}`);
+        break;
+      case "session.error":
+        console.error(`\n${badge.fail} ${e.message}`);
+        break;
+      default:
+        break;
     }
-    restoreTerminal();
-  };
-  process.on("exit", shutdown);
-  process.on("SIGTERM", () => {
-    shutdown();
-    void stopClientQuietly().finally(() => process.exit(143));
   });
 
-  async function switchWorkspace(newPath) {
-    const resolvedPath = path.resolve(newPath);
+  // Start in the background; the first prompt waits for it (or retries).
+  session.start().catch((err) => {
+    console.error(`\n${badge.warn} Background initialization warning: ${err.message}`);
+  });
 
-    // Save current chat state
-    if (currentChatId) {
-      updateChat(currentWorkspace, currentChatId, { lastUsedAt: Date.now(), turns: turnCount });
-    }
+  // ── readline ──
+  // Only prompts go into history: slash commands and settings are noise there.
+  const history = loadHistory().filter((line) => !line.trim().startsWith("/"));
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: `${c.brightCyan}${c.bold}kumo${c.reset} ${c.dim}›${c.reset} `,
+    terminal: true,
+    history,
+    historySize: 500,
+    completer,
+  });
+  if (process.stdin.isTTY) readline.emitKeypressEvents(process.stdin);
 
-    currentWorkspace = resolvedPath;
-    registerProject(currentWorkspace);
-
-    currentChatId = createChat(currentWorkspace, {
-      model: config.orchestratorModel,
-      effort: config.reasoningEffort,
-    });
-    turnCount = 0;
-
-    try {
-      await client.startThread({
-        workspace: currentWorkspace,
-        model: config.orchestratorModel,
-        reasoningEffort: config.reasoningEffort,
-      });
-    } catch (e) {
-      console.log(`  ${badge.warn} Thread restart note: ${e.message}`);
-    }
-
-    console.clear();
-    renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-    console.log(`  ${badge.ok} Switched to workspace: ${currentWorkspace}\n`);
-    setKumoTitle(currentWorkspace);
+  let interruptRequested = false;
+  function interruptActiveTurn() {
+    // readline's SIGINT and the raw keypress listener both see one Ctrl+C.
+    if (!isTurnActive || interruptRequested) return;
+    interruptRequested = true;
+    console.log(`\n  ${badge.warn} Interrupting active task...`);
+    session.interrupt();
   }
 
-  rl.prompt();
-
-  rl.on("line", async (line) => {
-    const input = line.trim();
-
-    if (isTurnActive) {
+  const onKeypress = (str, key) => {
+    if (!isTurnActive) return;
+    if ((key?.ctrl && key?.name === "c") || str === "\u0003") {
+      interruptActiveTurn();
       return;
     }
+    if (key?.name === "tab" || str === "\t") cycleStreamFocus();
+  };
+  process.stdin.on("keypress", onKeypress);
 
-    if (!input) {
-      rl.prompt();
-      return;
-    }
+  const saveReplHistory = () => saveHistory((rl.history || []).filter((line) => !line.trim().startsWith("/")));
 
-    // Command dispatch
-    if (input.startsWith("/")) {
-      // Remove slash command from readline history so it doesn't pollute prompt history
-      if (rl.history && rl.history[0] === line) {
-        rl.history.shift();
+  /** `setRawMode(true)` is set for every turn; the shell must get its echo back. */
+  function restoreTerminal() {
+    if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+      try {
+        process.stdin.setRawMode(false);
+      } catch {
+        /* stdin may already be closed */
       }
+    }
+  }
 
-      const parts = input.slice(1).split(" ").filter(Boolean);
-      const cmd = (parts[0] || "").toLowerCase();
-      const arg1 = parts[1];
-      const arg2 = parts[2];
+  async function quit(message) {
+    console.log(`\n${badge.info} ${message}`);
+    saveReplHistory();
+    clearInterval(titleTimer);
+    await session.stop().catch(() => {});
+    restoreTerminal();
+    process.exit(0);
+  }
 
-      switch (cmd) {
-        case "help":
-          console.log(`\n  ${c.bold}${c.brightCyan}KUMO — Cross-Provider AI Orchestrator${c.reset}`);
-          console.log(separator(64));
-          console.log(`  ${c.bold}Session & Workspaces:${c.reset}`);
-          console.log(`    ${c.cyan}/new${c.reset}                     Start a fresh conversation thread`);
-          console.log(`    ${c.cyan}/chats${c.reset}                   Browse and switch previous conversations`);
-          console.log(`    ${c.cyan}/projects${c.reset}                Browse and switch registered workspaces`);
-          console.log(`    ${c.cyan}/cd <path>${c.reset}               Switch active workspace directory`);
-          console.log(`    ${c.cyan}/rename <title>${c.reset}          Rename current conversation`);
-          console.log(`    ${c.cyan}/save [file]${c.reset}             Export conversation transcript to Markdown`);
-          console.log("");
-          console.log(`  ${c.bold}Models & Reasoning:${c.reset}`);
-          console.log(`    ${c.cyan}/model${c.reset}                   Interactive arrow-key model & provider picker`);
-          console.log(`    ${c.cyan}/model <name>${c.reset}            Quick-switch orchestrator model`);
-          console.log(`    ${c.cyan}/model worker <name>${c.reset}     Quick-switch worker model`);
-          console.log(`    ${c.cyan}/preset [name]${c.reset}           Apply or list configuration presets`);
-          console.log(`    ${c.cyan}/effort <level>${c.reset}           Set orchestrator effort (low, medium, high, max)`);
-          console.log(`    ${c.cyan}/effort worker <lvl>${c.reset}      Set worker effort (low, medium, high)`);
-          console.log("");
-          console.log(`  ${c.bold}Quotas & Utilities:${c.reset}`);
-          console.log(`    ${c.cyan}/status${c.reset}, ${c.cyan}/quota${c.reset}            Show live rate limits and quota progress bars`);
-          console.log(`    ${c.cyan}/refresh${c.reset}                  Re-fetch live quotas from Codex and Antigravity`);
-          console.log(`    ${c.cyan}/clear${c.reset}, ${c.cyan}/cls${c.reset}             Clear console screen and re-render header`);
-          console.log(`    ${c.cyan}/history${c.reset} [clean|clear]     View, clean settings from, or clear prompt history`);
-          console.log(`    ${c.cyan}/exit${c.reset}, ${c.cyan}/quit${c.reset}              Quit interactive session cleanly`);
-          console.log(separator(64) + "\n");
-          rl.prompt();
-          return;
+  process.on("exit", restoreTerminal);
+  process.on("SIGTERM", () => {
+    restoreTerminal();
+    void session.stop().finally(() => process.exit(143));
+  });
 
-        case "history": {
-          if (arg1 === "clear") {
-            clearHistory();
-            if (rl.history) rl.history.length = 0;
-            console.log(`  ${badge.ok} Cleared all command and prompt history.\n`);
-            rl.prompt();
-            return;
-          }
-          if (arg1 === "clean") {
-            const remaining = cleanHistory();
-            if (rl.history) {
-              rl.history = rl.history.filter((l) => !l.trim().startsWith("/"));
-            }
-            console.log(`  ${badge.ok} Cleaned non-chat commands from history (${remaining.length} prompts kept).\n`);
-            rl.prompt();
-            return;
-          }
-          // Default: display recent prompt history
-          const active = (rl.history || []).slice(0, 10);
-          if (active.length === 0) {
-            console.log(`  ${c.dim}No prompt history available.${c.reset}\n`);
-          } else {
-            console.log(`\n  ${c.bold}Recent Prompt History:${c.reset}`);
-            active.forEach((item, idx) => {
-              console.log(`    ${c.gray}${String(idx + 1).padStart(2)}.${c.reset} ${item}`);
-            });
-            console.log(`\n  ${c.dim}To clean non-chat commands:${c.reset} ${c.cyan}/history clean${c.reset}`);
-            console.log(`  ${c.dim}To clear all history:${c.reset}       ${c.cyan}/history clear${c.reset}\n`);
-          }
-          rl.prompt();
-          return;
-        }
+  /** Pause readline around a full-screen picker and restore it afterwards. */
+  async function withPicker(fn) {
+    const wasRaw = Boolean(process.stdin.isRaw);
+    rl.pause();
+    try {
+      return await fn();
+    } finally {
+      process.stdin.resume();
+      if (process.stdin.setRawMode) process.stdin.setRawMode(wasRaw);
+      rl.line = "";
+      rl.cursor = 0;
+      rl.resume();
+    }
+  }
 
-        case "clear-history": {
+  const modelLine = () => {
+    const s = session.settings;
+    return `Orchestrator ${c.brightCyan}${s.orchestratorModel}-${s.reasoningEffort}${c.reset} [${s.orchestratorProvider}] • Worker ${c.brightBlue}${s.workerModel}-${s.workerEffort}${c.reset} [${s.workerProvider}]`;
+  };
+
+  /** Apply a settings change, saved as the default too, and redraw. */
+  async function changeSettings(patch, message) {
+    try {
+      await session.updateSettings(patch, { persist: true });
+      console.clear();
+      header();
+      console.log(`  ${badge.ok} ${message()}\n`);
+      setKumoTitle(ws());
+    } catch (err) {
+      console.log(`  ${badge.warn} ${err.message}\n`);
+    }
+  }
+
+  function printQuotas() {
+    const quotas = session.quotas.snapshot();
+    const s = session.settings;
+    console.log(`\n  ${c.bold}Live Account Quotas & Remaining Limits:${c.reset}`);
+    let any = false;
+    for (const [role, title, model] of [["orchestrator", "Orchestrator", s.orchestratorModel], ["worker", "Worker", s.workerModel]]) {
+      const lines = quotaLinesFor(role, s, quotas);
+      if (lines.length === 0) continue;
+      any = true;
+      const plan = role === "orchestrator" && quotas.orchestrator?.planType ? ` [${quotas.orchestrator.planType}]` : "";
+      console.log(`    ${c.bold}${title} (${model})${plan}:${c.reset}`);
+      for (const line of lines) {
+        console.log(`      ${`${line.label} Remaining:`.padEnd(19)}${progressBar(line.percent, 14)} ${c.gray}(resets ${line.reset})${c.reset}`);
+      }
+    }
+    if (!any) console.log(`    ${c.dim}No quota figures available for these providers yet.${c.reset}`);
+    console.log("");
+  }
+
+  async function handleCommand(input, line) {
+    // Keep slash commands out of prompt history.
+    if (rl.history && rl.history[0] === line) rl.history.shift();
+
+    const parts = input.slice(1).split(" ").filter(Boolean);
+    const cmd = (parts[0] || "").toLowerCase();
+    const arg1 = parts[1];
+    const arg2 = parts[2];
+    const s = session.settings;
+
+    switch (cmd) {
+      case "help":
+        console.log(`\n  ${c.bold}${c.brightCyan}KUMO — Cross-Provider AI Orchestrator${c.reset}`);
+        console.log(separator(64));
+        console.log(`  ${c.bold}Session & Workspaces:${c.reset}`);
+        console.log(`    ${c.cyan}/new${c.reset}                     Start a fresh conversation thread`);
+        console.log(`    ${c.cyan}/chats${c.reset}                   Browse and resume previous conversations`);
+        console.log(`    ${c.cyan}/projects${c.reset}                Browse and switch registered workspaces`);
+        console.log(`    ${c.cyan}/cd <path>${c.reset}               Switch active workspace directory`);
+        console.log(`    ${c.cyan}/rename <title>${c.reset}          Rename current conversation`);
+        console.log(`    ${c.cyan}/save [file]${c.reset}             Export conversation transcript to Markdown`);
+        console.log("");
+        console.log(`  ${c.bold}Models & Reasoning:${c.reset}`);
+        console.log(`    ${c.cyan}/model${c.reset}                   Interactive arrow-key model & provider picker`);
+        console.log(`    ${c.cyan}/model <name>${c.reset}            Quick-switch orchestrator model`);
+        console.log(`    ${c.cyan}/model worker <name>${c.reset}     Quick-switch worker model`);
+        console.log(`    ${c.cyan}/preset [name]${c.reset}           Apply or list configuration presets`);
+        console.log(`    ${c.cyan}/effort <level>${c.reset}           Set orchestrator effort (${EFFORT_LEVELS.join(", ")})`);
+        console.log(`    ${c.cyan}/effort worker <lvl>${c.reset}      Set worker effort`);
+        console.log("");
+        console.log(`  ${c.bold}Quotas & Utilities:${c.reset}`);
+        console.log(`    ${c.cyan}/status${c.reset}, ${c.cyan}/quota${c.reset}            Show live rate limits and quota progress bars`);
+        console.log(`    ${c.cyan}/refresh${c.reset}                  Re-fetch live quotas`);
+        console.log(`    ${c.cyan}/clear${c.reset}, ${c.cyan}/cls${c.reset}             Clear console screen and re-render header`);
+        console.log(`    ${c.cyan}/history${c.reset} [clean|clear]     View, clean settings from, or clear prompt history`);
+        console.log(`    ${c.cyan}/exit${c.reset}, ${c.cyan}/quit${c.reset}              Quit interactive session cleanly`);
+        console.log(separator(64) + "\n");
+        return;
+
+      case "history": {
+        if (arg1 === "clear") {
           clearHistory();
           if (rl.history) rl.history.length = 0;
           console.log(`  ${badge.ok} Cleared all command and prompt history.\n`);
-          rl.prompt();
           return;
         }
-
-        case "preset": {
-          if (!arg1) {
-            console.log(`\n  ${c.bold}Available Presets:${c.reset}`);
-            for (const [key, p] of Object.entries(PRESETS)) {
-              const active =
-                config.orchestratorModel === p.config.orchestratorModel &&
-                config.workerModel === p.config.workerModel &&
-                config.reasoningEffort === p.config.reasoningEffort &&
-                (config.workerEffort || "medium") === (p.config.workerEffort || "medium")
-                  ? ` ${c.brightGreen}[ACTIVE]${c.reset}`
-                  : "";
-              console.log(`    ${c.cyan}${key.padEnd(14)}${c.reset}${p.description}${active}`);
-            }
-            console.log(`\n  ${c.dim}Usage:${c.reset} /preset <name>\n`);
-            rl.prompt();
-            return;
-          }
-          if (!PRESETS[arg1]) {
-            console.log(`  ${badge.warn} Unknown preset '${arg1}'. Available: ${Object.keys(PRESETS).join(", ")}\n`);
-            rl.prompt();
-            return;
-          }
-          applyPreset(arg1);
-          config = loadConfig();
-          console.clear();
-          renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-          console.log(`  ${badge.ok} Applied preset '${arg1}': Orchestrator ${c.brightCyan}${config.orchestratorModel}-${config.reasoningEffort}${c.reset} • Worker ${c.brightBlue}${config.workerModel}-${config.workerEffort || "medium"}${c.reset}\n`);
-          setKumoTitle(currentWorkspace);
-          try {
-            await client.startThread({
-              workspace: currentWorkspace,
-              model: config.orchestratorModel,
-              reasoningEffort: config.reasoningEffort,
-            });
-          } catch (e) {
-            console.log(`  ${badge.warn} Thread update note: ${e.message}`);
-          }
-          rl.prompt();
+        if (arg1 === "clean") {
+          const remaining = cleanHistory();
+          if (rl.history) rl.history = rl.history.filter((l) => !l.trim().startsWith("/"));
+          console.log(`  ${badge.ok} Cleaned non-chat commands from history (${remaining.length} prompts kept).\n`);
           return;
         }
-
-        case "new": {
-          if (currentChatId) {
-            updateChat(currentWorkspace, currentChatId, { lastUsedAt: Date.now(), turns: turnCount });
-          }
-          try {
-            await client.startThread({
-              workspace: currentWorkspace,
-              model: config.orchestratorModel,
-              reasoningEffort: config.reasoningEffort,
-            });
-          } catch (e) {
-            console.log(`  ${badge.warn} Thread restart note: ${e.message}`);
-          }
-          currentChatId = createChat(currentWorkspace, {
-            model: config.orchestratorModel,
-            effort: config.reasoningEffort,
-          });
-          turnCount = 0;
-          console.clear();
-          renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-          console.log(`  ${badge.ok} New conversation started.\n`);
-          rl.prompt();
-          return;
+        const active = (rl.history || []).slice(0, 10);
+        if (active.length === 0) {
+          console.log(`  ${c.dim}No prompt history available.${c.reset}\n`);
+        } else {
+          console.log(`\n  ${c.bold}Recent Prompt History:${c.reset}`);
+          active.forEach((item, idx) => console.log(`    ${c.gray}${String(idx + 1).padStart(2)}.${c.reset} ${item}`));
+          console.log(`\n  ${c.dim}To clean non-chat commands:${c.reset} ${c.cyan}/history clean${c.reset}`);
+          console.log(`  ${c.dim}To clear all history:${c.reset}       ${c.cyan}/history clear${c.reset}\n`);
         }
-
-        case "chats": {
-          const chats = listChats(currentWorkspace);
-          if (chats.length === 0) {
-            console.log(`  ${c.dim}No saved chats for this project.${c.reset}\n`);
-            rl.prompt();
-            return;
-          }
-
-          const wasRaw = Boolean(process.stdin.isRaw);
-          rl.pause();
-          try {
-            const items = chats.map((chat, i) => ({
-              label: chat.title || `Chat ${i + 1}`,
-              value: chat.id,
-              hint: `${chat.turns || 0} turns • ${new Date(chat.lastUsedAt).toLocaleDateString()}`,
-              isCurrent: chat.id === currentChatId,
-            }));
-            items.push({ label: "← Back to Session", value: "cancel" });
-
-            const chosen = await promptSelect({ title: "Conversations", items });
-
-            if (chosen && chosen !== "cancel" && chosen !== currentChatId) {
-              updateChat(currentWorkspace, currentChatId, { lastUsedAt: Date.now(), turns: turnCount });
-              currentChatId = chosen;
-              const chatMeta = chats.find((c) => c.id === chosen);
-              turnCount = chatMeta?.turns || 0;
-
-              try {
-                await client.startThread({
-                  workspace: currentWorkspace,
-                  model: config.orchestratorModel,
-                  reasoningEffort: config.reasoningEffort,
-                });
-              } catch (e) {
-                console.log(`  ${badge.warn} Thread restart note: ${e.message}`);
-              }
-
-              console.clear();
-              renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-              console.log(`  ${badge.ok} Switched to: ${chatMeta?.title || chosen}`);
-              // Provider thread resume is not wired up yet (planned): the log
-              // switches, but the orchestrator itself starts with no memory.
-              console.log(
-                `  ${c.dim}New turns are saved to this chat, but the orchestrator starts a fresh conversation — earlier turns are not restored.${c.reset}\n`
-              );
-            }
-          } finally {
-            process.stdin.resume();
-            if (process.stdin.setRawMode) {
-              process.stdin.setRawMode(wasRaw);
-            }
-            rl.line = "";
-            rl.cursor = 0;
-            rl.resume();
-            rl.prompt();
-          }
-          return;
-        }
-
-        case "projects": {
-          const projects = listProjects();
-          if (projects.length === 0) {
-            console.log(`  ${c.dim}No registered projects yet.${c.reset}\n`);
-            rl.prompt();
-            return;
-          }
-
-          const wasRaw = Boolean(process.stdin.isRaw);
-          rl.pause();
-          try {
-            const items = projects.map((p) => ({
-              label: p.name || path.basename(p.path),
-              value: p.path,
-              hint: p.path,
-              isCurrent: path.resolve(p.path) === path.resolve(currentWorkspace),
-            }));
-            items.push({ label: "← Back to Session", value: "cancel" });
-
-            const chosen = await promptSelect({ title: "Projects", items });
-
-            if (chosen && chosen !== "cancel" && path.resolve(chosen) !== path.resolve(currentWorkspace)) {
-              await switchWorkspace(chosen);
-            }
-          } finally {
-            process.stdin.resume();
-            if (process.stdin.setRawMode) {
-              process.stdin.setRawMode(wasRaw);
-            }
-            rl.line = "";
-            rl.cursor = 0;
-            rl.resume();
-            rl.prompt();
-          }
-          return;
-        }
-
-        case "cd":
-        case "workspace":
-        case "open": {
-          if (!arg1) {
-            console.log(`  ${c.dim}Current workspace:${c.reset} ${currentWorkspace}`);
-            console.log(`  ${c.dim}Usage:${c.reset} /cd <path>\n`);
-            rl.prompt();
-            return;
-          }
-          const targetPath = path.resolve(arg1);
-          if (!fs.existsSync(targetPath)) {
-            console.log(`  ${badge.warn} Directory not found: ${targetPath}\n`);
-            rl.prompt();
-            return;
-          }
-          await switchWorkspace(targetPath);
-          rl.prompt();
-          return;
-        }
-
-        case "save": {
-          const log = loadTurnLog(currentWorkspace, currentChatId);
-          if (!log || log.length === 0) {
-            console.log(`  ${c.dim}No turns to save in current conversation.${c.reset}\n`);
-            rl.prompt();
-            return;
-          }
-          const filename = arg1 || `kumo-session-${new Date().toISOString().slice(0, 10)}.md`;
-          const outputPath = path.resolve(currentWorkspace, filename);
-
-          let md = `# Kumo Session — ${new Date().toLocaleDateString()}\n\n`;
-          md += `**Workspace:** ${currentWorkspace}\n\n`;
-          md += `**Orchestrator:** ${config.orchestratorModel}-${config.reasoningEffort}\n\n`;
-          md += `**Worker:** ${config.workerModel}-${config.workerEffort || "medium"}\n\n---\n\n`;
-
-          for (let i = 0; i < log.length; i++) {
-            const turn = log[i];
-            md += `## Turn ${i + 1} (${new Date(turn.timestamp).toLocaleTimeString()})\n\n`;
-            md += `**Prompt:**\n\n${turn.prompt}\n\n`;
-            if (turn.responseSummary) {
-              md += `**Response:**\n\n${turn.responseSummary}\n\n`;
-            }
-            md += `*Elapsed: ${((turn.elapsedMs || 0) / 1000).toFixed(1)}s*\n\n---\n\n`;
-          }
-
-          try {
-            fs.writeFileSync(outputPath, md, "utf-8");
-            console.log(`  ${badge.ok} Session saved to ${c.cyan}${outputPath}${c.reset}\n`);
-          } catch (e) {
-            console.log(`  ${badge.warn} Failed to save session: ${e.message}\n`);
-          }
-          rl.prompt();
-          return;
-        }
-
-        case "rename": {
-          const newTitle = parts.slice(1).join(" ").trim();
-          if (!newTitle) {
-            console.log(`  ${c.dim}Usage:${c.reset} /rename <new title>\n`);
-            rl.prompt();
-            return;
-          }
-          updateChat(currentWorkspace, currentChatId, { title: newTitle });
-          console.log(`  ${badge.ok} Chat renamed to "${newTitle}"\n`);
-          rl.prompt();
-          return;
-        }
-
-        case "model":
-          if (!arg1) {
-            if (process.stdout.isTTY && process.stdin.isTTY) {
-              const wasRaw = Boolean(process.stdin.isRaw);
-              rl.pause();
-              try {
-                const oldOrch = config.orchestratorModel;
-                const oldEffort = config.reasoningEffort;
-                const oldWorker = config.workerModel;
-                const oldWorkerEffort = config.workerEffort;
-                const updated = await openInteractiveModelPicker({
-                  onConfigChanged: async () => {
-                    config = loadConfig();
-                  },
-                });
-                config = loadConfig();
-
-                const changed =
-                  oldOrch !== config.orchestratorModel ||
-                  oldEffort !== config.reasoningEffort ||
-                  oldWorker !== config.workerModel ||
-                  oldWorkerEffort !== config.workerEffort;
-
-                if (changed) {
-                  console.clear();
-                  renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-                  console.log(
-                    `  ${badge.ok} Switched to Orchestrator ${c.brightCyan}${config.orchestratorModel}-${config.reasoningEffort}${c.reset} • Worker ${c.brightBlue}${config.workerModel}-${config.workerEffort || "medium"}${c.reset}\n`
-                  );
-                }
-
-                setKumoTitle(currentWorkspace);
-
-                // If orchestrator model or effort changed, restart thread
-                if (oldOrch !== config.orchestratorModel || oldEffort !== config.reasoningEffort) {
-                  try {
-                    await client.startThread({
-                      workspace: currentWorkspace,
-                      model: config.orchestratorModel,
-                      reasoningEffort: config.reasoningEffort,
-                    });
-                  } catch (e) {
-                    console.log(`  ${badge.warn} Thread update note: ${e.message}`);
-                  }
-                }
-              } finally {
-                process.stdin.resume();
-                if (process.stdin.setRawMode) {
-                  process.stdin.setRawMode(wasRaw);
-                }
-                rl.line = "";
-                rl.cursor = 0;
-                rl.resume();
-                rl.prompt();
-              }
-              return;
-            }
-
-            console.log(`\n  ${c.bold}Active Model Configuration:${c.reset}`);
-            console.log(`    ${c.gray}Orchestrator:${c.reset} ${c.brightCyan}${config.orchestratorModel}-${config.reasoningEffort}${c.reset}`);
-            console.log(`    ${c.gray}Worker:${c.reset}       ${c.brightBlue}${config.workerModel}-${config.workerEffort || "medium"}${c.reset}\n`);
-            console.log(`  ${c.gray}To switch:${c.reset}`);
-            console.log(`    ${c.cyan}/model <model-name>${c.reset}                  (switch orchestrator model)`);
-            console.log(`    ${c.cyan}/model worker <model-name> [effort]${c.reset}  (switch worker model & effort)\n`);
-            rl.prompt();
-            return;
-          }
-
-          if ((arg1 === "worker" || arg1 === "orchestrator") && !arg2) {
-            console.log(`\n  ${c.gray}Orchestrator:${c.reset} ${c.brightCyan}${config.orchestratorModel}-${config.reasoningEffort}${c.reset}`);
-            console.log(`  ${c.gray}Worker:${c.reset}       ${c.brightBlue}${config.workerModel}-${config.workerEffort || "medium"}${c.reset}`);
-            console.log(`\n  ${c.gray}Usage:${c.reset} /model <model> | /model worker <model> [effort]\n`);
-            rl.prompt();
-            return;
-          }
-
-          if (arg1 === "worker" && arg2) {
-            const resolvedWorker = resolveModel(arg2);
-            config.workerModel = resolvedWorker;
-            // Honor the provider the user already configured; re-deriving it from the
-            // model name silently rewrites an explicit choice (e.g. claude -> antigravity).
-            config.workerProvider = detectProviderForModel(resolvedWorker, config.workerProvider);
-            setConfigValue("workerModel", resolvedWorker);
-            setConfigValue("workerProvider", config.workerProvider);
-            if (parts[3]) {
-              config.workerEffort = parts[3].toLowerCase();
-              setConfigValue("workerEffort", parts[3].toLowerCase());
-            }
-            config = loadConfig();
-            console.clear();
-            renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-            console.log(`  ${badge.ok} Worker switched to ${c.brightBlue}${resolvedWorker}-${config.workerEffort || 'medium'}${c.reset} [${config.workerProvider}]\n`);
-            setKumoTitle(currentWorkspace);
-            rl.prompt();
-            return;
-          }
-
-          const rawTarget = (arg1 === "orchestrator" && arg2) ? arg2 : arg1;
-          if (PRESETS[rawTarget]) {
-            const oldOrchProv = config.orchestratorProvider;
-            applyPreset(rawTarget);
-            config = loadConfig();
-            console.clear();
-            renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-            console.log(`  ${badge.ok} Applied preset '${rawTarget}': Orchestrator ${c.brightCyan}${config.orchestratorModel}-${config.reasoningEffort}${c.reset} [${config.orchestratorProvider}] • Worker ${c.brightBlue}${config.workerModel}-${config.workerEffort || "medium"}${c.reset} [${config.workerProvider}]\n`);
-            setKumoTitle(currentWorkspace);
-            try {
-              if (oldOrchProv !== config.orchestratorProvider) {
-                await initClient();
-              } else if (client) {
-                await client.startThread({
-                  workspace: currentWorkspace,
-                  model: config.orchestratorModel,
-                  reasoningEffort: config.reasoningEffort,
-                });
-              }
-            } catch (e) {
-              console.log(`  ${badge.warn} Thread update note: ${e.message}`);
-            }
-            rl.prompt();
-            return;
-          }
-
-          const resolvedOrch = resolveModel(rawTarget);
-          const oldOrchProv = config.orchestratorProvider;
-          const newOrchProv = detectProviderForModel(resolvedOrch, config.orchestratorProvider);
-          config.orchestratorModel = resolvedOrch;
-          config.orchestratorProvider = newOrchProv;
-          setConfigValue("orchestratorModel", resolvedOrch);
-          setConfigValue("orchestratorProvider", newOrchProv);
-          config = loadConfig();
-          console.clear();
-          renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-          console.log(`  ${badge.ok} Orchestrator switched to ${c.brightCyan}${resolvedOrch}-${config.reasoningEffort}${c.reset} [${newOrchProv}]\n`);
-          setKumoTitle(currentWorkspace);
-
-          try {
-            if (oldOrchProv !== newOrchProv) {
-              await initClient();
-            } else if (client) {
-              await client.startThread({
-                workspace: currentWorkspace,
-                model: resolvedOrch,
-                reasoningEffort: config.reasoningEffort,
-              });
-            }
-          } catch (e) {
-            console.log(`  ${badge.warn} Thread update note: ${e.message}`);
-          }
-          rl.prompt();
-          return;
-
-        case "effort":
-        case "reasoning":
-          if (arg1 === "worker") {
-            if (!arg2) {
-              console.log(`\n  ${c.dim}Current worker reasoning effort:${c.reset} ${c.brightBlue}${config.workerEffort || "medium"}${c.reset}`);
-              console.log(`  ${c.dim}Available:${c.reset} low, medium, high`);
-              console.log(`  ${c.dim}Usage:${c.reset} /effort worker <low|medium|high>\n`);
-              rl.prompt();
-              return;
-            }
-            const wEffort = arg2.toLowerCase();
-            if (!["low", "medium", "high"].includes(wEffort)) {
-              console.log(`\n${badge.warn} Invalid worker effort '${arg2}'. Supported: low, medium, high\n`);
-              rl.prompt();
-              return;
-            }
-            config.workerEffort = wEffort;
-            setConfigValue("workerEffort", wEffort);
-            config = loadConfig();
-            console.clear();
-            renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-            console.log(`  ${badge.ok} Worker reasoning effort set to ${c.brightBlue}${wEffort}${c.reset}\n`);
-            rl.prompt();
-            return;
-          }
-
-          if (!arg1) {
-            console.log(`\n  ${c.dim}Current orchestrator reasoning effort:${c.reset} ${c.brightCyan}${config.reasoningEffort || "low"}${c.reset}`);
-            console.log(`  ${c.dim}Current worker reasoning effort:${c.reset}       ${c.brightBlue}${config.workerEffort || "medium"}${c.reset}`);
-            console.log(`  ${c.dim}Usage:${c.reset} /effort <low|medium|high|max>`);
-            console.log(`         /effort worker <low|medium|high>\n`);
-            rl.prompt();
-            return;
-          }
-
-          const effortLevel = arg1.toLowerCase();
-          const validEfforts = ["low", "medium", "high", "max"];
-          if (!validEfforts.includes(effortLevel)) {
-            console.log(`\n${badge.warn} Invalid effort '${arg1}'. Supported: ${validEfforts.join(", ")}\n`);
-            rl.prompt();
-            return;
-          }
-
-          config.reasoningEffort = effortLevel;
-          setConfigValue("reasoningEffort", effortLevel);
-          config = loadConfig();
-          console.clear();
-          renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-          console.log(`  ${badge.ok} Orchestrator reasoning effort set to ${c.brightCyan}${effortLevel}${c.reset}\n`);
-
-          try {
-            await client.startThread({
-              workspace: currentWorkspace,
-              model: config.orchestratorModel,
-              reasoningEffort: effortLevel,
-            });
-          } catch (e) {
-            console.log(`  ${badge.warn} Thread update note: ${e.message}`);
-          }
-          rl.prompt();
-          return;
-
-        case "clear":
-        case "cls":
-          console.clear();
-          renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-          rl.prompt();
-          return;
-
-        case "status":
-        case "limits":
-        case "quota":
-        case "usage":
-          try {
-            const [freshCodex, freshAgy] = await Promise.all([
-              client.getRateLimits().catch(() => null),
-              getAgyUsage().catch(() => null),
-            ]);
-            if (freshCodex) codexLimits = freshCodex;
-            if (freshAgy) agyUsage = freshAgy;
-            saveCachedQuotas(codexLimits, agyUsage);
-
-            console.log(`\n  ${c.bold}Live Account Quotas & Remaining Limits:${c.reset}`);
-            if (codexLimits) {
-              const plan = codexLimits.planType ? ` [${codexLimits.planType}]` : "";
-              console.log(`    ${c.bold}Orchestrator (${config.orchestratorModel})${plan}:${c.reset}`);
-              console.log(`      Monthly Remaining: ${progressBar(codexLimits.remainingPercent, 14)}`);
-              console.log(`      Reset Time:        ${c.brightYellow}${codexLimits.resetFormatted}${c.reset}`);
-              if (codexLimits.creditsAvailable > 0) {
-                console.log(`      Reset Credits:     ${c.brightGreen}${codexLimits.creditsAvailable} reset available${c.reset}`);
-              }
-            }
-            if (agyUsage) {
-              const isClaudeOrGpt = /claude|gpt|anthropic/i.test(config.workerModel) || config.workerProvider === "claude";
-              const weeklyPercent = isClaudeOrGpt ? agyUsage.claudeGptWeeklyPercent : agyUsage.geminiWeeklyPercent;
-              const weeklyReset = isClaudeOrGpt ? (agyUsage.claudeGptWeeklyResetFormatted || "weekly") : (agyUsage.geminiWeeklyResetFormatted || "weekly");
-              const fiveHourPercent = isClaudeOrGpt ? agyUsage.claudeGpt5HourPercent : agyUsage.gemini5HourPercent;
-              const fiveHourReset = isClaudeOrGpt ? (agyUsage.claudeGpt5HourResetFormatted || "5-hour") : (agyUsage.gemini5HourResetFormatted || "5-hour");
-
-              console.log(`    ${c.bold}Worker Provider (${config.workerModel}):${c.reset}`);
-              if (weeklyPercent !== null && weeklyPercent !== undefined) {
-                console.log(`      Weekly Remaining:  ${progressBar(weeklyPercent, 14)} (${weeklyReset}) [${config.workerModel}]`);
-              }
-              if (fiveHourPercent !== null && fiveHourPercent !== undefined) {
-                console.log(`      5-Hour Remaining:  ${progressBar(fiveHourPercent, 14)} (${fiveHourReset}) [${config.workerModel}]`);
-              }
-            }
-            console.log("");
-          } catch (e) {
-            console.log(`\n  ${badge.warn} Failed to refresh limits: ${e.message}\n`);
-          }
-          rl.prompt();
-          return;
-
-        case "refresh":
-          try {
-            const [freshCodex, freshAgy] = await Promise.all([
-              client.getRateLimits().catch(() => null),
-              getAgyUsage().catch(() => null),
-            ]);
-            if (freshCodex) codexLimits = freshCodex;
-            if (freshAgy) agyUsage = freshAgy;
-            saveCachedQuotas(codexLimits, agyUsage);
-            const isClaudeOrGpt = /claude|gpt|anthropic/i.test(config.workerModel) || config.workerProvider === "claude";
-            const wPercent = isClaudeOrGpt ? (agyUsage?.claudeGptWeeklyPercent ?? 0) : (agyUsage?.geminiWeeklyPercent ?? 0);
-            console.log(`  ${badge.ok} Quotas refreshed: ${config.orchestratorModel} ${codexLimits?.remainingPercent ?? 0}% remaining • ${config.workerModel} ${wPercent}% weekly\n`);
-          } catch (e) {
-            console.log(`  ${badge.warn} Refresh failed: ${e.message}\n`);
-          }
-          rl.prompt();
-          return;
-
-        case "exit":
-        case "quit":
-        case "q":
-          console.log(`\n${badge.info} Exiting Kumo session.`);
-          saveReplHistory();
-          clearInterval(quotaInterval);
-          await stopClientQuietly();
-          restoreTerminal();
-          process.exit(0);
-          return;
-
-        default:
-          console.log(`  ${badge.warn} Unknown command '/${cmd}'. Type ${c.cyan}/help${c.reset} for available commands.`);
-          rl.prompt();
-          return;
+        return;
       }
+
+      case "clear-history":
+        clearHistory();
+        if (rl.history) rl.history.length = 0;
+        console.log(`  ${badge.ok} Cleared all command and prompt history.\n`);
+        return;
+
+      case "preset": {
+        if (!arg1) {
+          console.log(`\n  ${c.bold}Available Presets:${c.reset}`);
+          for (const [key, p] of Object.entries(PRESETS)) {
+            const active = Object.entries(p.config).every(([k, v]) => s[k] === v) ? ` ${c.brightGreen}[ACTIVE]${c.reset}` : "";
+            console.log(`    ${c.cyan}${key.padEnd(14)}${c.reset}${p.description}${active}`);
+          }
+          console.log(`\n  ${c.dim}Usage:${c.reset} /preset <name>\n`);
+          return;
+        }
+        if (!PRESETS[arg1]) {
+          console.log(`  ${badge.warn} Unknown preset '${arg1}'. Available: ${Object.keys(PRESETS).join(", ")}\n`);
+          return;
+        }
+        await changeSettings(PRESETS[arg1].config, () => `Applied preset '${arg1}': ${modelLine()}`);
+        return;
+      }
+
+      case "new":
+        try {
+          await session.newChat();
+          console.clear();
+          header();
+          console.log(`  ${badge.ok} New conversation started.\n`);
+        } catch (err) {
+          console.log(`  ${badge.warn} ${err.message}\n`);
+        }
+        return;
+
+      case "chats": {
+        const chats = session.listChats();
+        if (chats.length === 0) {
+          console.log(`  ${c.dim}No saved chats for this project.${c.reset}\n`);
+          return;
+        }
+        const chosen = await withPicker(() =>
+          promptSelect({
+            title: "Conversations",
+            items: [
+              ...chats.map((chat, i) => ({
+                label: chat.title || `Chat ${i + 1}`,
+                value: chat.id,
+                hint: `${chat.turns || 0} turns • ${new Date(chat.lastUsedAt).toLocaleDateString()}`,
+                isCurrent: chat.id === session.chatId,
+              })),
+              { label: "← Back to Session", value: "cancel" },
+            ],
+          })
+        );
+        if (!chosen || chosen === "cancel" || chosen === session.chatId) return;
+        try {
+          const { resumed } = await session.openChat(chosen);
+          console.clear();
+          header();
+          const title = chats.find((x) => x.id === chosen)?.title || chosen;
+          console.log(`  ${badge.ok} Switched to: ${title}`);
+          console.log(
+            resumed
+              ? `  ${c.dim}The orchestrator resumed this conversation with its earlier turns.${c.reset}\n`
+              : `  ${c.dim}New turns are saved to this chat, but the orchestrator starts a fresh conversation (this provider cannot resume it).${c.reset}\n`
+          );
+        } catch (err) {
+          console.log(`  ${badge.warn} ${err.message}\n`);
+        }
+        return;
+      }
+
+      case "projects": {
+        const projects = listProjects();
+        if (projects.length === 0) {
+          console.log(`  ${c.dim}No registered projects yet.${c.reset}\n`);
+          return;
+        }
+        const chosen = await withPicker(() =>
+          promptSelect({
+            title: "Projects",
+            items: [
+              ...projects.map((p) => ({
+                label: p.name || path.basename(p.path),
+                value: p.path,
+                hint: p.path,
+                isCurrent: path.resolve(p.path) === path.resolve(ws()),
+              })),
+              { label: "← Back to Session", value: "cancel" },
+            ],
+          })
+        );
+        if (chosen && chosen !== "cancel" && path.resolve(chosen) !== path.resolve(ws())) await switchWorkspace(chosen);
+        return;
+      }
+
+      case "cd":
+      case "workspace":
+      case "open":
+        if (!arg1) {
+          console.log(`  ${c.dim}Current workspace:${c.reset} ${ws()}`);
+          console.log(`  ${c.dim}Usage:${c.reset} /cd <path>\n`);
+          return;
+        }
+        await switchWorkspace(path.resolve(arg1));
+        return;
+
+      case "save":
+        try {
+          const out = session.exportMarkdown(arg1);
+          console.log(`  ${badge.ok} Session saved to ${c.cyan}${out}${c.reset}\n`);
+        } catch (err) {
+          console.log(`  ${c.dim}${err.message}${c.reset}\n`);
+        }
+        return;
+
+      case "rename": {
+        const title = parts.slice(1).join(" ").trim();
+        if (!title) {
+          console.log(`  ${c.dim}Usage:${c.reset} /rename <new title>\n`);
+          return;
+        }
+        session.renameChat(title);
+        console.log(`  ${badge.ok} Chat renamed to "${title}"\n`);
+        return;
+      }
+
+      case "model": {
+        if (!arg1) {
+          if (tty) {
+            // The picker saves its choices to the config; the session follows.
+            await withPicker(() => openInteractiveModelPicker({ onConfigChanged: async () => {} }));
+            const saved = loadConfig();
+            const patch = Object.fromEntries(SESSION_SETTING_KEYS.map((k) => [k, saved[k]]));
+            try {
+              const changed = await session.updateSettings(patch);
+              if (changed.length > 0) {
+                console.clear();
+                header();
+                console.log(`  ${badge.ok} Switched to ${modelLine()}\n`);
+              }
+            } catch (err) {
+              console.log(`  ${badge.warn} ${err.message}\n`);
+            }
+            setKumoTitle(ws());
+            return;
+          }
+          console.log(`\n  ${c.bold}Active Model Configuration:${c.reset}`);
+          console.log(`    ${modelLine()}\n`);
+          console.log(`  ${c.gray}To switch:${c.reset}`);
+          console.log(`    ${c.cyan}/model <model-name>${c.reset}                  (switch orchestrator model)`);
+          console.log(`    ${c.cyan}/model worker <model-name> [effort]${c.reset}  (switch worker model & effort)\n`);
+          return;
+        }
+        if ((arg1 === "worker" || arg1 === "orchestrator") && !arg2) {
+          console.log(`\n  ${modelLine()}`);
+          console.log(`\n  ${c.gray}Usage:${c.reset} /model <model> | /model worker <model> [effort]\n`);
+          return;
+        }
+        if (arg1 === "worker") {
+          const model = resolveModel(arg2);
+          const patch = { workerModel: model, workerProvider: providerForModel(model, s.workerProvider) };
+          if (parts[3]) patch.workerEffort = parts[3].toLowerCase();
+          await changeSettings(patch, () => `Worker switched to ${c.brightBlue}${model}-${session.settings.workerEffort}${c.reset} [${session.settings.workerProvider}]`);
+          return;
+        }
+        const target = arg1 === "orchestrator" ? arg2 : arg1;
+        if (PRESETS[target]) {
+          await changeSettings(PRESETS[target].config, () => `Applied preset '${target}': ${modelLine()}`);
+          return;
+        }
+        const model = resolveModel(target);
+        await changeSettings(
+          { orchestratorModel: model, orchestratorProvider: providerForModel(model, s.orchestratorProvider) },
+          () => `Orchestrator switched to ${c.brightCyan}${model}-${session.settings.reasoningEffort}${c.reset} [${session.settings.orchestratorProvider}]`
+        );
+        return;
+      }
+
+      case "effort":
+      case "reasoning": {
+        const worker = arg1 === "worker";
+        const level = (worker ? arg2 : arg1)?.toLowerCase();
+        if (!level) {
+          console.log(`\n  ${c.dim}Orchestrator reasoning effort:${c.reset} ${c.brightCyan}${s.reasoningEffort}${c.reset}`);
+          console.log(`  ${c.dim}Worker reasoning effort:${c.reset}       ${c.brightBlue}${s.workerEffort}${c.reset}`);
+          console.log(`  ${c.dim}Usage:${c.reset} /effort [worker] <${EFFORT_LEVELS.join("|")}>\n`);
+          return;
+        }
+        if (!EFFORT_LEVELS.includes(level)) {
+          console.log(`\n${badge.warn} Invalid effort '${level}'. Supported: ${EFFORT_LEVELS.join(", ")}\n`);
+          return;
+        }
+        await changeSettings(worker ? { workerEffort: level } : { reasoningEffort: level }, () =>
+          worker
+            ? `Worker reasoning effort set to ${c.brightBlue}${level}${c.reset}`
+            : `Orchestrator reasoning effort set to ${c.brightCyan}${level}${c.reset}`
+        );
+        return;
+      }
+
+      case "clear":
+      case "cls":
+        console.clear();
+        header();
+        return;
+
+      case "status":
+      case "limits":
+      case "quota":
+      case "usage":
+        await session.refreshQuotas().catch(() => {});
+        printQuotas();
+        return;
+
+      case "refresh": {
+        const quotas = await session.refreshQuotas().catch(() => session.quotas.snapshot());
+        const orch = quotas.orchestrator?.remainingPercent;
+        console.log(
+          `  ${badge.ok} Quotas refreshed: ${s.orchestratorModel} ${orch ?? "?"}% remaining` +
+            (quotas.antigravity ? ` • Antigravity figures updated` : "") +
+            "\n"
+        );
+        return;
+      }
+
+      case "exit":
+      case "quit":
+      case "q":
+        await quit("Exiting Kumo session.");
+        return;
+
+      default:
+        console.log(`  ${badge.warn} Unknown command '/${cmd}'. Type ${c.cyan}/help${c.reset} for available commands.`);
     }
+  }
 
-    // Regular task prompt: start 30-second quota refresher once first prompt is made
-    ensureQuotaRefresher();
+  async function switchWorkspace(target) {
+    try {
+      await session.setWorkspace(target);
+      console.clear();
+      header();
+      console.log(`  ${badge.ok} Switched to workspace: ${ws()}\n`);
+      setKumoTitle(ws());
+    } catch (err) {
+      console.log(`  ${badge.warn} ${err.message}\n`);
+    }
+  }
 
-    const turnStart = Date.now();
-    let turnOk = false;
-    let responseText = "";
+  async function runPrompt(input) {
     isTurnActive = true;
+    interruptRequested = false;
     rl.pause();
     const turnWasRaw = Boolean(process.stdin.isRaw);
     if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
@@ -1601,135 +793,76 @@ export async function startCommand(opts = {}) {
       process.stdin.resume();
     }
     process.stdout.write("\n");
+    titleTimer = setInterval(updateWorkerTitle, 1000);
+    titleTimer.unref();
 
+    let outcome;
     try {
-      // The background client initializer runs unawaited at startup; a fast first
-      // prompt would otherwise dereference a null client.
-      if (clientReady) await clientReady;
-      if (needsReconnect || !client) {
-        console.log(`  ${c.dim}Starting the orchestrator...${c.reset}`);
-        await initClient();
-      }
-      refreshProjectConfigs();
-
-      if (config.safetyMode === "interactive") {
-        startApprovalWatcher();
-      }
-
-      turnTranscript = [];
-      const turnClient = client;
-      // Races turn_completed against server_error, close, and a timeout, with
-      // the listeners attached before the prompt is sent. On timeout or Ctrl+C
-      // the orchestrator is told to stop, and the prompt only comes back once
-      // the turn has really ended.
-      activeTurn = runTurn(
-        turnClient,
-        () => turnClient.startTurn(input, { model: config.orchestratorModel, effort: config.reasoningEffort }),
-        { timeoutMs: config.turnTimeoutMs }
-      );
-      const outcome = await activeTurn.done;
-      turnOk = outcome.ok;
-      responseText = turnTranscript.join("");
-
-      if (!turnOk) {
-        console.error(`\n  ${badge.fail} ${outcome.reason}`);
-      }
-
-      // Refresh quotas post-turn
-      const [freshCodex, freshAgy] = await Promise.all([
-        client.getRateLimits().catch(() => null),
-        getAgyUsage().catch(() => null),
-      ]);
-      if (freshCodex) codexLimits = freshCodex;
-      if (freshAgy) agyUsage = freshAgy;
-      saveCachedQuotas(codexLimits, agyUsage);
+      outcome = await session.send(input);
     } catch (err) {
-      console.error(`\n${badge.fail} Turn failed: ${err.message}`);
+      outcome = { ok: false, reason: err.message, elapsedMs: 0 };
     } finally {
-      activeTurn = null;
-      turnTranscript = null;
-      for (const itemId of activeTools.keys()) {
-        stopTailing(itemId);
-      }
+      clearInterval(titleTimer);
+      titleTimer = null;
       activeTools.clear();
-      tailIntervals.clear();
       streamBuffers.clear();
       focusedStream = "orchestrator";
       spinner.stop();
-      stopApprovalWatcher();
-      setKumoTitle(currentWorkspace);
+      setKumoTitle(ws());
       isTurnActive = false;
-      if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
-        process.stdin.setRawMode(turnWasRaw);
-      }
-
-      const elapsed = ((Date.now() - turnStart) / 1000).toFixed(1);
-
-      if (turnOk) {
-        console.log(`\n  ${c.dim}✓ Completed in ${elapsed}s${c.reset}\n`);
-
-        turnCount++;
-        appendTurn(currentWorkspace, currentChatId, {
-          prompt: input,
-          responseSummary: responseText || null,
-          timestamp: Date.now(),
-          model: config.orchestratorModel,
-          elapsedMs: Date.now() - turnStart,
-        });
-        updateChat(currentWorkspace, currentChatId, {
-          lastUsedAt: Date.now(),
-          turns: turnCount,
-        });
-        if (turnCount === 1) {
-          updateChat(currentWorkspace, currentChatId, {
-            title: generateChatTitle(input),
-          });
-        }
-      } else {
-        // A failed turn is not a turn: recording it would corrupt /save transcripts.
-        console.log(`\n  ${badge.fail} Turn ended without completion after ${elapsed}s\n`);
-      }
-
-      saveReplHistory();
-      rl.resume();
-      rl.prompt();
+      if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") process.stdin.setRawMode(turnWasRaw);
     }
+
+    const elapsed = ((outcome.elapsedMs || 0) / 1000).toFixed(1);
+    if (outcome.ok) {
+      console.log(`\n  ${c.dim}✓ Completed in ${elapsed}s${c.reset}\n`);
+    } else {
+      console.error(`\n  ${badge.fail} ${outcome.reason}`);
+      // A failed turn is not recorded: it would corrupt /save transcripts.
+      console.log(`\n  ${badge.fail} Turn ended without completion after ${elapsed}s\n`);
+    }
+    saveReplHistory();
+    rl.resume();
+  }
+
+  rl.prompt();
+
+  rl.on("line", async (line) => {
+    const input = line.trim();
+    if (isTurnActive) return;
+    if (!input) {
+      rl.prompt();
+      return;
+    }
+    if (input.startsWith("/")) {
+      await handleCommand(input, line);
+    } else {
+      await runPrompt(input);
+    }
+    rl.prompt();
   });
 
-  // Handle Ctrl+C
   let sigintCount = 0;
   rl.on("SIGINT", async () => {
     if (isTurnActive) {
       interruptActiveTurn();
       return;
     }
-
     sigintCount++;
     if (sigintCount === 1) {
       console.log(`\n  ${c.dim}Press Ctrl+C again or type /exit to quit.${c.reset}`);
       rl.prompt();
-      setTimeout(() => {
-        sigintCount = 0;
-      }, 2000);
+      setTimeout(() => (sigintCount = 0), 2000);
     } else {
-      console.log(`\n${badge.info} Goodbye.`);
-      saveReplHistory();
-      clearInterval(quotaInterval);
-      await stopClientQuietly();
-      restoreTerminal();
-      process.exit(0);
+      await quit("Goodbye.");
     }
   });
 
   rl.on("close", async () => {
     process.stdin.removeListener("keypress", onKeypress);
-    for (const itemId of activeTools.keys()) {
-      stopTailing(itemId);
-    }
     saveReplHistory();
-    clearInterval(quotaInterval);
-    clearInterval(approvalInterval);
-    await stopClientQuietly();
+    clearInterval(titleTimer);
+    await session.stop().catch(() => {});
     restoreTerminal();
     process.exit(0);
   });

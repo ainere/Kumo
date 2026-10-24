@@ -303,10 +303,28 @@ export function saveConfig(config) {
  * Update a specific key.
  */
 export function setConfigValue(key, value) {
+  const current = loadConfig();
+  current[key] = normalizeConfigValue(key, value);
+  saveConfig(current);
+  // Deliberately no provider-config sync here: this runs from whatever
+  // directory the user happens to be in, and the home directory holds the
+  // global ~/.codex/config.toml. Sessions refresh opted-in workspaces instead.
+  return current;
+}
+
+/**
+ * Validate and normalize one config value without saving it. Throws with a
+ * message naming the allowed values. Sessions use this for settings that
+ * apply to them alone; setConfigValue for the saved defaults.
+ *
+ * @param {string} key
+ * @param {*} value
+ * @returns {*} the normalized value
+ */
+export function normalizeConfigValue(key, value) {
   if (key === "__proto__" || key === "constructor" || key === "prototype" || !(key in DEFAULT_CONFIG)) {
     throw new Error(`Unknown config key '${key}'. Allowed: ${Object.keys(DEFAULT_CONFIG).sort().join(", ")}`);
   }
-  const current = loadConfig();
 
   if (typeof DEFAULT_CONFIG[key] === "boolean") {
     if (typeof value === "boolean") {
@@ -401,13 +419,7 @@ export function setConfigValue(key, value) {
     }
     value = val;
   }
-
-  current[key] = value;
-  saveConfig(current);
-  // Deliberately no provider-config sync here: this runs from whatever
-  // directory the user happens to be in, and the home directory holds the
-  // global ~/.codex/config.toml. Sessions refresh opted-in workspaces instead.
-  return current;
+  return value;
 }
 
 /**

@@ -271,10 +271,49 @@ export function childEnvFor(provider, extra = {}) {
 
 // ── Live log teeing ──
 
+/** Live output routed away from its file, keyed by the run's live-log path. */
+const liveSinks = new Map();
+
 /**
- * Spawn a child and mirror its stdout/stderr into `liveLogPath` as it arrives.
+ * Send a run's live output to `sink` instead of its live-log file. The bridge
+ * does this when an engine is connected: the output then streams over the
+ * engine connection, tagged with its run, and no file is written. Returns a
+ * function that removes the route.
  *
- * The REPL tails that file to render worker progress. Attaching the tee here
+ * @param {string} liveLogPath
+ * @param {(chunk: Buffer|string) => void} sink
+ * @returns {() => void}
+ */
+export function routeLiveOutput(liveLogPath, sink) {
+  liveSinks.set(liveLogPath, sink);
+  return () => {
+    if (liveSinks.get(liveLogPath) === sink) liveSinks.delete(liveLogPath);
+  };
+}
+
+/**
+ * Record a chunk of a worker's live output: to the route registered for its
+ * live-log path, else appended to that file. Best-effort; never throws.
+ *
+ * @param {string|null|undefined} liveLogPath
+ * @param {Buffer|string} chunk
+ */
+export function writeLiveOutput(liveLogPath, chunk) {
+  if (!liveLogPath) return;
+  const sink = liveSinks.get(liveLogPath);
+  try {
+    if (sink) sink(chunk);
+    else fs.appendFileSync(liveLogPath, chunk);
+  } catch {
+    /* live output is best-effort telemetry */
+  }
+}
+
+/**
+ * Spawn a child and mirror its stdout/stderr as live output as it arrives
+ * (see writeLiveOutput).
+ *
+ * The REPL renders that as worker progress. Attaching the tee here
  * means every adapter gets it; additional `data` listeners on the same streams
  * continue to work, since Node delivers each chunk to every listener.
  *
@@ -288,13 +327,7 @@ export function spawnWithLiveLog(bin, args, options, liveLogPath = null) {
   const proc = safeSpawn(bin, args, options);
 
   if (liveLogPath) {
-    const append = (chunk) => {
-      try {
-        fs.appendFileSync(liveLogPath, chunk);
-      } catch {
-        /* live log is best-effort telemetry */
-      }
-    };
+    const append = (chunk) => writeLiveOutput(liveLogPath, chunk);
     proc.stdout?.on("data", append);
     proc.stderr?.on("data", append);
   }

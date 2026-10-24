@@ -19,6 +19,7 @@ import {
   killProcessTree,
   stopProcessTree,
   resolveBinary,
+  writeLiveOutput,
 } from "../utils/process.js";
 import { mustUseStdinPrompt, grantsWrite } from "../providers/workers/cli-runner.js";
 
@@ -287,9 +288,7 @@ export async function runAgy(opts) {
         if (onChunk) {
           try { onChunk("stdout", chunk); } catch {}
         }
-        if (liveLogPath) {
-          try { fs.appendFileSync(liveLogPath, chunk); } catch {}
-        }
+        writeLiveOutput(liveLogPath, chunk);
         if (stdout.length < MAX_OUTPUT_BYTES) {
           const remaining = MAX_OUTPUT_BYTES - stdout.length;
           const str = chunk.toString();
@@ -301,9 +300,7 @@ export async function runAgy(opts) {
         if (onChunk) {
           try { onChunk("stderr", chunk); } catch {}
         }
-        if (liveLogPath) {
-          try { fs.appendFileSync(liveLogPath, chunk); } catch {}
-        }
+        writeLiveOutput(liveLogPath, chunk);
         if (stderr.length < MAX_OUTPUT_BYTES) {
           const remaining = MAX_OUTPUT_BYTES - stderr.length;
           const str = chunk.toString();
@@ -366,9 +363,7 @@ export async function runAgy(opts) {
     if (onChunk) {
       try { onChunk("stdout", Buffer.from(retryMarker)); } catch {}
     }
-    if (liveLogPath) {
-      try { fs.appendFileSync(liveLogPath, retryMarker); } catch {}
-    }
+    writeLiveOutput(liveLogPath, retryMarker);
     // Wait briefly before retrying transient connection reset
     await new Promise((r) => setTimeout(r, 1500));
   }
