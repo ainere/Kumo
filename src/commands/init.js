@@ -23,7 +23,8 @@ function getAgentsTemplate(vaultPath) {
 
 This project coordinates a frontier reasoning model as the **Root Orchestrator** and a high-throughput execution model as the **Worker**.
 - **Root Orchestrator**: Frontier reasoning model (${orchModel} via ${orchProvider})
-- **Execution Worker**: High-throughput worker (${workerModel} via ${workerProvider} / MCP bridge)
+- **Execution Worker**: High-throughput worker (${workerModel} via ${workerProvider} / MCP bridge), shared by every role without its own model
+- **Worker Roles**: scout (\`worker_explore\`), builder (\`worker_implement\`), tester (\`worker_test\`), researcher (\`worker_research\`), reviewer (\`worker_review\`), designer (\`worker_design\`) and custom roles (\`worker_<id>\`). Each tool's description names the model its role runs on; route by that assignment (\`kumo role\` shows it).
 - **Reviewer**: Orchestrator subagent for deep cross-model review
 
 ## Delegation Gate
@@ -38,9 +39,12 @@ Classify tasks before substantive repository work:
 
 > **Tool Invocation Rule**: The orchestrator must make actual MCP tool calls (\`worker_*\`). Do not describe, simulate, or silently perform delegated work directly in the root thread to conserve orchestrator message limits and reasoning quota.
 
-## Concurrency & File Isolation
-- Never run multiple \`worker_implement\` calls in parallel on overlapping files.
-- Partition work into disjoint file sets or execute sequentially.
+## Concurrency & File Ownership
+- Never run two write calls (\`worker_implement\`, \`worker_test\`, \`worker_design\`, custom write roles) in parallel on overlapping files.
+- Give each parallel write call its own files and name them in its brief, or execute sequentially.
+
+## Briefs
+- Every worker call states its objective, scope (the files it owns), constraints, deliverable, and acceptance check.
 
 ## Knowledge & Documentation Integrity
 - **Graphify**: When exploring codebase structure, consult \`graphify-out/\` (\`GRAPH_REPORT.md\`, \`graph.json\`) when available for high-level cluster maps. Always verify active symbols against current source code; do not treat a stale graph as ground truth.

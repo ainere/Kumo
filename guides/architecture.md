@@ -36,14 +36,14 @@ The **Model Context Protocol (MCP)** provides an open, standardized RPC protocol
 ┌────────────────────────────────────────┴───────────────┐
 │ MCP Bridge Server (src/bridge/server.js)               │
 │ - Uses @modelcontextprotocol/sdk                       │
-│ - Exposes 5 specialized worker_* MCP tools             │
+│ - One worker_* MCP tool per role (scout, builder, …)   │
 │ - Optional per-call `provider` override                │
 └───────────────────────────┬────────────────────────────┘
                             │ Subprocess spawn or direct-API fetch
                             ▼
 ┌────────────────────────────────────────────────────────┐
-│ Execution Worker (any of 13 providers)                 │
-│ - Model: Dynamic (e.g. Gemini 3.8 Flash, Haiku 5.5)    │
+│ Worker roles (any of 13 providers, one model per role) │
+│ - Model: per role, else the shared worker's            │
 │ - Mode: read-only | workspace-write (CLI workers)       │
 │ - Subscription CLI login, or direct-API env key        │
 └────────────────────────────────────────────────────────┘
@@ -51,8 +51,9 @@ The **Model Context Protocol (MCP)** provides an open, standardized RPC protocol
 The bridge reaches the session that started its orchestrator through the
 endpoint and token in its environment (Codex forwards them by name with
 `env_vars`, Claude Code through the per-session MCP config, Antigravity by
-inheritance). It takes the worker, model, effort and safety mode from that
-session on every call, streams each worker run's output tagged with its run
+inheritance). It takes the role assignments, shared worker, model, effort and safety mode
+from that session on every call (and builds its tool list from the session's
+roles when it starts), streams each worker run's output tagged with its run
 (the session matches runs to the orchestrator's tool calls by tool and task),
 and asks the session for approvals. A bridge with no engine — started by a
 plain `codex` with a `kumo init` config — falls back to the saved config,
@@ -64,10 +65,10 @@ live-log files and approval files.
 - The subprocess inherits the user's OS user session and profile environment.
 
 ### 2. Execution Permissions & Safety Modes
-- **Read-Only Tools (`worker_explore`, `worker_research`, `worker_review`)**:
+- **Read-Only Tools (`worker_explore`, `worker_research`, `worker_review`, custom read roles)**:
   - Where the CLI can enforce it, the worker is launched read-only: `codex exec --sandbox read-only`; Claude Code with `--permission-mode dontAsk` and `Edit,Write,NotebookEdit` denied; headless `agy` without permission flags (it then refuses tools that need a prompt).
   - For other CLIs read-only behavior rests on the prompt wording and is **advisory**, not an OS sandbox.
-- **Write-Enabled Tools (`worker_implement`, `worker_test`)**:
+- **Write-Enabled Tools (`worker_implement`, `worker_test`, `worker_design`, custom write roles)**:
   - The bridge decides each worker call's permission: read-only tools and diff previews run read-only; autonomous writes and confirmed re-runs get write access. With write access, Kumo passes `-y --approval-mode yolo` to the Gemini CLI, `--dangerously-skip-permissions --mode accept-edits` to `agy`, and `--sandbox workspace-write` to `codex exec` (`--sandbox read-only` otherwise).
   - When `trustWorkspace` is enabled (default `true`), `--skip-trust` is passed and `GEMINI_CLI_TRUST_WORKSPACE=true` is set in the child environment.
   - Under `safetyMode: "diff-review"`, write tools run in diff-preview mode and require the calling orchestrator model to explicitly confirm with `confirm: true` and a matching `previewId`. Under `safetyMode: "interactive"`, a human approval prompt on the REPL TTY gates application. Either way, the approved diff itself is applied with `git apply`; the worker re-runs only if that diff no longer applies, and the result says so.
