@@ -1,9 +1,9 @@
 /**
- * window-launcher.js — Launches Kumo in a dedicated external terminal window (PowerShell or CMD)
- * and closes the old calling terminal to keep the workspace clean.
+ * window-launcher.js — Launches Kumo in a dedicated external terminal window (PowerShell or CMD).
+ * The terminal it was started from is left open.
  */
 
-import { spawn, execSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import path from "node:path";
 
 const SAFE_ARG_RE = /^[A-Za-z0-9._:\\/=@+-]+$/;
@@ -30,7 +30,7 @@ function encodePowerShellCommand(script) {
 }
 
 /**
- * Launch a dedicated new terminal window running Kumo and close the parent console.
+ * Launch a dedicated new terminal window running Kumo, then exit this process.
  *
  * Supports two calling conventions:
  * 1. Single options object: launchInNewWindow({ workspace, args })
@@ -118,35 +118,10 @@ export async function launchInNewWindow(optsOrWorkspace = {}, maybeArgs = undefi
         child.unref();
         if (!resolved) {
           resolved = true;
-
-          // Close old calling CMD window only if it is safe
-          const ppid = process.ppid;
-          if (ppid && ppid > 1) {
-            setTimeout(() => {
-              let safeToKill = false;
-              try {
-                const probe = execSync(
-                  `tasklist /FI "PID eq ${Number(ppid)}" /FO CSV /NH`,
-                  { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }
-                );
-                safeToKill = /cmd\.exe|conhost\.exe/i.test(probe);
-              } catch {
-                safeToKill = false;
-              }
-              if (safeToKill) {
-                try {
-                  spawn("taskkill.exe", ["/F", "/PID", String(ppid)], {
-                    detached: true,
-                    stdio: "ignore",
-                  }).unref();
-                } catch {}
-              }
-              process.exit(0);
-            }, 100);
-          } else {
-            process.exit(0);
-          }
-
+          // The calling shell is left alone. It used to be force-killed
+          // (`taskkill /F` on the parent cmd.exe), which took the user's
+          // shell — and anything else running in it — down with it.
+          setTimeout(() => process.exit(0), 100);
           resolve(true);
         }
       });

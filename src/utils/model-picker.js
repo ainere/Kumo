@@ -11,32 +11,18 @@ import {
   setConfigValue,
   applyPreset,
   PRESETS,
-  detectProviderForModel,
 } from "../config/settings.js";
-import { getAgyModels, DEFAULT_WORKER_MODELS } from "../bridge/agy-runner.js";
+import { getAgyModels } from "../bridge/agy-runner.js";
+import { MODEL_CATALOG, allKnownModels, providerOffersModel, OPEN_MODEL_PROVIDERS, EFFORT_LEVELS } from "../config/models.js";
 import { safeSpawn } from "./process.js";
 import { findOllamaBinary } from "../providers/workers/ollama.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
 
-/** Default known orchestrator models (Codex) */
-export const DEFAULT_CODEX_MODELS = [
-  { id: "chatgpt-6-astra", name: "ChatGPT 6 Astra", desc: "Frontier reasoning model for planning & review (ChatGPT Plus)" },
-  { id: "chatgpt-5.6-sol", name: "ChatGPT 5.6 Sol", desc: "High-speed reasoning orchestrator" },
-  { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", desc: "Balanced agentic coding model for everyday work" },
-  { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", desc: "Fast and affordable agentic coding model" },
-  { id: "gpt-5.5", name: "GPT-5.5", desc: "Proven previous-generation model (low quota safe)" },
-];
+/** Default known orchestrator models (Codex), used when the server cannot list its own. */
+export const DEFAULT_CODEX_MODELS = MODEL_CATALOG.codex;
 
 /** Concise summaries for built-in presets */
-export const PRESET_SUMMARIES = {
-  default: "Astra Low + Gemini 3.8 Medium",
-  pro: "Astra Medium + Gemini 3.8 High",
-  speed: "Sol Low + Gemini 3.8 Low",
-  "gemini-3.7": "Astra Low + Gemini 3.7 Medium",
-  "opus-astra": "Opus 4.6 Thinking + Astra Low",
-  "opus-flash": "Opus 4.6 Thinking + Gemini 3.8 Flash",
-  test: "GPT-5.5 Low + Gemini 3.6 Low",
-};
+export const PRESET_SUMMARIES = Object.fromEntries(Object.entries(PRESETS).map(([key, p]) => [key, p.name]));
 
 /** Canonical provider groupings for picker menus and model list output. */
 export const SUBSCRIPTION_PROVIDERS = [
@@ -173,7 +159,6 @@ export async function getOllamaModels() {
   });
 }
 
-const ALL_KNOWN_MODELS = () => [...DEFAULT_CODEX_MODELS, ...DEFAULT_WORKER_MODELS];
 
 /**
  * Models appropriate for the chosen provider.
@@ -194,19 +179,13 @@ export async function modelsForProvider(provider) {
       const live = await getOllamaModels();
       return live.length > 0 ? live : [{ id: "llama3.1", name: "llama3.1", desc: "Ollama default" }];
     }
-    case "openai-api":
-      return DEFAULT_CODEX_MODELS;
-    case "anthropic-api":
-      return ALL_KNOWN_MODELS().filter((m) => /^claude-/i.test(m.id));
-    case "gemini-api":
-      return ALL_KNOWN_MODELS().filter((m) => /^gemini-/i.test(m.id));
-    case "compat-api":
-      // The model id is defined by the endpoint, so no list can be authoritative.
-      return ALL_KNOWN_MODELS();
     default: {
-      // Subscription CLIs: show only the ids that resolve back to this provider.
-      const matching = ALL_KNOWN_MODELS().filter((m) => detectProviderForModel(m.id) === provider);
-      return matching.length > 0 ? matching : ALL_KNOWN_MODELS();
+      if (MODEL_CATALOG[provider]) return MODEL_CATALOG[provider];
+      // Open providers (compat-api, opencode, …) take any id their setup
+      // defines, so the whole catalog is offered as suggestions.
+      if (OPEN_MODEL_PROVIDERS.includes(provider)) return allKnownModels();
+      const matching = allKnownModels().filter((m) => providerOffersModel(provider, m.id));
+      return matching.length > 0 ? matching : allKnownModels();
     }
   }
 }
@@ -706,7 +685,7 @@ export async function openInteractiveModelPicker(opts = {}) {
           high: "Deep thinking & architecture",
           max: "Maximum reasoning depth",
         };
-        const levels = ["low", "medium", "high", "max"].map((lvl) => ({
+        const levels = EFFORT_LEVELS.map((lvl) => ({
           label: lvl.toUpperCase(),
           value: lvl,
           hint: orchHints[lvl] || "Reasoning depth",
@@ -738,7 +717,7 @@ export async function openInteractiveModelPicker(opts = {}) {
           medium: "Standard balanced execution",
           high: "Thorough multi-step thinking",
         };
-        const levels = ["low", "medium", "high"].map((lvl) => ({
+        const levels = EFFORT_LEVELS.map((lvl) => ({
           label: lvl.toUpperCase(),
           value: lvl,
           hint: workerHints[lvl] || "Reasoning depth",

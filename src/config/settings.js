@@ -14,6 +14,7 @@ import {
   quarantineCorruptFile,
 } from "./paths.js";
 import { BANNER_DESIGNS } from "../utils/ui.js";
+import { EFFORT_LEVELS, LEGACY_MODEL_IDS } from "./models.js";
 
 // Legacy path for seamless migration. Deliberately anchored to the real home
 // directory: the migration must not follow KUMO_HOME.
@@ -78,7 +79,7 @@ export function isSafeBaseUrl(url) {
 
 export const DEFAULT_CONFIG = {
   orchestratorProvider: "codex",
-  orchestratorModel: "chatgpt-6-astra",
+  orchestratorModel: "gpt-6-astra",
   reasoningEffort: "low",
   workerProvider: "antigravity",
   workerModel: "gemini-3.8-flash",
@@ -109,13 +110,18 @@ export function getObsidianVaultPath(config = null) {
   return cfg.obsidianVault || null;
 }
 
+/**
+ * Named model pairings. Each names its provider explicitly: Claude models run
+ * through Claude Code (`claude`) or through Antigravity, and the preset says
+ * which. Models checked against Claude Code 2.1.307 and agy 1.2.7 (2026-10).
+ */
 export const PRESETS = {
   default: {
     name: "Astra Low + Gemini 3.8 Medium",
-    description: "Everyday development (ChatGPT Plus + Google AI Pro)",
+    description: "Everyday development (ChatGPT + Google AI Pro)",
     config: {
       orchestratorProvider: "codex",
-      orchestratorModel: "chatgpt-6-astra",
+      orchestratorModel: "gpt-6-astra",
       reasoningEffort: "low",
       workerProvider: "antigravity",
       workerModel: "gemini-3.8-flash",
@@ -127,7 +133,7 @@ export const PRESETS = {
     description: "Complex architecture and deeper reasoning (ChatGPT Pro)",
     config: {
       orchestratorProvider: "codex",
-      orchestratorModel: "chatgpt-6-astra",
+      orchestratorModel: "gpt-6-astra",
       reasoningEffort: "medium",
       workerProvider: "antigravity",
       workerModel: "gemini-3.8-flash",
@@ -135,62 +141,98 @@ export const PRESETS = {
     },
   },
   speed: {
-    name: "Sol Low + Gemini 3.8 Low",
+    name: "GPT-6 Luna Low + Gemini 3.8 Low",
     description: "High-speed iteration and fast turnaround",
     config: {
       orchestratorProvider: "codex",
-      orchestratorModel: "chatgpt-5.6-sol",
+      orchestratorModel: "gpt-6-luna",
       reasoningEffort: "low",
       workerProvider: "antigravity",
       workerModel: "gemini-3.8-flash",
       workerEffort: "low",
     },
   },
-  "gemini-3.7": {
-    name: "Astra Low + Gemini 3.7 Medium",
-    description: "Fallback compatibility worker",
+  claude: {
+    name: "Opus 5.5 + Haiku 5.5 (Claude Code)",
+    description: "Everything on your Claude subscription, through the official Claude Code CLI",
     config: {
-      orchestratorProvider: "codex",
-      orchestratorModel: "chatgpt-6-astra",
+      orchestratorProvider: "claude",
+      orchestratorModel: "claude-opus-5-5",
+      reasoningEffort: "medium",
+      workerProvider: "claude",
+      workerModel: "claude-haiku-5-5",
+      workerEffort: "low",
+    },
+  },
+  "claude-sonnet": {
+    name: "Sonnet 5.5 + Haiku 5.5 (Claude Code)",
+    description: "Lighter Claude Code pairing that stretches subscription usage",
+    config: {
+      orchestratorProvider: "claude",
+      orchestratorModel: "claude-sonnet-5-5",
       reasoningEffort: "low",
+      workerProvider: "claude",
+      workerModel: "claude-haiku-5-5",
+      workerEffort: "low",
+    },
+  },
+  "claude-flash": {
+    name: "Opus 5.5 (Claude Code) + Gemini 3.8 Flash",
+    description: "Claude Code orchestrator with a high-throughput Antigravity worker",
+    config: {
+      orchestratorProvider: "claude",
+      orchestratorModel: "claude-opus-5-5",
+      reasoningEffort: "medium",
       workerProvider: "antigravity",
-      workerModel: "gemini-3.7-flash",
+      workerModel: "gemini-3.8-flash",
       workerEffort: "medium",
     },
   },
   "opus-astra": {
-    name: "Opus 4.6 Thinking + Astra Low",
-    description: "Inverted harness: Claude Opus Orchestrator (Antigravity) + Codex Astra Worker",
+    name: "Opus 5.5 (Antigravity) + Astra Low",
+    description: "Inverted harness: Claude Opus orchestrator via Google AI Pro + Codex Astra worker",
     config: {
       orchestratorProvider: "antigravity",
-      orchestratorModel: "claude-opus-4-6-thinking",
+      orchestratorModel: "claude-opus-5-5",
       reasoningEffort: "high",
       workerProvider: "codex",
-      workerModel: "chatgpt-6-astra",
+      workerModel: "gpt-6-astra",
       workerEffort: "low",
     },
   },
   "opus-flash": {
-    name: "Opus 4.6 Thinking + Gemini 3.8 Flash",
-    description: "Frontier reasoning Orchestrator (Opus) + high-speed Worker (Gemini)",
+    name: "Opus 5.5 (Antigravity) + Gemini 3.8 Flash",
+    description: "Claude Opus orchestrator and Gemini worker, both on Google AI Pro",
     config: {
       orchestratorProvider: "antigravity",
-      orchestratorModel: "claude-opus-4-6-thinking",
+      orchestratorModel: "claude-opus-5-5",
       reasoningEffort: "high",
+      workerProvider: "antigravity",
+      workerModel: "gemini-3.8-flash",
+      workerEffort: "medium",
+    },
+  },
+  argon: {
+    name: "Gemini 4 Argon + Gemini 3.8 Flash",
+    description: "All-Google pairing on Google AI Pro",
+    config: {
+      orchestratorProvider: "antigravity",
+      orchestratorModel: "gemini-4-argon",
+      reasoningEffort: "medium",
       workerProvider: "antigravity",
       workerModel: "gemini-3.8-flash",
       workerEffort: "medium",
     },
   },
   test: {
-    name: "GPT-5.5 Low + Gemini 3.6 Low",
-    description: "Lowest quota verification (ChatGPT Go safe)",
+    name: "GPT-6 Luna Low + Gemini 3.8 Low",
+    description: "Lowest quota verification (GPT-6 Luna is on every ChatGPT plan)",
     config: {
       orchestratorProvider: "codex",
-      orchestratorModel: "gpt-5.5",
+      orchestratorModel: "gpt-6-luna",
       reasoningEffort: "low",
       workerProvider: "antigravity",
-      workerModel: "gemini-3.6-flash",
+      workerModel: "gemini-3.8-flash",
       workerEffort: "low",
     },
   },
@@ -241,6 +283,11 @@ export function loadConfig() {
   // comparison against `antigravity` in the codebase has one spelling to match.
   merged.orchestratorProvider = canonicalizeProvider(merged.orchestratorProvider);
   merged.workerProvider = canonicalizeProvider(merged.workerProvider);
+  // Model ids an older Kumo wrote that no CLI accepts (`chatgpt-6-astra`)
+  // are read as the model they meant; the file itself is left as it is.
+  for (const key of ["orchestratorModel", "workerModel"]) {
+    if (LEGACY_MODEL_IDS[merged[key]]) merged[key] = LEGACY_MODEL_IDS[merged[key]];
+  }
   return merged;
 }
 
@@ -283,16 +330,10 @@ export function setConfigValue(key, value) {
     if (key === "turnTimeoutMs" && (value < 60000 || value > 14400000)) {
       throw new Error(`Value for 'turnTimeoutMs' must be between 60000 and 14400000`);
     }
-  } else if (key === "reasoningEffort") {
+  } else if (key === "reasoningEffort" || key === "workerEffort") {
     const norm = String(value).toLowerCase().trim();
-    if (!["low", "medium", "high", "max"].includes(norm)) {
-      throw new Error(`Value for 'reasoningEffort' must be one of: low, medium, high, max`);
-    }
-    value = norm;
-  } else if (key === "workerEffort") {
-    const norm = String(value).toLowerCase().trim();
-    if (!["low", "medium", "high"].includes(norm)) {
-      throw new Error(`Value for 'workerEffort' must be one of: low, medium, high`);
+    if (!EFFORT_LEVELS.includes(norm)) {
+      throw new Error(`Value for '${key}' must be one of: ${EFFORT_LEVELS.join(", ")}`);
     }
     value = norm;
   } else if (key === "orchestratorProvider" || key === "workerProvider") {
@@ -395,129 +436,11 @@ export function getConfigPath() {
   return configFile();
 }
 
-/**
- * Check if a given model or provider configuration corresponds to Codex.
- * Returns true if provider is 'codex' or the model is a known Codex/OpenAI model.
- */
-export function isCodexModel(model, provider = null) {
-  if (provider === "codex") return true;
-  if (provider === "antigravity" || provider === "gemini" || provider === "claude") return false;
-  if (!model) return false;
-  const norm = model.toLowerCase().trim();
-  if (norm.startsWith("gemini-") || norm.startsWith("claude-") || norm.includes("gpt-oss")) {
-    return false;
-  }
-  return /^(chatgpt\b|gpt-5(\b|\.)|astra\b|sol\b|terra\b|luna\b)/i.test(norm);
-}
-
-/**
- * Automatically determine the appropriate provider for a given model identifier.
- *
- * @param {string} model
- * @param {string} [preferredProvider=null]
- * @returns {string} provider ID ('codex', 'antigravity', 'claude', 'opencode', 'commandcode')
- */
-export function detectProviderForModel(model, preferredProvider = null) {
-  if (preferredProvider) {
-    const p = preferredProvider.toLowerCase().trim();
-    if (p === "gemini" || p === "agy") return "antigravity";
-    return p;
-  }
-
-  if (!model) return "codex";
-  const norm = model.toLowerCase().trim();
-
-  // OpenAI / Codex models
-  if (/^(chatgpt\b|gpt-5(\b|\.)|astra\b|sol\b|terra\b|luna\b)/i.test(norm)) {
-    return "codex";
-  }
-
-  // Gemini CLI model prefix precedes the generic gemini- branch below (gemini-cli-* starts with gemini-).
-  if (norm.startsWith("gemini-cli")) {
-    return "gemini-cli";
-  }
-
-  // Google Antigravity models (Gemini + open-weights)
-  if (norm.startsWith("gemini-") || norm.includes("gpt-oss")) {
-    return "antigravity";
-  }
-
-  // Claude models: supported both by Antigravity (Google AI Pro subscription) and Claude Code
-  if (norm.startsWith("claude-") || /\bopus\b/.test(norm) || /\bsonnet\b/.test(norm)) {
-    return "antigravity";
-  }
-
-  // OpenCode / CommandCode models
-  if (norm.startsWith("opencode") || norm.startsWith("open-code")) {
-    return "opencode";
-  }
-  if (norm.startsWith("commandcode") || norm.startsWith("command-code")) {
-    return "commandcode";
-  }
-  // New subscription CLI model prefixes.
-  if (norm.startsWith("copilot")) {
-    return "copilot";
-  }
-  if (norm.startsWith("cursor-agent") || norm.startsWith("cursor")) {
-    return "cursor";
-  }
-  if (norm.startsWith("ollama")) {
-    return "ollama";
-  }
-
-  return "codex";
-}
-
-/**
- * Canonical model resolution for any model alias across all providers.
- */
-export function resolveModel(input) {
-  if (!input) return input;
-  const norm = input.toLowerCase().trim();
-
-  // Codex / OpenAI aliases
-  if (norm === "astra" || norm === "chatgpt-6" || norm === "6-astra") return "chatgpt-6-astra";
-  if (norm === "sol" || norm === "5.6-sol" || norm === "chatgpt-sol") return "chatgpt-5.6-sol";
-  if (norm === "terra" || norm === "5.6-terra") return "gpt-5.6-terra";
-  if (norm === "luna" || norm === "5.6-luna") return "gpt-5.6-luna";
-  if (norm === "gpt-5" || norm === "5.5" || norm === "gpt5") return "gpt-5.5";
-
-  // Anthropic / Claude aliases
-  if (norm === "opus" || norm === "opus-4.6" || norm === "claude-opus" || norm === "opus-thinking" || norm === "claude-opus-4.6") {
-    return "claude-opus-4-6-thinking";
-  }
-  if (norm === "sonnet" || norm === "sonnet-4.6" || norm === "claude-sonnet" || norm === "claude-sonnet-4.6") {
-    return "claude-sonnet-4-6";
-  }
-
-  // Google / Gemini aliases
-  if (norm === "flash" || norm === "3.8" || norm === "3.8-flash" || norm === "gemini-3.8") return "gemini-3.8-flash";
-  if (norm === "3.7" || norm === "3.7-flash" || norm === "gemini-3.7") return "gemini-3.7-flash";
-  if (norm === "3.6" || norm === "3.6-flash" || norm === "gemini-3.6") return "gemini-3.6-flash";
-  if (norm === "pro" || norm === "3.1" || norm === "3.1-pro" || norm === "gemini-3.1") return "gemini-3.1-pro";
-  if (norm === "oss" || norm === "120b" || norm === "gpt-oss") return "gpt-oss-120b";
-
-  return input;
-}
-
-
-/**
- * Check whether a model supports the CLI `--effort` flag in Antigravity.
- * Claude models and models with predefined suffixes do not support `--effort`.
- *
- * @param {string} model
- * @returns {boolean}
- */
-export function supportsEffort(model) {
-  if (!model) return false;
-  const norm = model.toLowerCase().trim();
-  if (norm.startsWith("gpt-oss")) return true;
-  if (norm.startsWith("claude-") || /\bopus\b/.test(norm) || /\bsonnet\b/.test(norm)) {
-    return false;
-  }
-  if (norm.endsWith("-low") || norm.endsWith("-medium") || norm.endsWith("-high")) {
-    return false;
-  }
-  return norm.startsWith("gemini-") || norm.startsWith("chatgpt-") || norm.startsWith("gpt-5");
-}
-
+// Model helpers live in the one catalog; re-exported for existing importers.
+export {
+  isCodexModel,
+  detectProviderForModel,
+  providerForModel,
+  resolveModel,
+  supportsEffort,
+} from "./models.js";
