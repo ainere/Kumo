@@ -2,10 +2,18 @@
  * generic-client.js — Generic orchestrator client adapter for arbitrary CLI agents.
  * Allows using any external CLI (e.g. OpenCode, CommandCode, Ollama, local LLM harnesses)
  * as the frontier Orchestrator without hardcoding.
+ *
+ * Each turn is one process run. Subclasses only describe the command line for
+ * a turn (`buildTurn`); spawning, streaming, completion and teardown live here
+ * once, so every CLI reports the end of a turn the same way.
  */
 
 import { EventEmitter } from "node:events";
-import { safeSpawn } from "../../utils/process.js";
+import { StringDecoder } from "node:string_decoder";
+import { safeSpawn, resolveBinary, stopProcessTree } from "../../utils/process.js";
+
+/** How much trailing stderr is kept to explain a failed turn. */
+const STDERR_TAIL_CHARS = 2000;
 
 export class GenericAppClient extends EventEmitter {
   constructor(options = {}) {
@@ -31,50 +39,137 @@ export class GenericAppClient extends EventEmitter {
     return { ok: true };
   }
 
-  async startTurn(prompt, { model, effort } = {}) {
-    this.isTurnActive = true;
-    const turnModel = model || this.activeModel;
-    const turnEffort = effort || this.activeEffort;
-
+  /**
+   * Describe the process for one turn. Subclasses override this.
+   *
+   * @param {string} prompt
+   * @param {{ model?: string|null, effort?: string|null }} opts
+   * @returns {{ args: string[], stdin?: string|null, env?: Record<string, string> }}
+   */
+  buildTurn(prompt, { model, effort } = {}) {
     const args = [];
-    if (turnModel) {
-      args.push("--model", turnModel);
+    if (model) {
+      args.push("--model", model);
     }
-    if (turnEffort) {
-      args.push("--effort", turnEffort);
+    if (effort) {
+      args.push("--effort", effort);
     }
     args.push("-p", prompt);
+    return { args };
+  }
+
+  /**
+   * Hook run when a turn's process exits. Subclasses use it to keep
+   * conversation state (e.g. whether a session id now exists).
+   *
+   * @param {boolean} _ok
+   */
+  afterTurn(_ok) {}
+
+  /**
+   * Hook for each chunk of a turn's stdout. The default streams it verbatim
+   * as the answer; CLIs with a structured output format parse it instead.
+   *
+   * @param {string} text
+   */
+  onStdout(text) {
+    this.emit("delta", text);
+  }
+
+  /**
+   * Hook deciding how a turn ended once its process exits. The default reads
+   * the exit code; a CLI that reports its own result can override it.
+   *
+   * @param {number|null} code
+   * @param {string} stderrTail
+   * @returns {{ ok: boolean, reason?: string }}
+   */
+  turnResult(code, stderrTail) {
+    if (code === 0) return { ok: true };
+    const detail = stderrTail.trim();
+    return { ok: false, reason: `${this.command} exited with code ${code}${detail ? `: ${detail}` : ""}` };
+  }
+
+  /**
+   * Environment for a turn's process.
+   *
+   * @param {Record<string, string>} extra
+   * @returns {Record<string, string|undefined>}
+   */
+  childEnv(extra = {}) {
+    return { ...process.env, ...this.options.env, ...extra };
+  }
+
+  async startTurn(prompt, { model, effort } = {}) {
+    const turn = this.buildTurn(prompt, {
+      model: model || this.activeModel,
+      effort: effort || this.activeEffort,
+    });
+    return this._runTurnProcess(turn);
+  }
+
+  /**
+   * Spawn one turn's process and report its end as `turn_completed`
+   * (`{ ok, reason? }`). Resolves with `{ ok }` once the process exits.
+   */
+  _runTurnProcess({ args, stdin = null, env = {} }) {
+    this.isTurnActive = true;
 
     return new Promise((resolve, reject) => {
+      let proc;
       try {
-        this.proc = safeSpawn(this.bin, args, {
+        // npm installs these CLIs as .cmd shims; the bare name cannot be spawned.
+        proc = safeSpawn(resolveBinary(this.bin), args, {
           cwd: this.workspace,
-          stdio: ["ignore", "pipe", "pipe"],
-          env: {
-            ...process.env,
-            ...this.options.env,
-          },
+          stdio: [stdin === null ? "ignore" : "pipe", "pipe", "pipe"],
+          env: this.childEnv(env),
         });
       } catch (err) {
         this.isTurnActive = false;
-        return reject(err);
+        reject(err);
+        return;
+      }
+      this.proc = proc;
+
+      if (stdin !== null && proc.stdin) {
+        proc.stdin.on("error", () => {
+          /* the child may exit before draining stdin */
+        });
+        proc.stdin.end(stdin, "utf-8");
       }
 
-      this.proc.stdout?.on("data", (chunk) => {
-        this.emit("delta", chunk.toString());
+      let stderrTail = "";
+      // A decoder per stream: a multi-byte character split across two chunks
+      // would otherwise turn into two replacement characters.
+      const stdoutDecoder = new StringDecoder("utf8");
+      proc.stdout?.on("data", (chunk) => {
+        if (proc !== this.proc) return; // interrupted or replaced
+        const text = stdoutDecoder.write(chunk);
+        if (text) this.onStdout(text);
+      });
+      proc.stderr?.on("data", (chunk) => {
+        const text = chunk.toString();
+        stderrTail = (stderrTail + text).slice(-STDERR_TAIL_CHARS);
+        this.emit("stderr", text);
       });
 
-      this.proc.stderr?.on("data", (chunk) => {
-        this.emit("stderr", chunk.toString());
-      });
-
-      this.proc.on("close", (code) => {
+      proc.on("close", (code) => {
+        // An interrupted turn has already been reported as such.
+        const current = this.proc === proc;
+        if (current) {
+          const rest = stdoutDecoder.end();
+          if (rest) this.onStdout(rest);
+          this.proc = null;
+        }
         this.isTurnActive = false;
-        this.emit("turn_completed");
-        resolve({ ok: code === 0 });
+        const result = this.turnResult(code, stderrTail);
+        this.afterTurn(result.ok);
+        if (current) this.emit("turn_completed", result);
+        resolve({ ok: result.ok });
       });
 
-      this.proc.on("error", (err) => {
+      proc.on("error", (err) => {
+        if (this.proc === proc) this.proc = null;
         this.isTurnActive = false;
         this.emit("server_error", err);
         reject(err);
@@ -83,15 +178,11 @@ export class GenericAppClient extends EventEmitter {
   }
 
   async interruptTurn() {
-    if (this.proc && !this.proc.killed) {
-      try {
-        this.proc.kill("SIGINT");
-      } catch {
-        /* ignore */
-      }
-    }
+    const proc = this.proc;
+    this.proc = null;
+    stopProcessTree(proc, "SIGINT");
     this.isTurnActive = false;
-    this.emit("turn_completed");
+    this.emit("turn_completed", { ok: false, reason: "interrupted" });
   }
 
   async getRateLimits() {
@@ -99,12 +190,8 @@ export class GenericAppClient extends EventEmitter {
   }
 
   async stop() {
-    if (this.proc && !this.proc.killed) {
-      try {
-        this.proc.kill("SIGTERM");
-      } catch {
-        /* ignore */
-      }
-    }
+    const proc = this.proc;
+    this.proc = null;
+    stopProcessTree(proc);
   }
 }

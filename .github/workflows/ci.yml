@@ -10,19 +10,32 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      # Without this, the first failing leg cancels the others and the Windows
-      # results — the whole reason the matrix exists — are never reported.
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        node-version: [20, 22]
+  # Lint and type-check once; neither depends on the OS or Node version.
+  static:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 22
       - run: npm ci --ignore-scripts
-      - run: npm test
+      - run: npm run lint
+      # JSDoc types, checked in every file that opts in with `// @ts-check`
+      # (the engine in src/core does).
+      - run: npm run typecheck
+
+  # The desktop app: its own type check and a production build.
+  desktop:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck -w @kumo/desktop
+      - run: npm run build -w @kumo/desktop

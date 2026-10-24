@@ -6,7 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { syncAgentConfigs } from "./sync.js";
+import { isDeepStrictEqual } from "node:util";
 import {
   kumoHome,
   configFile,
@@ -15,46 +15,29 @@ import {
   quarantineCorruptFile,
 } from "./paths.js";
 import { BANNER_DESIGNS } from "../utils/ui.js";
+import {
+  ALLOWED_PROVIDERS,
+  EFFORT_LEVELS,
+  LEGACY_MODEL_IDS,
+  MODEL_ID_PATTERN,
+  canonicalizeProvider,
+} from "./models.js";
+import { emptyRoles, normalizeRoles, sanitizeRoles } from "./roles.js";
 
 // Legacy path for seamless migration. Deliberately anchored to the real home
 // directory: the migration must not follow KUMO_HOME.
 const LEGACY_FILE = path.join(os.homedir(), ".orchestrator", "config.json");
 
-/** Provider ids accepted for `orchestratorProvider` / `workerProvider`. */
-export const ALLOWED_PROVIDERS = [
-  "codex",
-  "antigravity",
-  "claude",
-  "opencode",
-  "commandcode",
-  "copilot",
-  "cursor",
-  "gemini-cli",
-  "ollama",
-  "openai-api",
-  "anthropic-api",
-  "gemini-api",
-  "compat-api",
-];
-
-/**
- * Fold provider aliases onto their canonical id. `gemini` and `agy` are both
- * spellings of the Antigravity CLI provider.
- *
- * @param {string} id
- * @returns {string}
- */
-export function canonicalizeProvider(id) {
-  const norm = String(id ?? "").toLowerCase().trim();
-  if (norm === "gemini" || norm === "agy") return "antigravity";
-  return norm;
-}
+// The provider list and its aliases live in the catalog (the role
+// validation reads them there); re-exported for existing importers.
+export { ALLOWED_PROVIDERS, canonicalizeProvider };
 
 /** Safety modes understood by the MCP bridge's write tools. */
 export const SAFETY_MODES = ["autonomous", "diff-review", "interactive"];
 
 /** Approval policies accepted by Codex's `approval_policy` TOML key. */
-export const APPROVAL_POLICIES = ["untrusted", "on-failure", "on-request", "never"];
+// `on-failure` is no longer in Codex's AskForApproval enum (app-server schema, codex-cli 0.153).
+export const APPROVAL_POLICIES = ["untrusted", "on-request", "never"];
 
 /**
  * A base URL is safe when it is https, or plain http pointed at loopback.
@@ -78,13 +61,14 @@ export function isSafeBaseUrl(url) {
 
 export const DEFAULT_CONFIG = {
   orchestratorProvider: "codex",
-  orchestratorModel: "chatgpt-6-astra",
+  orchestratorModel: "gpt-6-astra",
   reasoningEffort: "low",
   workerProvider: "antigravity",
   workerModel: "gemini-3.8-flash",
   workerEffort: "medium",
   timeoutMs: 300000,
-  cliBinary: "gemini",
+  turnTimeoutMs: 1800000,
+  cliBinary: "agy",
   approvalPolicy: "on-request",
   bannerStyle: "cloud",
   safetyMode: "autonomous",
@@ -94,6 +78,9 @@ export const DEFAULT_CONFIG = {
   anthropicBaseUrl: "",
   geminiBaseUrl: "",
   compatBaseUrl: "",
+  // Per-role model assignments and custom roles (see roles.js). Empty: every
+  // role runs on the worker above, as before roles existed.
+  roles: emptyRoles(),
 };
 
 /**
@@ -108,13 +95,35 @@ export function getObsidianVaultPath(config = null) {
   return cfg.obsidianVault || null;
 }
 
+/**
+ * The `claude` preset's roles, after the design-build split: Opus designs and
+ * reviews (and leads), Sonnet builds and tests, Haiku scouts and researches.
+ */
+const CLAUDE_ROLES = {
+  designer: { provider: "claude", model: "claude-opus-5-5", effort: "medium" },
+  reviewer: { provider: "claude", model: "claude-opus-5-5", effort: "medium" },
+  builder: { provider: "claude", model: "claude-sonnet-5-5", effort: "medium" },
+  tester: { provider: "claude", model: "claude-sonnet-5-5", effort: "low" },
+  scout: { provider: "claude", model: "claude-haiku-5-5", effort: "low" },
+  researcher: { provider: "claude", model: "claude-haiku-5-5", effort: "low" },
+};
+
+/**
+ * Named model pairings. Each names its provider explicitly: Claude models run
+ * through Claude Code (`claude`) or through Antigravity, and the preset says
+ * which. Models checked against Claude Code 2.1.307 and agy 1.2.7 (2026-10).
+ *
+ * A preset's `roles` lists the built-in roles it assigns; applying it puts
+ * every other built-in role back on the shared worker and keeps the user's
+ * custom roles (see presetConfig).
+ */
 export const PRESETS = {
   default: {
     name: "Astra Low + Gemini 3.8 Medium",
-    description: "Everyday development (ChatGPT Plus + Google AI Pro)",
+    description: "Everyday development (ChatGPT + Google AI Pro)",
     config: {
       orchestratorProvider: "codex",
-      orchestratorModel: "chatgpt-6-astra",
+      orchestratorModel: "gpt-6-astra",
       reasoningEffort: "low",
       workerProvider: "antigravity",
       workerModel: "gemini-3.8-flash",
@@ -126,7 +135,7 @@ export const PRESETS = {
     description: "Complex architecture and deeper reasoning (ChatGPT Pro)",
     config: {
       orchestratorProvider: "codex",
-      orchestratorModel: "chatgpt-6-astra",
+      orchestratorModel: "gpt-6-astra",
       reasoningEffort: "medium",
       workerProvider: "antigravity",
       workerModel: "gemini-3.8-flash",
@@ -134,62 +143,100 @@ export const PRESETS = {
     },
   },
   speed: {
-    name: "Sol Low + Gemini 3.8 Low",
+    name: "GPT-6 Luna Low + Gemini 3.8 Low",
     description: "High-speed iteration and fast turnaround",
     config: {
       orchestratorProvider: "codex",
-      orchestratorModel: "chatgpt-5.6-sol",
+      orchestratorModel: "gpt-6-luna",
       reasoningEffort: "low",
       workerProvider: "antigravity",
       workerModel: "gemini-3.8-flash",
       workerEffort: "low",
     },
   },
-  "gemini-3.7": {
-    name: "Astra Low + Gemini 3.7 Medium",
-    description: "Fallback compatibility worker",
+  claude: {
+    name: "Opus 5.5 lead + Sonnet/Haiku roles (Claude Code)",
+    description:
+      "Opus leads, designs and reviews; Sonnet builds and tests; Haiku scouts and researches. All on your Claude subscription",
     config: {
-      orchestratorProvider: "codex",
-      orchestratorModel: "chatgpt-6-astra",
+      orchestratorProvider: "claude",
+      orchestratorModel: "claude-opus-5-5",
+      reasoningEffort: "medium",
+      workerProvider: "claude",
+      workerModel: "claude-haiku-5-5",
+      workerEffort: "low",
+      roles: CLAUDE_ROLES,
+    },
+  },
+  "claude-sonnet": {
+    name: "Sonnet 5.5 + Haiku 5.5 (Claude Code)",
+    description: "Lighter Claude Code pairing that stretches subscription usage",
+    config: {
+      orchestratorProvider: "claude",
+      orchestratorModel: "claude-sonnet-5-5",
       reasoningEffort: "low",
+      workerProvider: "claude",
+      workerModel: "claude-haiku-5-5",
+      workerEffort: "low",
+    },
+  },
+  "claude-flash": {
+    name: "Opus 5.5 (Claude Code) + Gemini 3.8 Flash",
+    description: "Claude Code orchestrator with a high-throughput Antigravity worker",
+    config: {
+      orchestratorProvider: "claude",
+      orchestratorModel: "claude-opus-5-5",
+      reasoningEffort: "medium",
       workerProvider: "antigravity",
-      workerModel: "gemini-3.7-flash",
+      workerModel: "gemini-3.8-flash",
       workerEffort: "medium",
     },
   },
   "opus-astra": {
-    name: "Opus 4.6 Thinking + Astra Low",
-    description: "Inverted harness: Claude Opus Orchestrator (Antigravity) + Codex Astra Worker",
+    name: "Opus 5.5 (Antigravity) + Astra Low",
+    description: "Inverted harness: Claude Opus orchestrator via Google AI Pro + Codex Astra worker",
     config: {
       orchestratorProvider: "antigravity",
-      orchestratorModel: "claude-opus-4-6-thinking",
+      orchestratorModel: "claude-opus-5-5",
       reasoningEffort: "high",
       workerProvider: "codex",
-      workerModel: "chatgpt-6-astra",
+      workerModel: "gpt-6-astra",
       workerEffort: "low",
     },
   },
   "opus-flash": {
-    name: "Opus 4.6 Thinking + Gemini 3.8 Flash",
-    description: "Frontier reasoning Orchestrator (Opus) + high-speed Worker (Gemini)",
+    name: "Opus 5.5 (Antigravity) + Gemini 3.8 Flash",
+    description: "Claude Opus orchestrator and Gemini worker, both on Google AI Pro",
     config: {
       orchestratorProvider: "antigravity",
-      orchestratorModel: "claude-opus-4-6-thinking",
+      orchestratorModel: "claude-opus-5-5",
       reasoningEffort: "high",
+      workerProvider: "antigravity",
+      workerModel: "gemini-3.8-flash",
+      workerEffort: "medium",
+    },
+  },
+  argon: {
+    name: "Gemini 4 Argon + Gemini 3.8 Flash",
+    description: "All-Google pairing on Google AI Pro",
+    config: {
+      orchestratorProvider: "antigravity",
+      orchestratorModel: "gemini-4-argon",
+      reasoningEffort: "medium",
       workerProvider: "antigravity",
       workerModel: "gemini-3.8-flash",
       workerEffort: "medium",
     },
   },
   test: {
-    name: "GPT-5.5 Low + Gemini 3.6 Low",
-    description: "Lowest quota verification (ChatGPT Go safe)",
+    name: "GPT-6 Luna Low + Gemini 3.8 Low",
+    description: "Lowest quota verification (GPT-6 Luna is on every ChatGPT plan)",
     config: {
       orchestratorProvider: "codex",
-      orchestratorModel: "gpt-5.5",
+      orchestratorModel: "gpt-6-luna",
       reasoningEffort: "low",
       workerProvider: "antigravity",
-      workerModel: "gemini-3.6-flash",
+      workerModel: "gemini-3.8-flash",
       workerEffort: "low",
     },
   },
@@ -198,6 +245,14 @@ export const PRESETS = {
 function ensureConfigDir() {
   ensureDir(kumoHome());
 }
+
+/** A fresh copy of the defaults: nothing nested is shared with DEFAULT_CONFIG. */
+function defaultConfig() {
+  return { ...DEFAULT_CONFIG, roles: emptyRoles() };
+}
+
+/** Problems already reported, so a config read on every call warns once. */
+const reportedRoleProblems = new Set();
 
 /**
  * Load settings from <KUMO_HOME>/config.json, merging with defaults.
@@ -218,7 +273,7 @@ export function loadConfig() {
 
   if (!fs.existsSync(file)) {
     saveConfig(DEFAULT_CONFIG);
-    return { ...DEFAULT_CONFIG };
+    return defaultConfig();
   }
 
   let parsed;
@@ -232,7 +287,7 @@ export function loadConfig() {
         ? `[Warning] Could not parse ${file}; moved to ${moved} and using defaults.`
         : `[Warning] Could not parse ${file}, using defaults.`
     );
-    return { ...DEFAULT_CONFIG };
+    return defaultConfig();
   }
 
   const merged = { ...DEFAULT_CONFIG, ...parsed };
@@ -240,6 +295,20 @@ export function loadConfig() {
   // comparison against `antigravity` in the codebase has one spelling to match.
   merged.orchestratorProvider = canonicalizeProvider(merged.orchestratorProvider);
   merged.workerProvider = canonicalizeProvider(merged.workerProvider);
+  // Model ids an older Kumo wrote that no CLI accepts (`chatgpt-6-astra`)
+  // are read as the model they meant; the file itself is left as it is.
+  for (const key of ["orchestratorModel", "workerModel"]) {
+    if (LEGACY_MODEL_IDS[merged[key]]) merged[key] = LEGACY_MODEL_IDS[merged[key]];
+  }
+  // A hand-edited role that does not validate is left out (and reported)
+  // rather than failing every command; the other roles still apply.
+  const { roles, problems } = sanitizeRoles(merged.roles);
+  merged.roles = roles;
+  for (const problem of problems) {
+    if (reportedRoleProblems.has(problem)) continue;
+    reportedRoleProblems.add(problem);
+    console.warn(`[Warning] Ignoring part of 'roles' in ${file}: ${problem}`);
+  }
   return merged;
 }
 
@@ -255,10 +324,28 @@ export function saveConfig(config) {
  * Update a specific key.
  */
 export function setConfigValue(key, value) {
+  const current = loadConfig();
+  current[key] = normalizeConfigValue(key, value);
+  saveConfig(current);
+  // Deliberately no provider-config sync here: this runs from whatever
+  // directory the user happens to be in, and the home directory holds the
+  // global ~/.codex/config.toml. Sessions refresh opted-in workspaces instead.
+  return current;
+}
+
+/**
+ * Validate and normalize one config value without saving it. Throws with a
+ * message naming the allowed values. Sessions use this for settings that
+ * apply to them alone; setConfigValue for the saved defaults.
+ *
+ * @param {string} key
+ * @param {*} value
+ * @returns {*} the normalized value
+ */
+export function normalizeConfigValue(key, value) {
   if (key === "__proto__" || key === "constructor" || key === "prototype" || !(key in DEFAULT_CONFIG)) {
     throw new Error(`Unknown config key '${key}'. Allowed: ${Object.keys(DEFAULT_CONFIG).sort().join(", ")}`);
   }
-  const current = loadConfig();
 
   if (typeof DEFAULT_CONFIG[key] === "boolean") {
     if (typeof value === "boolean") {
@@ -279,16 +366,13 @@ export function setConfigValue(key, value) {
     if (key === "timeoutMs" && (value < 5000 || value > 1800000)) {
       throw new Error(`Value for 'timeoutMs' must be between 5000 and 1800000`);
     }
-  } else if (key === "reasoningEffort") {
-    const norm = String(value).toLowerCase().trim();
-    if (!["low", "medium", "high", "max"].includes(norm)) {
-      throw new Error(`Value for 'reasoningEffort' must be one of: low, medium, high, max`);
+    if (key === "turnTimeoutMs" && (value < 60000 || value > 14400000)) {
+      throw new Error(`Value for 'turnTimeoutMs' must be between 60000 and 14400000`);
     }
-    value = norm;
-  } else if (key === "workerEffort") {
+  } else if (key === "reasoningEffort" || key === "workerEffort") {
     const norm = String(value).toLowerCase().trim();
-    if (!["low", "medium", "high"].includes(norm)) {
-      throw new Error(`Value for 'workerEffort' must be one of: low, medium, high`);
+    if (!EFFORT_LEVELS.includes(norm)) {
+      throw new Error(`Value for '${key}' must be one of: ${EFFORT_LEVELS.join(", ")}`);
     }
     value = norm;
   } else if (key === "orchestratorProvider" || key === "workerProvider") {
@@ -300,7 +384,7 @@ export function setConfigValue(key, value) {
   } else if (key === "orchestratorModel" || key === "workerModel") {
     // Interpolated raw into generated TOML and passed to provider CLIs.
     const val = String(value ?? "").trim();
-    if (!/^[A-Za-z0-9._-]{1,120}$/.test(val)) {
+    if (!MODEL_ID_PATTERN.test(val)) {
       throw new Error(
         `Value for '${key}' must be 1-120 chars of letters, digits, '.', '_' or '-'`
       );
@@ -355,26 +439,50 @@ export function setConfigValue(key, value) {
       );
     }
     value = val;
+  } else if (key === "roles") {
+    value = normalizeRoles(value);
   }
+  return value;
+}
 
-  current[key] = value;
-  saveConfig(current);
-  syncAgentConfigs(process.cwd(), current);
-  return current;
+/**
+ * The settings a preset applies, given the roles in use now: its built-in
+ * role assignments replace the current ones (a role it does not name goes
+ * back to the shared worker), and custom roles are kept — they are the
+ * user's own, not part of any pairing.
+ *
+ * @param {string} presetName
+ * @param {{ custom?: object[] }} [currentRoles]
+ * @returns {Record<string, any>}
+ */
+export function presetConfig(presetName, currentRoles) {
+  const preset = PRESETS[presetName];
+  if (!preset) {
+    throw new Error(`Unknown preset '${presetName}'. Available: ${Object.keys(PRESETS).join(", ")}`);
+  }
+  const custom = Array.isArray(currentRoles?.custom) ? currentRoles.custom : [];
+  return { ...preset.config, roles: structuredClone({ ...(preset.config.roles || {}), custom }) };
+}
+
+/**
+ * Whether `settings` are what `presetName` would set.
+ *
+ * @param {string} presetName
+ * @param {Record<string, any>} settings
+ */
+export function presetMatches(presetName, settings) {
+  return Object.entries(presetConfig(presetName, settings.roles)).every(([key, value]) =>
+    isDeepStrictEqual(settings[key], value)
+  );
 }
 
 /**
  * Apply a named preset.
  */
 export function applyPreset(presetName) {
-  const preset = PRESETS[presetName];
-  if (!preset) {
-    throw new Error(`Unknown preset '${presetName}'. Available: ${Object.keys(PRESETS).join(", ")}`);
-  }
   const current = loadConfig();
-  const updated = { ...current, ...preset.config };
+  const updated = { ...current, ...presetConfig(presetName, current.roles) };
   saveConfig(updated);
-  syncAgentConfigs(process.cwd(), updated);
   return updated;
 }
 
@@ -383,137 +491,18 @@ export function applyPreset(presetName) {
  */
 export function resetConfig() {
   saveConfig(DEFAULT_CONFIG);
-  syncAgentConfigs(process.cwd(), DEFAULT_CONFIG);
-  return { ...DEFAULT_CONFIG };
+  return defaultConfig();
 }
 
 export function getConfigPath() {
   return configFile();
 }
 
-/**
- * Check if a given model or provider configuration corresponds to Codex.
- * Returns true if provider is 'codex' or the model is a known Codex/OpenAI model.
- */
-export function isCodexModel(model, provider = null) {
-  if (provider === "codex") return true;
-  if (provider === "antigravity" || provider === "gemini" || provider === "claude") return false;
-  if (!model) return false;
-  const norm = model.toLowerCase().trim();
-  if (norm.startsWith("gemini-") || norm.startsWith("claude-") || norm.includes("gpt-oss")) {
-    return false;
-  }
-  return /^(chatgpt\b|gpt-5(\b|\.)|astra\b|sol\b|terra\b|luna\b)/i.test(norm);
-}
-
-/**
- * Automatically determine the appropriate provider for a given model identifier.
- *
- * @param {string} model
- * @param {string} [preferredProvider=null]
- * @returns {string} provider ID ('codex', 'antigravity', 'claude', 'opencode', 'commandcode')
- */
-export function detectProviderForModel(model, preferredProvider = null) {
-  if (preferredProvider) {
-    const p = preferredProvider.toLowerCase().trim();
-    if (p === "gemini" || p === "agy") return "antigravity";
-    return p;
-  }
-
-  if (!model) return "codex";
-  const norm = model.toLowerCase().trim();
-
-  // OpenAI / Codex models
-  if (/^(chatgpt\b|gpt-5(\b|\.)|astra\b|sol\b|terra\b|luna\b)/i.test(norm)) {
-    return "codex";
-  }
-
-  // Gemini CLI model prefix precedes the generic gemini- branch below (gemini-cli-* starts with gemini-).
-  if (norm.startsWith("gemini-cli")) {
-    return "gemini-cli";
-  }
-
-  // Google Antigravity models (Gemini + open-weights)
-  if (norm.startsWith("gemini-") || norm.includes("gpt-oss")) {
-    return "antigravity";
-  }
-
-  // Claude models: supported both by Antigravity (Google AI Pro subscription) and Claude Code
-  if (norm.startsWith("claude-") || /\bopus\b/.test(norm) || /\bsonnet\b/.test(norm)) {
-    return "antigravity";
-  }
-
-  // OpenCode / CommandCode models
-  if (norm.startsWith("opencode") || norm.startsWith("open-code")) {
-    return "opencode";
-  }
-  if (norm.startsWith("commandcode") || norm.startsWith("command-code")) {
-    return "commandcode";
-  }
-  // New subscription CLI model prefixes.
-  if (norm.startsWith("copilot")) {
-    return "copilot";
-  }
-  if (norm.startsWith("cursor-agent") || norm.startsWith("cursor")) {
-    return "cursor";
-  }
-  if (norm.startsWith("ollama")) {
-    return "ollama";
-  }
-
-  return "codex";
-}
-
-/**
- * Canonical model resolution for any model alias across all providers.
- */
-export function resolveModel(input) {
-  if (!input) return input;
-  const norm = input.toLowerCase().trim();
-
-  // Codex / OpenAI aliases
-  if (norm === "astra" || norm === "chatgpt-6" || norm === "6-astra") return "chatgpt-6-astra";
-  if (norm === "sol" || norm === "5.6-sol" || norm === "chatgpt-sol") return "chatgpt-5.6-sol";
-  if (norm === "terra" || norm === "5.6-terra") return "gpt-5.6-terra";
-  if (norm === "luna" || norm === "5.6-luna") return "gpt-5.6-luna";
-  if (norm === "gpt-5" || norm === "5.5" || norm === "gpt5") return "gpt-5.5";
-
-  // Anthropic / Claude aliases
-  if (norm === "opus" || norm === "opus-4.6" || norm === "claude-opus" || norm === "opus-thinking" || norm === "claude-opus-4.6") {
-    return "claude-opus-4-6-thinking";
-  }
-  if (norm === "sonnet" || norm === "sonnet-4.6" || norm === "claude-sonnet" || norm === "claude-sonnet-4.6") {
-    return "claude-sonnet-4-6";
-  }
-
-  // Google / Gemini aliases
-  if (norm === "flash" || norm === "3.8" || norm === "3.8-flash" || norm === "gemini-3.8") return "gemini-3.8-flash";
-  if (norm === "3.7" || norm === "3.7-flash" || norm === "gemini-3.7") return "gemini-3.7-flash";
-  if (norm === "3.6" || norm === "3.6-flash" || norm === "gemini-3.6") return "gemini-3.6-flash";
-  if (norm === "pro" || norm === "3.1" || norm === "3.1-pro" || norm === "gemini-3.1") return "gemini-3.1-pro";
-  if (norm === "oss" || norm === "120b" || norm === "gpt-oss") return "gpt-oss-120b";
-
-  return input;
-}
-
-
-/**
- * Check whether a model supports the CLI `--effort` flag in Antigravity.
- * Claude models and models with predefined suffixes do not support `--effort`.
- *
- * @param {string} model
- * @returns {boolean}
- */
-export function supportsEffort(model) {
-  if (!model) return false;
-  const norm = model.toLowerCase().trim();
-  if (norm.startsWith("gpt-oss")) return true;
-  if (norm.startsWith("claude-") || /\bopus\b/.test(norm) || /\bsonnet\b/.test(norm)) {
-    return false;
-  }
-  if (norm.endsWith("-low") || norm.endsWith("-medium") || norm.endsWith("-high")) {
-    return false;
-  }
-  return norm.startsWith("gemini-") || norm.startsWith("chatgpt-") || norm.startsWith("gpt-5");
-}
-
+// Model helpers live in the one catalog; re-exported for existing importers.
+export {
+  isCodexModel,
+  detectProviderForModel,
+  providerForModel,
+  resolveModel,
+  supportsEffort,
+} from "./models.js";

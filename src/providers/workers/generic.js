@@ -9,6 +9,7 @@
 import {
   runCliWorker,
   buildCompositePrompt,
+  grantsWrite,
   DEFAULT_TIMEOUT_MS,
 } from "./cli-runner.js";
 
@@ -27,8 +28,6 @@ export function createWorker(commandName) {
 export async function executeGenericTask(opts) {
   const {
     prompt,
-    mode = "read-only",
-    safetyMode = "autonomous",
     files = [],
     workspace = process.cwd(),
     model,
@@ -41,7 +40,7 @@ export async function executeGenericTask(opts) {
     bin = command,
   } = opts;
 
-  const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files });
+  const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files, fileContents: opts.fileContents });
 
   const args = [];
   if (model) {
@@ -50,7 +49,7 @@ export async function executeGenericTask(opts) {
   if (effort) {
     args.push("--effort", effort);
   }
-  if (mode === "workspace-write" && safetyMode === "autonomous") {
+  if (grantsWrite(opts)) {
     args.push("--dangerously-skip-permissions");
   }
   // The CLI is unknown, so no stdin contract can be assumed; prompt stays in argv.

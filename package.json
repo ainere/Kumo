@@ -10,16 +10,31 @@
   "main": "./src/cli.js",
   "scripts": {
     "test": "node --test",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json",
+    "check": "npm run lint && npm run typecheck && npm test",
+    "refresh:codex-protocol": "node scripts/refresh-codex-protocol.mjs",
     "doctor": "node ./bin/kumo.js doctor"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "commander": "^13.1.0",
-    "zod": "^3.24.2"
+    "zod": "^4.6.7"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "private": true,
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^22.20.5",
+    "eslint": "^9.39.5",
+    "globals": "^15.15.0",
+    "typescript": "^5.9.3"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
 }

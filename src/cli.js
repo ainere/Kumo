@@ -3,9 +3,7 @@
  */
 
 import { Command } from "commander";
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
+import { VERSION } from "./version.js";
 import { startCommand } from "./commands/start.js";
 import { runCommand } from "./commands/run.js";
 import { doctorCommand } from "./commands/doctor.js";
@@ -15,11 +13,22 @@ import { modelCommand, effortCommand } from "./commands/model.js";
 import { bannerCommand } from "./commands/banner.js";
 import { statusCommand } from "./commands/status.js";
 import { graphCommand } from "./commands/graph.js";
+import { roleListCommand, roleSetCommand, roleAddCommand, roleRemoveCommand } from "./commands/role.js";
+import { badge } from "./utils/ui.js";
 
-// Read version once from package.json — single source of truth
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"));
-export const VERSION = pkg.version;
+export { VERSION };
+
+/** Run a command that throws on bad input: print the message and exit 1. */
+function failing(fn) {
+  return async (...args) => {
+    try {
+      await fn(...args);
+    } catch (err) {
+      console.error(`${badge.fail} ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
+  };
+}
 
 export function createCli() {
   const program = new Command();
@@ -27,9 +36,13 @@ export function createCli() {
   program
     .name("kumo")
     .description("KUMO — Cross-provider CLI orchestrator pairing frontier reasoning models with high-speed execution workers")
-    .version(VERSION);
+    .version(VERSION)
+    // The root command and most subcommands all define `-d, --dir`. Without
+    // this, commander lets the root claim the option anywhere on the line, so
+    // `kumo run "…" -d <path>` silently ran in the current directory.
+    .enablePositionalOptions();
 
-  // Default interactive command (launches new window and closes old CMD by default)
+  // Default interactive command (opens Kumo in a new terminal window unless --here)
   program
     .option("-d, --dir <path>", "Target workspace directory (defaults to current working directory)")
     .option("--here", "Force running in current terminal (do not spawn new window)")
@@ -90,6 +103,34 @@ export function createCli() {
     .action(async (action, target, value, extra) => {
       await modelCommand(action, target, value, extra);
     });
+
+  // Role command: which model runs the lead and each worker role
+  const role = program
+    .command("role")
+    .description("Show or change which model runs the lead and each role (scout, builder, tester, researcher, reviewer, designer, custom)");
+  role
+    .command("list", { isDefault: true })
+    .description("List the lead, every role, its tool and the model it runs on")
+    .action(failing(() => roleListCommand()));
+  role
+    .command("set <role> <model> [effort] [provider]")
+    .description("Assign a model to a role ('lead' sets the orchestrator; model 'default' puts a role back on the shared worker)")
+    .action(failing((name, model, effort, provider) => roleSetCommand(name, model, effort, provider)));
+  role
+    .command("add <id>")
+    .description("Add a custom role, exposed to the lead as the tool worker_<id>")
+    .requiredOption("--prompt-file <file>", "File with the role's instructions (its system prompt)")
+    .option("--access <access>", "read or write", "read")
+    .option("--model <model>", "Model the role runs on (default: the shared worker)")
+    .option("--effort <effort>", "Reasoning effort for that model")
+    .option("--provider <provider>", "Provider for that model (default: inferred from the model)")
+    .option("--name <name>", "Display name")
+    .option("--description <text>", "One line telling the lead when to use the role")
+    .action(failing((id, opts) => roleAddCommand(id, opts)));
+  role
+    .command("remove <id>")
+    .description("Remove a custom role")
+    .action(failing((id) => roleRemoveCommand(id)));
 
   // Effort command (inspect or set reasoning effort for orchestrator or worker)
   program

@@ -1,27 +1,43 @@
 /**
  * server.js — MCP stdio bridge server with dynamic workspace support.
  *
- * Exposes five role-based worker tools (explore, implement, test, research,
- * review) to any MCP-capable orchestrator and routes each call to one of the
- * fifteen supported worker providers — subscription CLIs (Antigravity/Gemini,
- * Codex, Claude Code, OpenCode, CommandCode, Copilot, Cursor, Gemini CLI,
- * Ollama) or direct HTTP APIs (openai/anthropic/gemini/compat).
+ * Exposes one tool per worker role to any MCP-capable orchestrator — scout
+ * (`worker_explore`), builder (`worker_implement`), tester (`worker_test`),
+ * researcher (`worker_research`), reviewer (`worker_review`), designer
+ * (`worker_design`) and each custom role (`worker_<id>`) — and routes every
+ * call to the model assigned to that role, on one of the 13 supported worker
+ * providers: subscription CLIs (Antigravity, Codex, Claude Code, OpenCode,
+ * CommandCode, Copilot, Cursor, Gemini CLI, Ollama) or direct HTTP APIs
+ * (openai/anthropic/gemini/compat). A role with no assignment runs on the
+ * shared worker (`workerProvider` / `workerModel` / `workerEffort`).
+ *
+ * The tool list is built in startServer() from the session's settings, and
+ * each description names the role's model, so the lead can route by the
+ * actual assignment.
  *
  * The target workspace comes from `--workspace <path>`, else `KUMO_WORKSPACE`,
  * else the legacy `ORCHESTRATOR_WORKSPACE`, else the process working directory.
+ *
+ * When the orchestrator was started by a Kumo session, its environment names
+ * the session's engine endpoint (KUMO_ENGINE_ENDPOINT + KUMO_SESSION_TOKEN).
+ * The bridge then takes its settings from that session, streams each run's
+ * output tagged with its run id, and asks the session for approvals. Without
+ * one it falls back to the saved config, live-log files and approval files.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { runAgy } from "./agy-runner.js";
-import { getWorker, KNOWN_WORKERS } from "../providers/workers/registry.js";
+import { getWorker, workerCapabilities, KNOWN_WORKERS } from "../providers/workers/registry.js";
 import { getSystemPrompt } from "./prompts.js";
-import { loadConfig, detectProviderForModel } from "../config/settings.js";
+import { loadConfig, detectProviderForModel, canonicalizeProvider } from "../config/settings.js";
+import { EFFORT_LEVELS } from "../config/models.js";
+import { listRoles, findRole, resolveRoleTarget, describeTarget } from "../config/roles.js";
 import {
   getLiveLogPath,
   setActiveLiveRun,
@@ -29,7 +45,10 @@ import {
   getApprovalDir,
 } from "../data/sessions.js";
 import { atomicWriteJson } from "../config/paths.js";
-import { VERSION } from "../cli.js";
+import { VERSION } from "../version.js";
+import { routeLiveOutput } from "../utils/process.js";
+import { connectEngine } from "../core/ipc/engine-client.js";
+import { StringDecoder } from "node:string_decoder";
 
 // Parse CLI flags
 let workspaceDir = process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd();
@@ -50,6 +69,43 @@ for (let i = 0; i < args.length; i++) {
   } else if (args[i] === "--safety-mode" && args[i + 1]) {
     safetyModeOverride = args[i + 1];
     i++;
+  }
+}
+
+/**
+ * Set in the environment of every worker this bridge spawns, and therefore of
+ * any MCP server that worker starts. A worker CLI that has `kumo-bridge`
+ * registered globally (e.g. `agy mcp add`, or ~/.codex/config.toml) would
+ * otherwise call back into Kumo — and with write permission, recursively
+ * spawn worker after worker.
+ */
+export const NESTED_ENV = "KUMO_INSIDE_WORKER";
+const nestedInWorker = process.env[NESTED_ENV] === "1";
+
+/**
+ * The session this bridge works for, once connected (see startServer).
+ * @type {import("../core/ipc/engine-client.js").EngineConnection | null}
+ */
+let engine = null;
+
+/** Test seam: attach (or detach, with null) an engine connection. */
+export function setEngineConnection(connection) {
+  engine = connection;
+}
+
+/**
+ * The settings for this call: the session's own when an engine is
+ * connected, else the saved config. The session's win, so a worker or
+ * safety-mode switch in one window no longer changes another window's turn.
+ */
+async function effectiveConfig() {
+  const config = loadConfig();
+  if (!engine || engine.closed) return config;
+  try {
+    const session = await engine.request("settings.get");
+    return { ...config, ...session };
+  } catch {
+    return config;
   }
 }
 
@@ -125,66 +181,61 @@ export function consumePendingPreview(previewId) {
 }
 
 /**
- * Capture current git porcelain status (modified and untracked files).
+ * Run git and return stdout, or "" when git fails (not a repo, no HEAD, …).
+ *
+ * @param {string} cwd
+ * @param {string[]} args
+ * @returns {string}
  */
-export function getGitStatus(cwd) {
+function git(cwd, args) {
   try {
-    const out = execSync("git status --porcelain", {
+    return execFileSync("git", args, {
       cwd,
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf-8",
-    }).trim();
-    if (!out) return [];
-    return out
-      .split("\n")
-      .map((l) => {
-        const status = l.slice(0, 2);
-        let p = l.slice(3).trim();
-        if (status.includes("R")) {
-          const arrow = p.indexOf("->");
-          if (arrow !== -1) p = p.slice(arrow + 2).trim();
-        }
-        if ((p.startsWith('"') && p.endsWith('"')) || (p.startsWith("'") && p.endsWith("'"))) {
-          p = p.slice(1, -1);
-        }
-        return p;
-      })
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Capture git diff stat summary.
- */
-export function getGitDiffStat(cwd) {
-  try {
-    const out = execSync("git diff HEAD --stat", {
-      cwd,
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf-8",
-    }).trim();
-    return out || "";
+      maxBuffer: 64 * 1024 * 1024,
+    });
   } catch {
     return "";
   }
 }
 
 /**
+ * Capture current git porcelain status (modified and untracked files).
+ *
+ * `--untracked-files=all` lists every file inside an untracked directory —
+ * the default collapses it to `dir/`, whose content hash is null both before
+ * and after a worker writes into it, so those edits went unreported. `-z`
+ * yields raw paths: no C-style quoting of spaces or non-ASCII names.
+ */
+export function getGitStatus(cwd) {
+  const out = git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  if (!out) return [];
+  const tokens = out.split("\0");
+  const files = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const entry = tokens[i];
+    if (entry.length < 4) continue;
+    const status = entry.slice(0, 2);
+    files.push(entry.slice(3));
+    // In -z mode a rename/copy is followed by its original path as its own token.
+    if (status.includes("R") || status.includes("C")) i++;
+  }
+  return files;
+}
+
+/**
+ * Capture git diff stat summary.
+ */
+export function getGitDiffStat(cwd) {
+  return git(cwd, ["diff", "HEAD", "--stat"]).trim();
+}
+
+/**
  * Capture the names of tracked files with uncommitted modifications.
  */
 export function getGitDiffNames(cwd) {
-  try {
-    const out = execSync("git diff HEAD --name-only", {
-      cwd,
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf-8",
-    }).trim();
-    return out ? out.split("\n").map((l) => l.trim()).filter(Boolean) : [];
-  } catch {
-    return [];
-  }
+  return git(cwd, ["diff", "HEAD", "--name-only", "-z"]).split("\0").filter(Boolean);
 }
 
 function hashFileContent(file) {
@@ -208,11 +259,17 @@ function hashFileContent(file) {
 export function captureWorkspaceState(cwd) {
   const files = Array.from(new Set([...getGitStatus(cwd), ...getGitDiffNames(cwd)]));
   const hashes = new Map();
-  for (const f of files) {
+  // With every untracked file listed, an un-ignored dependency tree could mean
+  // hashing tens of thousands of files twice per write; past the cap, files are
+  // listed but not hashed, so only a path appearing or vanishing shows up.
+  for (const f of files.slice(0, MAX_SNAPSHOT_HASHES)) {
     hashes.set(f, hashFileContent(path.join(cwd, f)));
   }
   return { files, hashes };
 }
+
+/** How many dirty files a workspace snapshot hashes. */
+export const MAX_SNAPSHOT_HASHES = 5000;
 
 /**
  * Files whose content differs between two workspace snapshots.
@@ -225,13 +282,53 @@ export function captureWorkspaceState(cwd) {
  * @returns {string[]}
  */
 export function changedFilesBetween(pre, post) {
+  const before = new Set(pre.files);
   const changed = [];
   for (const f of post.files) {
-    if (!pre.hashes.has(f) || pre.hashes.get(f) !== post.hashes.get(f)) {
-      changed.push(f);
+    if (!before.has(f)) {
+      changed.push(f); // newly dirty
+    } else if (pre.hashes.has(f) && post.hashes.has(f) && pre.hashes.get(f) !== post.hashes.get(f)) {
+      changed.push(f); // was dirty, content changed
     }
+    // Dirty in both snapshots but past the hashing cap: no evidence either way.
   }
   return changed;
+}
+
+/**
+ * The `---`/`+++` header paths of a unified diff, exactly as written (prefix
+ * included, trailing tab/timestamp removed, /dev/null skipped). Only a `---`
+ * line directly followed by a `+++` line counts, so prose and Markdown rules
+ * are not mistaken for headers.
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function diffHeaderPaths(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  const paths = [];
+  const pathOf = (line) => line.slice(4).split("\t")[0].trim().replace(/^"(.*)"$/, "$1");
+  for (let i = 0; i + 1 < lines.length; i++) {
+    if (!lines[i].startsWith("--- ") || !lines[i + 1].startsWith("+++ ")) continue;
+    for (const p of [pathOf(lines[i]), pathOf(lines[i + 1])]) {
+      if (p && p !== "/dev/null") paths.push(p);
+    }
+    i++;
+  }
+  return paths;
+}
+
+/**
+ * How many leading path components `git apply` must strip: 1 when every header
+ * uses git's `a/` `b/` prefixes, otherwise 0. Applying an unprefixed diff with
+ * git's default `-p1` drops the first real directory (`src/index.js` became
+ * `index.js`).
+ *
+ * @param {string[]} headerPaths
+ * @returns {0|1}
+ */
+export function diffStripLevel(headerPaths) {
+  return headerPaths.length > 0 && headerPaths.every((p) => /^[ab]\//.test(p)) ? 1 : 0;
 }
 
 /**
@@ -240,13 +337,12 @@ export function changedFilesBetween(pre, post) {
 export function extractPreviewFiles(previewText) {
   if (!previewText) return [];
   const files = new Set();
-  const diffRegex = /(?:---|\+\+\+)\s+[ab]\/([^\s]+)/g;
-  let match;
-  while ((match = diffRegex.exec(previewText)) !== null) {
-    if (match[1] && match[1] !== "dev/null") {
-      files.add(match[1]);
-    }
+  const headers = diffHeaderPaths(previewText);
+  const level = diffStripLevel(headers);
+  for (const p of headers) {
+    files.add(level === 1 ? p.slice(2) : p);
   }
+  let match;
   const fileHeaderRegex = /(?:\[FILE:\s*|\bFile:\s*|\bmodified:\s*)([^\s\],]+)/gi;
   while ((match = fileHeaderRegex.exec(previewText)) !== null) {
     if (!match[1]) continue;
@@ -299,6 +395,13 @@ export function checkDiffFidelity(previewText, actualModifiedFiles) {
 }
 
 function formatResult(result, toolName) {
+  if (result.refused) {
+    return {
+      content: [{ type: "text", text: `[REFUSED] ${toolName}: ${result.stderr}` }],
+      isError: true,
+    };
+  }
+
   if (result.timedOut) {
     return {
       content: [
@@ -323,6 +426,16 @@ function formatResult(result, toolName) {
     };
   }
 
+  // A CLI can exit 0 having done nothing and explain why only on stderr (agy
+  // does this when a tool needed a permission headless mode cannot grant).
+  // A bare "(no output)" success hid that the worker never answered.
+  const stderr = (result.stderr || "").trim();
+  if (!result.stdout && stderr) {
+    return {
+      content: [{ type: "text", text: `[NO OUTPUT] ${toolName} produced no answer.\n\nstderr:\n${stderr}` }],
+      isError: true,
+    };
+  }
   return {
     content: [
       {
@@ -333,65 +446,290 @@ function formatResult(result, toolName) {
   };
 }
 
-const server = new McpServer({
-  name: "kumo-worker-bridge",
-  version: VERSION,
-  description: "Bridges frontier orchestrators to execution workers across providers with dynamic workspace resolution and safety guardrails.",
-});
+/** A worker result for a task the bridge declined to run. */
+function refusal(message) {
+  return { ok: false, refused: true, code: 1, stdout: "", stderr: message, timedOut: false };
+}
+
+/** Limits on what is inlined for workers that cannot open files themselves. */
+export const INLINE_MAX_FILE_BYTES = 64 * 1024;
+export const INLINE_MAX_TOTAL_BYTES = 256 * 1024;
+
+/**
+ * Read the files a text-only worker (HTTP API, `ollama run`) should see.
+ *
+ * Those workers have no filesystem, so without this they were sent bare paths
+ * and described files they never read. Only regular files inside the workspace
+ * are read (symlinks are resolved first); anything else is listed with the
+ * reason it was left out, so the model can say what it could not see.
+ *
+ * @param {string} workspace
+ * @param {string[]} files
+ * @returns {Array<{ path: string, content: string, truncated?: boolean }>}
+ */
+export function readWorkspaceFiles(workspace, files) {
+  let root;
+  try {
+    root = fs.realpathSync(workspace);
+  } catch {
+    root = path.resolve(workspace);
+  }
+  const out = [];
+  let budget = INLINE_MAX_TOTAL_BYTES;
+  for (const rel of files || []) {
+    const note = (content) => out.push({ path: rel, content });
+    let real;
+    try {
+      real = fs.realpathSync(path.resolve(root, rel));
+    } catch {
+      note("(not found)");
+      continue;
+    }
+    const inside = path.relative(root, real);
+    if (inside.startsWith("..") || path.isAbsolute(inside)) {
+      note("(outside the workspace; not read)");
+      continue;
+    }
+    let stat;
+    try {
+      stat = fs.statSync(real);
+    } catch {
+      note("(unreadable)");
+      continue;
+    }
+    if (!stat.isFile()) {
+      note("(not a regular file)");
+      continue;
+    }
+    if (budget <= 0) {
+      note("(not read: inline size budget exhausted)");
+      continue;
+    }
+    const limit = Math.min(INLINE_MAX_FILE_BYTES, budget);
+    let buf;
+    try {
+      const fd = fs.openSync(real, "r");
+      try {
+        buf = Buffer.alloc(Math.min(stat.size, limit));
+        fs.readSync(fd, buf, 0, buf.length, 0);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      note("(unreadable)");
+      continue;
+    }
+    if (buf.subarray(0, 8192).includes(0)) {
+      note("(binary file; not shown)");
+      continue;
+    }
+    budget -= buf.length;
+    out.push({ path: rel, content: buf.toString("utf-8"), truncated: stat.size > buf.length });
+  }
+  return out;
+}
+
+/**
+ * Decide which worker runs a call, and with which model and effort.
+ *
+ * The role's own assignment (`config.roles[role]`) comes first; a role
+ * without one runs on the shared worker — KUMO_WORKER_PROVIDER, else the
+ * configured `workerProvider`. A per-call provider override wins over both.
+ * Settings are read on every call, so a `/role` or `/model worker` switch
+ * applies to the next call; a configured model and effort are only used when
+ * the call runs on the provider they were configured for — handing a Gemini
+ * model id to a per-call `claude` override would just make that CLI fail.
+ *
+ * @param {{ role?: string|null, provider?: string, model?: string, effort?: string }} opts
+ * @param {object} config
+ */
+export function resolveWorkerTarget(opts, config) {
+  const worker = {
+    provider: canonicalizeProvider(
+      process.env.KUMO_WORKER_PROVIDER ||
+        config.workerProvider ||
+        detectProviderForModel(opts.model || modelOverride || config.workerModel)
+    ),
+    // --model / GEMINI_MODEL / --effort override the shared worker, so they
+    // follow the same rule as its config values.
+    model: modelOverride || config.workerModel,
+    effort: effortOverride || config.workerEffort,
+  };
+  return resolveRoleTarget(config, opts.role || null, opts, worker);
+}
 
 /**
  * Dispatch task to the active worker provider (subscription CLI or direct API).
- * Per-call provider override wins, then KUMO_WORKER_PROVIDER, then config.
+ *
+ * `permission` ("read" | "write") is what the worker is allowed to do; it is
+ * derived from the legacy `mode` when absent. Tasks a worker cannot perform are
+ * refused here rather than run and answered with invented output.
  */
 export async function dispatchWorkerTask(opts) {
-  const config = loadConfig();
+  if (nestedInWorker) {
+    return refusal(
+      "this Kumo bridge was started from inside a Kumo worker; workers cannot delegate further. Do the task directly."
+    );
+  }
+  const config = opts.config || (await effectiveConfig());
+  const workspace = opts.workspace || workspaceDir;
+  const target = resolveWorkerTarget(opts, config);
   // opts.provider is model-authored, so it may only name a known worker: the id
   // becomes the executable the generic worker spawns. Operator-configured
   // fallbacks may opt into an arbitrary CLI.
-  const requested = opts.provider;
-  const configured =
-    process.env.KUMO_WORKER_PROVIDER ||
-    config.workerProvider ||
-    detectProviderForModel(opts.model || modelOverride || config.workerModel);
-  const workerProvider = requested || configured;
-  const worker = getWorker(workerProvider, { allowGeneric: !requested });
+  const worker = getWorker(target.provider, { allowGeneric: !target.requested });
+  const caps = workerCapabilities(target.provider);
+  const permission = opts.permission || (opts.mode === "workspace-write" ? "write" : "read");
+
+  if (permission === "write" && !caps.canWrite) {
+    return refusal(
+      `worker provider '${target.provider}' cannot modify files. Use a CLI worker (codex, claude, antigravity, …), ` +
+        `or switch to diff-review mode so Kumo can apply its proposed diff itself.`
+    );
+  }
+
+  let fileContents = [];
+  if (!caps.readsWorkspace) {
+    if (!opts.files || opts.files.length === 0) {
+      return refusal(
+        `worker provider '${target.provider}' cannot open workspace files on its own. ` +
+          `Pass the files it should read in \`files\`, or use a CLI worker (codex, claude, antigravity, …).`
+      );
+    }
+    fileContents = readWorkspaceFiles(workspace, opts.files);
+  }
+
+  const systemPrompt =
+    opts.systemPrompt ??
+    (opts.role
+      ? getSystemPrompt(opts.role, {
+          config,
+          model: target.model,
+          effort: target.effort,
+          workspace,
+          customRole: opts.customRole || null,
+        })
+      : undefined);
 
   const runId = opts.runId || crypto.randomUUID();
-  const liveLogPath = getLiveLogPath(workspaceDir, runId);
-  setActiveLiveRun(workspaceDir, {
-    runId,
-    tool: opts.toolName || "worker_task",
-    timestamp: Date.now(),
-  });
+  const liveLogPath = getLiveLogPath(workspace, runId);
+  const tool = opts.toolName || "worker_task";
+  const connected = engine && !engine.closed ? engine : null;
+  let unroute = () => {};
+  if (connected) {
+    // The session matches this run to the orchestrator's call by tool and
+    // task, and its output streams there instead of into a file.
+    connected.notify("run.started", { runId, tool, task: opts.prompt || "" });
+    const decoder = new StringDecoder("utf8");
+    unroute = routeLiveOutput(liveLogPath, (chunk) => {
+      const text = typeof chunk === "string" ? chunk : decoder.write(chunk);
+      if (text) connected.notify("run.output", { runId, text });
+    });
+  } else {
+    setActiveLiveRun(workspace, { runId, tool, timestamp: Date.now() });
+  }
 
+  let ok = false;
   try {
-    return await worker.executeTask({
+    const result = await worker.executeTask({
       ...opts,
+      workspace,
+      provider: target.provider,
+      model: target.model,
+      effort: target.effort,
+      mode: permission === "write" ? "workspace-write" : "read-only",
+      permission,
+      fileContents,
+      systemPrompt,
       config,
       runId,
       liveLogPath,
     });
+    ok = Boolean(result?.ok);
+    return result;
   } finally {
-    clearActiveLiveRun(workspaceDir, runId);
+    unroute();
+    if (connected) connected.notify("run.finished", { runId, ok });
+    else clearActiveLiveRun(workspace, runId);
   }
 }
 
-// Handler implementations
-async function handleExplore({ task, files, model, effort, provider }) {
-  const activeModel = model || modelOverride || undefined;
-  const activeEffort = effort || effortOverride || undefined;
-  const result = await dispatchWorkerTask({
-    toolName: "worker_explore",
-    prompt: task,
-    mode: "read-only",
-    files: files || [],
-    workspace: workspaceDir,
-    model: activeModel,
-    effort: activeEffort,
-    provider,
-    systemPrompt: getSystemPrompt("explore", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
-  });
-  return formatResult(result, "worker_explore");
+/**
+ * Pull the unified diff out of a worker's preview text. Workers wrap it in
+ * prose and often in a ```diff fence; fenced blocks are preferred, otherwise
+ * everything from the first diff header on is taken.
+ *
+ * @param {string} text
+ * @returns {string|null}
+ */
+export function extractUnifiedDiff(text) {
+  if (!text) return null;
+  const isDiff = (s) => diffHeaderPaths(s).length > 0;
+  const fenced = [];
+  // Fences must sit on their own lines. Unanchored, a lazy match ended at the
+  // first ``` anywhere — such as an added Markdown line "+```bash" — and
+  // silently cut the diff short.
+  const fence = /^```[ \t]*(?:diff|patch)?[ \t]*\r?\n([\s\S]*?)^```[ \t]*$/gm;
+  let match;
+  while ((match = fence.exec(text)) !== null) {
+    if (isDiff(match[1])) fenced.push(match[1]);
+  }
+  let diff = fenced.length > 0 ? fenced.join("\n") : null;
+  if (!diff) {
+    const start = text.search(/^(diff --git |--- \S)/m);
+    if (start === -1) return null;
+    diff = text.slice(start);
+    if (!isDiff(diff)) return null;
+  }
+  return diff.endsWith("\n") ? diff : `${diff}\n`;
+}
+
+/**
+ * Apply an approved preview exactly as it was shown, with `git apply`.
+ *
+ * Re-running the worker after approval — the only path before — applies
+ * whatever the model writes the second time, which need not be what the
+ * operator approved. `--check` runs first so a patch that no longer applies
+ * leaves the tree untouched; git refuses paths outside the working tree.
+ *
+ * No `--recount`: it rewrites hunk line counts to fit whatever body is
+ * present, which hides a truncated diff. A hunk whose counts are wrong is
+ * rejected instead, and the caller falls back or asks for a new preview.
+ *
+ * @param {string} cwd
+ * @param {string} previewText
+ * @returns {{ ok: true } | { ok: false, reason: string }}
+ */
+export function applyApprovedDiff(cwd, previewText) {
+  const diff = extractUnifiedDiff(previewText);
+  if (!diff) return { ok: false, reason: "the preview contains no unified diff" };
+
+  const headers = diffHeaderPaths(diff);
+  const level = diffStripLevel(headers);
+  const targets = headers.map((p) => (level === 1 ? p.slice(2) : p));
+  const unsafe = targets.find((p) => path.isAbsolute(p) || /^[A-Za-z]:/.test(p) || p.split(/[\\/]/).includes(".."));
+  if (unsafe) return { ok: false, reason: `the diff names a path outside the workspace (${unsafe})` };
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-apply-"));
+  const patchFile = path.join(dir, "approved.patch");
+  try {
+    fs.writeFileSync(patchFile, diff, "utf-8");
+    const base = ["apply", `-p${level}`, "--whitespace=nowarn"];
+    const run = (extra) =>
+      spawnSync("git", [...base, ...extra, patchFile], { cwd, encoding: "utf-8", timeout: 60000 });
+    const check = run(["--check"]);
+    if (check.status !== 0) {
+      const why = (check.stderr || check.error?.message || "git apply --check failed").trim().split("\n")[0];
+      return { ok: false, reason: why };
+    }
+    const applied = run([]);
+    if (applied.status !== 0) {
+      return { ok: false, reason: (applied.stderr || "git apply failed").trim().split("\n")[0] };
+    }
+    return { ok: true };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** How long the bridge waits for a human decision in `interactive` mode. */
@@ -406,6 +744,7 @@ const APPROVAL_POLL_MS = 500;
  * environment; without it, `interactive` degrades to `diff-review`.
  */
 function interactiveApprovalAvailable() {
+  if (engine && !engine.closed) return engine.hello?.interactive === true;
   return process.env.KUMO_INTERACTIVE_APPROVAL === "1";
 }
 
@@ -417,6 +756,21 @@ function interactiveApprovalAvailable() {
  * @returns {Promise<{approved: boolean, reason?: string}>}
  */
 async function awaitHumanApproval(request) {
+  if (engine && !engine.closed) {
+    try {
+      const decision = await engine.request(
+        "approval.request",
+        { previewId: request.previewId, tool: request.tool, previewText: request.previewText },
+        { timeoutMs: APPROVAL_TIMEOUT_MS }
+      );
+      return decision?.approved === true
+        ? { approved: true }
+        : { approved: false, reason: decision?.reason || "the operator declined the change" };
+    } catch (err) {
+      return { approved: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   const dir = getApprovalDir(workspaceDir);
   const requestFile = path.join(dir, `${request.previewId}.json`);
   const decisionFile = path.join(dir, `${request.previewId}.decision.json`);
@@ -462,45 +816,52 @@ function errorResult(text) {
 }
 
 /**
- * Shared implementation for the two write tools.
+ * Run one call of a role's tool.
  *
- * `worker_implement` and `worker_test` differ only in tool name, system-prompt
- * key and confirmation wording; every safety rule below must hold for both, so
- * they share one code path instead of two copies that drift apart.
+ * Every role goes through here. Read roles run the worker read-only. Write
+ * roles — builder, tester, designer and custom write roles — differ only in
+ * tool name, system prompt and confirmation wording; every safety rule below
+ * must hold for all of them, so they share one code path instead of copies
+ * that drift apart.
  *
- * @param {"implement"|"test"} kind
+ * @param {import("../config/roles.js").RoleInfo} registered - the role as its tool was registered
  * @param {Object} args
+ * @param {{ onConfig?: (config: object) => void }} [hooks] - sees the effective settings of each call
  */
-async function handleWriteTool(kind, { task, files, confirm, previewId, model, effort, provider }) {
-  const toolName = kind === "implement" ? "worker_implement" : "worker_test";
-  const config = loadConfig();
-  const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
-  const activeModel = model || modelOverride || undefined;
-  const activeEffort = effort || effortOverride || undefined;
-  const gated = safetyMode === "diff-review" || safetyMode === "interactive";
+export async function handleRoleTool(registered, { task, files, confirm, previewId, model, effort, provider }, hooks = {}) {
+  const toolName = registered.tool;
+  const config = await effectiveConfig();
+  hooks.onConfig?.(config);
+  // The role as it is now — a custom role's prompt may have been edited since
+  // the bridge started. Its access stays as registered: it fixed the schema.
+  const current = findRole(config, registered.id);
+  const role = current && current.access === registered.access ? current : registered;
 
-  const systemPrompt = () =>
-    getSystemPrompt(kind, {
-      workerModel: activeModel,
-      workerEffort: activeEffort,
+  const dispatch = (extra) =>
+    dispatchWorkerTask({
+      toolName,
+      prompt: task,
+      config,
+      files: files || [],
       workspace: workspaceDir,
+      model,
+      effort,
+      provider,
+      role: role.id,
+      customRole: role.custom,
+      ...extra,
     });
+
+  if (role.access === "read") {
+    return formatResult(await dispatch({ permission: "read" }), toolName);
+  }
+
+  const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
+  const gated = safetyMode === "diff-review" || safetyMode === "interactive";
 
   // ── Phase 1: preview only ──
   if (gated && !confirm) {
-    const result = await dispatchWorkerTask({
-      toolName,
-      prompt: task,
-      mode: "read-only",
-      previewDiff: true,
-      safetyMode,
-      files: files || [],
-      workspace: workspaceDir,
-      model: activeModel,
-      effort: activeEffort,
-      provider,
-      systemPrompt: systemPrompt(),
-    });
+    const result = await dispatch({ permission: "read", previewDiff: true, safetyMode });
 
     const formatted = formatResult(result, toolName);
     if (result.ok && result.stdout) {
@@ -510,7 +871,7 @@ async function handleWriteTool(kind, { task, files, confirm, previewId, model, e
         workspaceDir,
       });
       if (formatted.content && formatted.content[0]) {
-        const what = kind === "implement" ? "a proposed change preview" : "a test proposal";
+        const what = role.id === "tester" ? "a test proposal" : "a proposed change preview";
         const how =
           safetyMode === "interactive" && interactiveApprovalAvailable()
             ? `Safety mode is 'interactive'. Calling ${toolName} again with confirm: true and previewId: "${generatedId}" asks the operator to approve the change before anything is written.`
@@ -559,20 +920,36 @@ async function handleWriteTool(kind, { task, files, confirm, previewId, model, e
 
   const preState = captureWorkspaceState(workspaceDir);
 
-  const result = await dispatchWorkerTask({
-    toolName,
-    prompt: task,
-    mode: "workspace-write",
-    // Never widen permissions on confirmation: applying an approved preview must
-    // not run with fewer restrictions than the mode the operator selected.
-    safetyMode,
-    files: files || [],
-    workspace: workspaceDir,
-    model: activeModel,
-    effort: activeEffort,
-    provider,
-    systemPrompt: systemPrompt(),
-  });
+  let result;
+  let note = "";
+  if (confirmedPreview) {
+    // Apply what was approved, byte for byte. Only when that is impossible is
+    // the worker asked to redo the task, and the output says so.
+    const applied = applyApprovedDiff(workspaceDir, confirmedPreview);
+    if (applied.ok) {
+      result = {
+        ok: true,
+        code: 0,
+        stdout: "Applied the approved preview exactly as shown (git apply).",
+        stderr: "",
+        timedOut: false,
+      };
+    } else if (safetyMode === "interactive" && interactiveApprovalAvailable()) {
+      // The operator approved this exact diff, not whatever a re-run writes;
+      // writing anything else would bypass the human gate.
+      return errorResult(
+        `the approved diff could not be applied verbatim (${applied.reason}); nothing was written. ` +
+          `Request a new preview so the operator can approve the actual change.`
+      );
+    } else {
+      note =
+        `\n\n[NOTE: the approved diff could not be applied verbatim (${applied.reason}); ` +
+        `the worker re-ran the task, so the result may differ from the preview.]`;
+      result = await dispatch({ permission: "write", safetyMode });
+    }
+  } else {
+    result = await dispatch({ permission: "write", safetyMode });
+  }
 
   if (result.ok && previewId) {
     consumePendingPreview(previewId);
@@ -584,6 +961,9 @@ async function handleWriteTool(kind, { task, files, confirm, previewId, model, e
   const diffStat = getGitDiffStat(workspaceDir);
 
   if (formatted.content && formatted.content[0]) {
+    formatted.content[0].text += note;
+    // Also after an exact apply: it confirms git touched the files the
+    // operator saw, under the paths the preview named.
     if (confirmedPreview) {
       const fidelityWarning = checkDiffFidelity(confirmedPreview, delta);
       if (fidelityWarning) {
@@ -598,135 +978,116 @@ async function handleWriteTool(kind, { task, files, confirm, previewId, model, e
   return formatted;
 }
 
-async function handleImplement(args) {
-  return handleWriteTool("implement", args);
-}
-
-async function handleTest(args) {
-  return handleWriteTool("test", args);
-}
-
-async function handleResearch({ task, files, model, effort, provider }) {
-  const activeModel = model || modelOverride || undefined;
-  const activeEffort = effort || effortOverride || undefined;
-  const result = await dispatchWorkerTask({
-    toolName: "worker_research",
-    prompt: task,
-    mode: "read-only",
-    files: files || [],
-    workspace: workspaceDir,
-    model: activeModel,
-    effort: activeEffort,
-    provider,
-    systemPrompt: getSystemPrompt("research", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
-  });
-  return formatResult(result, "worker_research");
-}
-
-async function handleReview({ task, files, model, effort, provider }) {
-  const activeModel = model || modelOverride || undefined;
-  const activeEffort = effort || effortOverride || undefined;
-  const result = await dispatchWorkerTask({
-    toolName: "worker_review",
-    prompt: task,
-    mode: "read-only",
-    files: files || [],
-    workspace: workspaceDir,
-    model: activeModel,
-    effort: activeEffort,
-    provider,
-    systemPrompt: getSystemPrompt("review", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
-  });
-  return formatResult(result, "worker_review");
-}
-
 const taskField = z.string().min(1).max(8000).refine((v) => !/^\s*$/.test(v), "task must be non-empty");
 const filesField = z.array(z.string().min(1).max(500).refine((f) => !/[\r\n\0]/.test(f), "newline-free")).max(20).optional();
 const modelField = z.string().max(120).refine((v) => !v.startsWith("-") && !v.includes("\0"), "invalid model").optional();
-const effortField = z.enum(["low", "medium", "high", "max"]).optional();
+const effortField = z.enum(EFFORT_LEVELS).optional();
 // Enumerated from the worker registry: an unknown id would become the name of
 // the executable the generic worker spawns.
 const providerField = z.enum(KNOWN_WORKERS).optional();
 
-const schemas = {
-  explore: {
-    task: taskField.describe("What to explore or search for in the codebase"),
-    files: filesField.describe("Optional file paths to focus on"),
-    model: modelField.describe("Execution worker model"),
-    effort: effortField.describe("Execution worker reasoning effort"),
-    provider: providerField.describe("Execution worker provider override"),
-  },
-  implement: {
-    task: taskField.describe("A bounded implementation task with clear acceptance criteria"),
-    files: filesField.describe("Optional context file paths"),
-    confirm: z.boolean().optional().describe("When safetyMode is diff-review, set to true to apply approved changes to disk. When omitted or false, generates a proposed diff preview."),
-    previewId: z.string().optional().describe("Unique preview token returned by Phase 1 preview call for diff-fidelity verification upon confirmation."),
-    model: modelField.describe("Execution worker model"),
-    effort: effortField.describe("Execution worker reasoning effort"),
-    provider: providerField.describe("Execution worker provider override"),
-  },
-  test: {
-    task: taskField.describe("What to test or which test suite to run"),
-    files: filesField.describe("Optional file paths under test"),
-    confirm: z.boolean().optional().describe("When safetyMode is diff-review, set to true to apply changes on disk."),
-    previewId: z.string().optional().describe("Unique preview token returned by Phase 1 preview call for diff-fidelity verification upon confirmation."),
-    model: modelField.describe("Execution worker model"),
-    effort: effortField.describe("Execution worker reasoning effort"),
-    provider: providerField.describe("Execution worker provider override"),
-  },
-  research: {
-    task: taskField.describe("The technical research question or documentation lookup"),
-    files: filesField.describe("Optional context files"),
-    model: modelField.describe("Execution worker model"),
-    effort: effortField.describe("Execution worker reasoning effort"),
-    provider: providerField.describe("Execution worker provider override"),
-  },
-  review: {
-    task: taskField.describe("What changes or files to review"),
-    files: filesField.describe("Files to review"),
-    model: modelField.describe("Execution worker model"),
-    effort: effortField.describe("Execution worker reasoning effort"),
-    provider: providerField.describe("Execution worker provider override"),
-  },
+/** What `task` and `files` mean for each built-in role; custom roles get the generic wording. */
+const FIELD_HINTS = {
+  scout: ["What to explore or search for in the codebase", "Optional file paths to focus on"],
+  builder: ["A bounded implementation task with clear acceptance criteria", "Optional context file paths"],
+  tester: ["What to test or which test suite to run", "Optional file paths under test"],
+  researcher: ["The technical research question or documentation lookup", "Optional context files"],
+  reviewer: ["What changes or files to review", "Files to review"],
+  designer: ["The design task: what to design or change, for whom, and how it should look and feel", "Optional files the design touches"],
 };
 
-// Primary role-based worker tools
-server.tool(
-  "worker_explore",
-  "Read-only codebase exploration via execution worker. Locates files, symbols, execution paths, dependencies, and tests.",
-  schemas.explore,
-  handleExplore
-);
+/**
+ * The input schema of a role's tool. Write roles also take the two-phase
+ * confirmation fields of the gated safety modes.
+ *
+ * @param {import("../config/roles.js").RoleInfo} role
+ */
+function schemaFor(role) {
+  const [taskHint, filesHint] = FIELD_HINTS[role.id] || [
+    "The task for this role, with clear acceptance criteria",
+    "Optional context file paths",
+  ];
+  const shape = {
+    task: taskField.describe(taskHint),
+    files: filesField.describe(filesHint),
+  };
+  if (role.access === "write") {
+    shape.confirm = z.boolean().optional().describe("When safetyMode is diff-review or interactive, set to true to apply the approved changes to disk. When omitted or false, generates a proposed diff preview.");
+    shape.previewId = z.string().optional().describe("Unique preview token returned by Phase 1 preview call for diff-fidelity verification upon confirmation.");
+  }
+  shape.model = modelField.describe("Run this call on another model than the role's assignment");
+  shape.effort = effortField.describe("Run this call at another reasoning effort than the role's assignment");
+  shape.provider = providerField.describe("Run this call on another worker provider than the role's assignment");
+  return shape;
+}
 
-server.tool(
-  "worker_implement",
-  "Execute a bounded coding task via execution worker. Modifies/creates workspace files.",
-  schemas.implement,
-  handleImplement
-);
+/**
+ * A role tool's description: the role, the model it runs on and what it is
+ * for — "Reviewer role, runs on GPT-6 Astra (Codex), high effort. …" — so
+ * the lead routes by the actual assignment.
+ *
+ * @param {import("../config/roles.js").RoleInfo} role
+ * @param {object} config - the effective settings
+ * @returns {string}
+ */
+export function describeRoleTool(role, config) {
+  const target = resolveWorkerTarget({ role: role.id }, config);
+  const where = `runs on ${describeTarget(target)}${target.assigned ? "" : " (the shared worker)"}`;
+  const kind = role.custom ? `${role.title} role (custom)` : `${role.title} role`;
+  const summary = role.summary ? ` ${/[.!?]$/.test(role.summary) ? role.summary : `${role.summary}.`}` : "";
+  const access = role.custom ? (role.access === "write" ? " Can modify workspace files." : " Read-only.") : "";
+  return `${kind}, ${where}.${summary}${access}`;
+}
 
-server.tool(
-  "worker_test",
-  "Write and/or run tests via execution worker. Generates tests and executes them using native project commands.",
-  schemas.test,
-  handleTest
-);
+/**
+ * Build the MCP server with one tool per role in `config`: the built-in roles
+ * and the custom ones. A description is refreshed on the next call when its
+ * role's model changed meanwhile; adding or removing a custom role needs a
+ * new bridge (the session restarts its orchestrator and resumes the thread).
+ *
+ * @param {object} config - the effective settings
+ * @returns {McpServer}
+ */
+export function createBridgeServer(config) {
+  const server = new McpServer({
+    name: "kumo-worker-bridge",
+    version: VERSION,
+    description: "Bridges frontier orchestrators to execution workers across providers with dynamic workspace resolution and safety guardrails.",
+  });
 
-server.tool(
-  "worker_research",
-  "Technical research via execution worker. Look up documentation, API specs, and technical patterns.",
-  schemas.research,
-  handleResearch
-);
+  /** @type {Map<string, { role: import("../config/roles.js").RoleInfo, tool: any, description: string }>} */
+  const tools = new Map();
+  const refreshDescriptions = (current) => {
+    for (const role of listRoles(current)) {
+      const entry = tools.get(role.tool);
+      if (!entry || entry.role.access !== role.access) continue;
+      const description = describeRoleTool(role, current);
+      if (description === entry.description) continue;
+      entry.description = description;
+      entry.tool.update({ description });
+    }
+  };
 
-server.tool(
-  "worker_review",
-  "Independent code review via execution worker. Identifies correctness, security, and regression risks.",
-  schemas.review,
-  handleReview
-);
+  for (const role of listRoles(config)) {
+    const description = describeRoleTool(role, config);
+    const tool = server.registerTool(
+      role.tool,
+      { title: `${role.title} role`, description, inputSchema: schemaFor(role) },
+      (args) => handleRoleTool(role, args, { onConfig: refreshDescriptions })
+    );
+    tools.set(role.tool, { role, tool, description });
+  }
+  return server;
+}
 
 export async function startServer() {
+  // Set here, not at import: only a running bridge spawns workers, and a
+  // module-level write would leak into any process that merely imports this.
+  process.env[NESTED_ENV] = "1";
+  // Connect before serving: the first tool call must already know its
+  // session, and the tool list is built from that session's roles.
+  engine = await connectEngine({ version: VERSION });
+  const server = createBridgeServer(await effectiveConfig());
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

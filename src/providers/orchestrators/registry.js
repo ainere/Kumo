@@ -27,77 +27,92 @@ const ORCHESTRATORS = {
   codex: {
     id: "codex",
     name: "OpenAI Codex CLI",
+    delegates: true,
     createClient: (opts) => new CodexAppClient(opts),
   },
   antigravity: {
     id: "antigravity",
     name: "Google Antigravity / Gemini CLI",
+    delegates: true,
     createClient: (opts) => new AgyAppClient(opts),
   },
   gemini: {
     id: "antigravity",
     name: "Google Antigravity / Gemini CLI",
+    delegates: true,
     createClient: (opts) => new AgyAppClient(opts),
   },
   agy: {
     id: "antigravity",
     name: "Google Antigravity / Gemini CLI",
+    delegates: true,
     createClient: (opts) => new AgyAppClient(opts),
   },
   claude: {
     id: "claude",
     name: "Anthropic Claude Code CLI",
+    delegates: true,
     createClient: (opts) => new ClaudeAppClient(opts),
   },
   opencode: {
     id: "opencode",
     name: "OpenCode CLI",
+    delegates: false,
     createClient: (opts) => new OpenCodeAppClient(opts),
   },
   commandcode: {
     id: "commandcode",
     name: "CommandCode CLI",
+    delegates: false,
     createClient: (opts) => new CommandCodeAppClient(opts),
   },
   copilot: {
     id: "copilot",
     name: "GitHub Copilot CLI",
+    delegates: false,
     createClient: (opts) => new CopilotAppClient(opts),
   },
   cursor: {
     id: "cursor",
     name: "Cursor Agent",
+    delegates: false,
     createClient: (opts) => new CursorAppClient(opts),
   },
   "gemini-cli": {
     id: "gemini-cli",
     name: "Gemini CLI",
+    delegates: false,
     createClient: (opts) => new GeminiCliAppClient(opts),
   },
   ollama: {
     id: "ollama",
     name: "Ollama Local",
+    delegates: false,
     createClient: (opts) => new OllamaAppClient(opts),
   },
   "openai-api": {
     id: "openai-api",
     name: "OpenAI API",
+    delegates: false,
     createClient: (opts) =>
       new OpenAIApiClient({ ...opts, provider: "openai-api", config: opts.config || loadConfig() }),
   },
   "anthropic-api": {
     id: "anthropic-api",
     name: "Anthropic API",
+    delegates: false,
     createClient: (opts) => new AnthropicApiClient({ ...opts, config: opts.config || loadConfig() }),
   },
   "gemini-api": {
     id: "gemini-api",
     name: "Google Gemini API",
+    delegates: false,
     createClient: (opts) => new GeminiApiClient({ ...opts, config: opts.config || loadConfig() }),
   },
   "compat-api": {
     id: "compat-api",
     name: "OpenAI-Compatible API",
+    delegates: false,
     createClient: (opts) =>
       new OpenAIApiClient({ ...opts, provider: "compat-api", config: opts.config || loadConfig() }),
   },
@@ -110,8 +125,25 @@ function genericEntry(id) {
   return {
     id,
     name: `${id} CLI`,
+    delegates: false,
     createClient: (opts) => new GenericAppClient({ ...opts, command: id, bin: id }),
   };
+}
+
+/**
+ * Whether an orchestrator provider can reach Kumo's worker tools.
+ *
+ * Only Codex (bridge passed as a thread config override), Claude Code
+ * (`--mcp-config`) and Antigravity (`.agents/mcp_config.json`) are wired to the
+ * MCP bridge. The others run each prompt through a CLI or HTTP API with no tool
+ * access, so they answer on their own and never delegate.
+ *
+ * @param {string} id
+ * @returns {boolean}
+ */
+export function orchestratorDelegates(id) {
+  const entry = ORCHESTRATORS[String(id || "").toLowerCase().trim()];
+  return Boolean(entry?.delegates);
 }
 
 /**
@@ -143,6 +175,8 @@ export function getOrchestrator(id = "codex", { allowGeneric = false } = {}) {
  * @param {string} [opts.effort]
  * @param {string} [opts.workspace]
  * @param {Object} [opts.env]
+ * @param {string} [opts.safetyMode] - the session's safety mode (agy fixes its permissions at start)
+ * @param {Object} [opts.config] - settings to use instead of the saved config
  * @param {boolean} [opts.allowGeneric=false]
  * @returns {object}
  */

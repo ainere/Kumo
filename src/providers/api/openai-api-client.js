@@ -37,6 +37,7 @@ export class OpenAIApiClient extends EventEmitter {
   async startTurn(prompt, { model, effort } = {}) {
     const turnModel = model || this.activeModel;
     const turnEffort = effort || this.activeEffort;
+    const turn = (this._turnSeq = (this._turnSeq || 0) + 1);
     this.isTurnActive = true;
     try {
       const { text } = await chatComplete({
@@ -46,19 +47,27 @@ export class OpenAIApiClient extends EventEmitter {
         effort: turnEffort,
         config: this.config,
       });
+      // Interrupted, or superseded by a newer turn, while the request was in
+      // flight: that turn is already closed, and this answer must not complete
+      // (and be saved as) the next one.
+      if (turn !== this._turnSeq) return { ok: false, stale: true };
       this.isTurnActive = false;
       this.emit("delta", text);
-      this.emit("turn_completed");
+      this.emit("turn_completed", { ok: true });
       return { ok: true, text };
     } catch (err) {
+      if (turn !== this._turnSeq) return { ok: false, stale: true };
       this.isTurnActive = false;
       throw err;
     }
   }
 
   async interruptTurn() {
+    // The request cannot be cancelled mid-flight; close the turn now and let
+    // startTurn discard the answer when it arrives.
+    this._turnSeq = (this._turnSeq || 0) + 1;
     this.isTurnActive = false;
-    this.emit("turn_completed");
+    this.emit("turn_completed", { ok: false, reason: "interrupted" });
   }
 
   async getRateLimits() {

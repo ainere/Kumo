@@ -2,6 +2,9 @@
  * quota-cache.js — Ultra-fast disk cache for quota metrics.
  * Allows Kumo to render its startup menu in <5ms without waiting
  * for network/CLI round-trips.
+ *
+ * Layout: `{ orchestrators: { <provider>: limits }, agy, updatedAt }`, plus
+ * the legacy `codex` key (Codex's limits) that older readers expect.
  */
 
 import fs from "node:fs";
@@ -14,43 +17,58 @@ function cacheFile() {
 
 export const QUOTA_TTL_MS = 5 * 60 * 1000;
 
-export function getCachedQuotas() {
+function readCache() {
   try {
     const file = cacheFile();
-    if (fs.existsSync(file)) {
-      const data = JSON.parse(fs.readFileSync(file, "utf-8"));
-      const updatedAt = typeof data.updatedAt === "number" ? data.updatedAt : null;
-      const now = Date.now();
-      // `now < updatedAt` catches a backwards clock step, which would otherwise
-      // produce a negative age and pin the cache as fresh forever.
-      const stale = !updatedAt || now < updatedAt || now - updatedAt > QUOTA_TTL_MS;
-      return { codex: data.codex ?? null, agy: data.agy ?? null, updatedAt, stale };
-    }
+    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, "utf-8"));
   } catch {
     /* ignore read errors */
   }
-
-  // Defaults when no cache exists
-  return { codex: null, agy: null, updatedAt: null, stale: true };
+  return {};
 }
 
+export function getCachedQuotas() {
+  const data = readCache();
+  const updatedAt = typeof data.updatedAt === "number" ? data.updatedAt : null;
+  const now = Date.now();
+  // `now < updatedAt` catches a backwards clock step, which would otherwise
+  // produce a negative age and pin the cache as fresh forever.
+  const stale = !updatedAt || now < updatedAt || now - updatedAt > QUOTA_TTL_MS;
+  const orchestrators = data.orchestrators && typeof data.orchestrators === "object" ? data.orchestrators : {};
+  const codex = orchestrators.codex ?? data.codex ?? null;
+  return { codex, agy: data.agy ?? null, orchestrators: { ...orchestrators, ...(codex ? { codex } : {}) }, updatedAt, stale };
+}
+
+/**
+ * Save what is known; a null argument keeps the cached value.
+ *
+ * @param {object|null} codexLimits
+ * @param {object|null} agyUsage
+ */
 export function saveCachedQuotas(codexLimits, agyUsage) {
+  saveProviderQuotas("codex", codexLimits, agyUsage);
+}
+
+/**
+ * Save one orchestrator provider's limits (and Antigravity usage).
+ *
+ * @param {string} provider
+ * @param {object|null} limits
+ * @param {object|null} [agyUsage]
+ */
+export function saveProviderQuotas(provider, limits, agyUsage = null) {
   try {
-    const file = cacheFile();
-    let old = {};
-    try {
-      if (fs.existsSync(file)) {
-        old = JSON.parse(fs.readFileSync(file, "utf-8"));
-      }
-    } catch {
-      old = {};
-    }
+    const old = readCache();
+    const orchestrators = { ...(old.orchestrators || {}) };
+    if (old.codex && !orchestrators.codex) orchestrators.codex = old.codex;
+    if (limits) orchestrators[provider] = limits;
     const next = {
-      codex: codexLimits ?? old.codex ?? null,
+      orchestrators,
+      codex: orchestrators.codex ?? null,
       agy: agyUsage ?? old.agy ?? null,
-      updatedAt: codexLimits || agyUsage ? Date.now() : old.updatedAt || Date.now(),
+      updatedAt: limits || agyUsage ? Date.now() : old.updatedAt || Date.now(),
     };
-    atomicWriteJson(file, next);
+    atomicWriteJson(cacheFile(), next);
   } catch {
     /* ignore write errors */
   }

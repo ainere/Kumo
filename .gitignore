@@ -29,6 +29,9 @@ logs/
 dist/
 build/
 coverage/
+apps/desktop/out/
+test-results/
+playwright-report/
 
 # Antigravity session & transient IDE directories
 .system_generated/
@@ -36,7 +39,6 @@ scratch/
 
 # Provider configs generated per-machine by `syncAgentConfigs`
 # (each bakes in an absolute path to this installation's bridge server)
-.agents/mcp_config.json
 .claude/
 .codex/config.toml
 .codex/agents/
@@ -45,3 +47,17 @@ scratch/
 # Knowledge graph & build artifacts
 graphify-out/
 .graphify*
+
+# Development material: it stays on the maintainer's machine, out of the
+# product repository (tests, the desktop e2e suite, internal notes, and the
+# agent instructions for working on Kumo itself; `kumo init` writes its own
+# AGENTS.md and GEMINI.md into users' projects).
+tests/
+apps/desktop/e2e/
+apps/desktop/playwright.config.ts
+docs/archive/
+docs/superpowers/
+AGENTS.md
+GEMINI.md
+.agents/
+.gemini/

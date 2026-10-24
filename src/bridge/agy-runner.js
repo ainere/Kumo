@@ -11,14 +11,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, supportsEffort } from "../config/settings.js";
+import { MODEL_CATALOG } from "../config/models.js";
 import { formatIsoResetTime } from "../utils/ui.js";
 import {
   safeSpawn,
   childEnvFor,
   killProcessTree,
+  stopProcessTree,
   resolveBinary,
+  writeLiveOutput,
 } from "../utils/process.js";
-import { mustUseStdinPrompt } from "../providers/workers/cli-runner.js";
+import { mustUseStdinPrompt, grantsWrite } from "../providers/workers/cli-runner.js";
 
 /** Default timeout per invocation (5 minutes). */
 const DEFAULT_TIMEOUT_MS = clampTimeout(process.env.GEMINI_TIMEOUT_MS || "300000");
@@ -45,13 +48,37 @@ export const MAX_OUTPUT_BYTES = 1024 * 1024;
 let detectedBin = null;
 
 /**
- * Determine which binary to invoke:
+ * The value `cliBinary` defaulted to before Antigravity became the preferred
+ * CLI. Every config written by an older Kumo stores it explicitly, so it cannot
+ * be told apart from a deliberate choice; it is therefore treated as "no
+ * preference" and only used when `agy` is absent. Users who want the Gemini CLI
+ * as a worker select the `gemini-cli` provider instead.
+ */
+const LEGACY_DEFAULT_CLI_BINARY = "gemini";
+
+/**
+ * Resolve a configured binary to an existing absolute path, or null.
+ *
+ * @param {string} bin
+ * @returns {string|null}
+ */
+function existingBinary(bin) {
+  if (!bin) return null;
+  // A plain existsSync resolves a bare name against the CWD; resolveBinary
+  // searches PATH and returns the bare name on a miss.
+  const resolved = resolveBinary(bin);
+  return path.isAbsolute(resolved) && fs.existsSync(resolved) ? resolved : null;
+}
+
+/**
+ * Determine which binary the Antigravity provider invokes:
  * 1. Environment variable AGY_BIN or GEMINI_BIN
  * 2. Cached detected binary
- * 3. Stored user config in ~/.kumo/config.json
+ * 3. A non-default `cliBinary` from ~/.kumo/config.json
  * 4. Local AppData agy.exe installation (standard Antigravity CLI path)
- * 5. System PATH via where.exe / which
- * 6. Fallback "agy"
+ * 5. `agy` on PATH
+ * 6. The legacy default `gemini` on PATH
+ * 7. Fallback "agy"
  * @returns {string}
  */
 export function getCliBinary() {
@@ -59,19 +86,19 @@ export function getCliBinary() {
   if (process.env.GEMINI_BIN && fs.existsSync(process.env.GEMINI_BIN)) return process.env.GEMINI_BIN;
   if (detectedBin) return detectedBin;
 
+  let configured = null;
   try {
-    const config = loadConfig();
-    if (config?.cliBinary) {
-      // The default is the bare name "gemini"; a plain existsSync resolves it
-      // against the CWD, so the configured binary was always discarded.
-      const resolved = resolveBinary(config.cliBinary);
-      if (path.isAbsolute(resolved) && fs.existsSync(resolved)) {
-        detectedBin = resolved;
-        return detectedBin;
-      }
-    }
+    configured = loadConfig()?.cliBinary || null;
   } catch {
     /* fallback */
+  }
+
+  if (configured && configured !== LEGACY_DEFAULT_CLI_BINARY) {
+    const found = existingBinary(configured);
+    if (found) {
+      detectedBin = found;
+      return detectedBin;
+    }
   }
 
   // Check local AppData agy installation (standard Antigravity CLI path on Windows)
@@ -84,16 +111,25 @@ export function getCliBinary() {
     }
   }
 
-  // Check if agy is on PATH. resolveBinary returns the bare name on a miss,
-  // so an absolute result is the signal that it was actually found.
-  const found = resolveBinary("agy");
-  if (path.isAbsolute(found) && fs.existsSync(found)) {
-    detectedBin = found;
+  const agy = existingBinary("agy");
+  if (agy) {
+    detectedBin = agy;
+    return detectedBin;
+  }
+
+  const legacy = existingBinary(configured || LEGACY_DEFAULT_CLI_BINARY);
+  if (legacy) {
+    detectedBin = legacy;
     return detectedBin;
   }
 
   detectedBin = process.env.GEMINI_BIN || "agy";
   return detectedBin;
+}
+
+/** Test seam: forget the memoized Antigravity binary. */
+export function clearCliBinaryCache() {
+  detectedBin = null;
 }
 
 /**
@@ -130,8 +166,15 @@ export async function runAgy(opts) {
 
   const {
     prompt,
-    model = opts.model || process.env.GEMINI_MODEL || config.workerModel || null,
-    effort = opts.effort || process.env.GEMINI_EFFORT || process.env.WORKER_EFFORT || config.workerEffort || null,
+    // From the bridge, `provider` is set and model/effort are already resolved —
+    // possibly to nothing, for a per-call override. Falling back to config here
+    // would hand agy the configured worker's model, which may belong to another CLI.
+    model = "provider" in opts
+      ? opts.model || null
+      : opts.model || process.env.GEMINI_MODEL || config.workerModel || null,
+    effort = "provider" in opts
+      ? opts.effort || null
+      : opts.effort || process.env.GEMINI_EFFORT || process.env.WORKER_EFFORT || config.workerEffort || null,
     mode = "read-only",
     files = [],
     workspace = opts.workspace || opts.cwd || process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd(),
@@ -147,9 +190,10 @@ export async function runAgy(opts) {
   let bin = getCliBinary();
   // If model is a Claude model, ensure agy is used as gemini CLI only supports Gemini models
   if (model && model.toLowerCase().startsWith("claude-") && path.basename(bin).toLowerCase().startsWith("gemini")) {
-    bin = process.env.AGY_BIN || "agy";
+    bin = process.env.AGY_BIN || resolveBinary("agy");
   }
   const isGeminiCli = path.basename(bin).toLowerCase().startsWith("gemini");
+  const canWrite = grantsWrite({ permission: opts.permission, mode, safetyMode });
   const args = [];
 
   let compositePrompt = "";
@@ -164,6 +208,14 @@ export async function runAgy(opts) {
   }
   if (files && files.length > 0) {
     compositePrompt += `[Relevant Files]\n${files.map((f) => `- ${f}`).join("\n")}\n\n`;
+  }
+  if (!canWrite) {
+    // Headless agy auto-denies any tool that needs a permission prompt —
+    // shell commands included — and then exits 0 with no output. Steering the
+    // model to its built-in file tools keeps a read-only task answerable.
+    compositePrompt +=
+      `[Permissions]\nThis task is read-only. Do not create, modify, or delete files. ` +
+      `Shell commands and MCP tools are not available; use only your built-in file listing, reading, and search tools.\n\n`;
   }
   compositePrompt += `[Task]\n${prompt}`;
 
@@ -180,7 +232,7 @@ export async function runAgy(opts) {
     if (trustWorkspace) {
       args.push("--skip-trust");
     }
-    if (mode === "workspace-write" && safetyMode === "autonomous") {
+    if (canWrite) {
       args.push("-y");
       args.push("--approval-mode", "yolo");
     }
@@ -194,11 +246,8 @@ export async function runAgy(opts) {
     if (effort && supportsEffort(model)) {
       args.push("--effort", effort);
     }
-    if (mode === "workspace-write" && safetyMode === "autonomous") {
+    if (canWrite) {
       args.push("--dangerously-skip-permissions");
-    }
-
-    if (mode === "workspace-write" && safetyMode === "autonomous") {
       args.push("--mode", "accept-edits");
     }
   }
@@ -239,9 +288,7 @@ export async function runAgy(opts) {
         if (onChunk) {
           try { onChunk("stdout", chunk); } catch {}
         }
-        if (liveLogPath) {
-          try { fs.appendFileSync(liveLogPath, chunk); } catch {}
-        }
+        writeLiveOutput(liveLogPath, chunk);
         if (stdout.length < MAX_OUTPUT_BYTES) {
           const remaining = MAX_OUTPUT_BYTES - stdout.length;
           const str = chunk.toString();
@@ -253,9 +300,7 @@ export async function runAgy(opts) {
         if (onChunk) {
           try { onChunk("stderr", chunk); } catch {}
         }
-        if (liveLogPath) {
-          try { fs.appendFileSync(liveLogPath, chunk); } catch {}
-        }
+        writeLiveOutput(liveLogPath, chunk);
         if (stderr.length < MAX_OUTPUT_BYTES) {
           const remaining = MAX_OUTPUT_BYTES - stderr.length;
           const str = chunk.toString();
@@ -267,12 +312,9 @@ export async function runAgy(opts) {
       const timer = setTimeout(() => {
         if (!settled) {
           timedOut = true;
-          try {
-            proc.kill("SIGTERM");
-          } catch {
-            /* already gone */
-          }
-          // SIGTERM reaches only the shim on Windows; escalate to the whole tree.
+          // Tree kill on Windows, where SIGTERM would stop only the shim; see
+          // runCliWorker for why a delayed escalation alone is not enough.
+          stopProcessTree(proc);
           escalation = setTimeout(() => killProcessTree(proc), 5000);
           escalation.unref?.();
         }
@@ -295,6 +337,7 @@ export async function runAgy(opts) {
       proc.on("error", (err) => {
         settled = true;
         clearTimeout(timer);
+        clearTimeout(escalation);
 
         resolve({
           ok: false,
@@ -307,7 +350,9 @@ export async function runAgy(opts) {
     });
 
   let attempts = 0;
-  const maxAttempts = 2;
+  // A write task may already have edited files when the connection dropped;
+  // running it again would apply those edits a second time.
+  const maxAttempts = canWrite ? 1 : 2;
   while (attempts < maxAttempts) {
     attempts++;
     const res = await executeOnce();
@@ -318,12 +363,74 @@ export async function runAgy(opts) {
     if (onChunk) {
       try { onChunk("stdout", Buffer.from(retryMarker)); } catch {}
     }
-    if (liveLogPath) {
-      try { fs.appendFileSync(liveLogPath, retryMarker); } catch {}
-    }
+    writeLiveOutput(liveLogPath, retryMarker);
     // Wait briefly before retrying transient connection reset
     await new Promise((r) => setTimeout(r, 1500));
   }
+}
+
+/**
+ * Parse `agy -p /usage` output. Each line is tab-separated:
+ * `<group>\t<metric>\t<percent>%\t<reset ISO>`, and every percentage is what
+ * is *remaining* (agy 1.2: "Weekly Limit Remaining 99%").
+ *
+ * Besides the family-wide rows ("Gemini Models", "Claude and GPT models"),
+ * agy lists per-model limits ("Gemini 4 Argon … Weekly Limit"). Those used to
+ * overwrite the family figure because they come later; a family row now wins
+ * and a per-model row only fills a slot no family row provided.
+ *
+ * @param {string} stdout
+ * @returns {Object|null} null when no line could be parsed
+ */
+export function parseAgyUsage(stdout) {
+  const usage = {
+    geminiWeeklyPercent: null,
+    geminiWeeklyResetFormatted: null,
+    geminiWeeklyResetIso: null,
+    gemini5HourPercent: null,
+    gemini5HourResetFormatted: null,
+    gemini5HourResetIso: null,
+    claudeGptWeeklyPercent: null,
+    claudeGptWeeklyResetFormatted: null,
+    claudeGptWeeklyResetIso: null,
+    claudeGpt5HourPercent: null,
+    claudeGpt5HourResetFormatted: null,
+    claudeGpt5HourResetIso: null,
+    rawItems: [],
+  };
+
+  for (const line of String(stdout || "").trim().split(/\r?\n/)) {
+    const parts = line.split("\t").map((s) => s.trim());
+    if (parts.length < 3) continue;
+    const percent = parseInt(parts[2].replace("%", ""), 10);
+    if (!Number.isFinite(percent)) continue;
+    usage.rawItems.push({ group: parts[0], metric: parts[1], percent, resetIso: parts[3] || null });
+  }
+  if (usage.rawItems.length === 0) return null;
+
+  const isFamilyRow = (item) => /\bmodels\b/i.test(item.group);
+  const ordered = [...usage.rawItems.filter(isFamilyRow), ...usage.rawItems.filter((i) => !isFamilyRow(i))];
+  const set = (prefix, item) => {
+    if (usage[`${prefix}Percent`] !== null) return;
+    usage[`${prefix}Percent`] = item.percent;
+    usage[`${prefix}ResetFormatted`] = formatIsoResetTime(item.resetIso);
+    usage[`${prefix}ResetIso`] = item.resetIso;
+  };
+
+  for (const item of ordered) {
+    const group = item.group.toLowerCase();
+    const metric = item.metric.toLowerCase();
+    const weekly = metric.includes("weekly");
+    const fiveHour = /five hour|5-hour|5 hour/.test(metric);
+    if (group.includes("gemini")) {
+      if (weekly) set("geminiWeekly", item);
+      else if (fiveHour) set("gemini5Hour", item);
+    } else if (group.includes("claude") || group.includes("gpt")) {
+      if (weekly) set("claudeGptWeekly", item);
+      else set("claudeGpt5Hour", item);
+    }
+  }
+  return usage;
 }
 
 /**
@@ -354,64 +461,7 @@ export async function getAgyUsage() {
       if (code !== 0 || !stdout.trim()) {
         return resolve(null);
       }
-
-      const lines = stdout.trim().split("\n");
-      const usage = {
-        geminiWeeklyPercent: null,
-        geminiWeeklyResetFormatted: null,
-        geminiWeeklyResetIso: null,
-        gemini5HourPercent: null,
-        gemini5HourResetFormatted: null,
-        gemini5HourResetIso: null,
-        claudeGptWeeklyPercent: null,
-        claudeGptWeeklyResetFormatted: null,
-        claudeGptWeeklyResetIso: null,
-        claudeGpt5HourPercent: null,
-        claudeGpt5HourResetFormatted: null,
-        claudeGpt5HourResetIso: null,
-        rawItems: [],
-      };
-
-      for (const line of lines) {
-        const parts = line.split("\t").map((s) => s.trim());
-        if (parts.length >= 3) {
-          const group = parts[0];
-          const metric = parts[1];
-          const percentStr = parts[2].replace("%", "");
-          const percent = parseInt(percentStr, 10);
-          const resetIso = parts[3] || null;
-
-          usage.rawItems.push({ group, metric, percent, resetIso });
-
-          if (group.toLowerCase().includes("gemini")) {
-            if (metric.toLowerCase().includes("weekly")) {
-              usage.geminiWeeklyPercent = percent;
-              usage.geminiWeeklyResetFormatted = formatIsoResetTime(resetIso);
-              usage.geminiWeeklyResetIso = resetIso;
-            } else if (
-              metric.toLowerCase().includes("five hour") ||
-              metric.toLowerCase().includes("5-hour") ||
-              metric.toLowerCase().includes("5 hour")
-            ) {
-              usage.gemini5HourPercent = percent;
-              usage.gemini5HourResetFormatted = formatIsoResetTime(resetIso);
-              usage.gemini5HourResetIso = resetIso;
-            }
-          } else if (group.toLowerCase().includes("claude") || group.toLowerCase().includes("gpt")) {
-            if (metric.toLowerCase().includes("weekly")) {
-              usage.claudeGptWeeklyPercent = percent;
-              usage.claudeGptWeeklyResetFormatted = formatIsoResetTime(resetIso);
-              usage.claudeGptWeeklyResetIso = resetIso;
-            } else {
-              usage.claudeGpt5HourPercent = percent;
-              usage.claudeGpt5HourResetFormatted = formatIsoResetTime(resetIso);
-              usage.claudeGpt5HourResetIso = resetIso;
-            }
-          }
-        }
-      }
-
-      resolve(usage);
+      resolve(parseAgyUsage(stdout));
     });
 
     proc.on("error", () => {
@@ -422,46 +472,34 @@ export async function getAgyUsage() {
 }
 
 /**
- * Health check — verify Antigravity CLI is installed and can be invoked.
- * @returns {Promise<{installed: boolean, authenticated: boolean, binary: string, error?: string}>}
+ * Health check — is the Antigravity CLI installed and logged in?
+ *
+ * `agy -p /usage` answers from the account without running a model, so the
+ * check costs no quota; it used to send a real prompt ("Reply with PONG"),
+ * which spent quota on every `kumo status`. Usage data only comes back for a
+ * logged-in account, so getting it is the authentication signal.
+ *
+ * @param {{ usage?: Object|null }} [opts] - an already fetched usage result, to skip a second spawn
+ * @returns {Promise<{installed: boolean, authenticated: boolean, binary: string, usage: Object|null, error?: string}>}
  */
-export async function checkAgyHealth() {
+export async function checkAgyHealth(opts = {}) {
   const bin = getCliBinary();
-  try {
-    const result = await runAgy({
-      prompt: "Reply with 'PONG' and nothing else.",
-      model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
-      effort: "low",
-      mode: "read-only",
-      timeoutMs: 15_000,
-    });
-
-    return {
-      installed: true,
-      authenticated: result.ok,
-      binary: bin,
-      error: result.ok ? undefined : (result.stderr || result.stdout),
-    };
-  } catch (err) {
-    return {
-      installed: false,
-      authenticated: false,
-      binary: bin,
-      error: err instanceof Error ? err.message : String(err),
-    };
+  const resolved = resolveBinary(bin);
+  if (!path.isAbsolute(resolved) || !fs.existsSync(resolved)) {
+    return { installed: false, authenticated: false, binary: bin, usage: null, error: `'${bin}' was not found` };
   }
+  const usage = opts.usage !== undefined ? opts.usage : await getAgyUsage();
+  return {
+    installed: true,
+    authenticated: Boolean(usage),
+    binary: resolved,
+    usage: usage || null,
+    error: usage ? undefined : "the usage query returned nothing; run agy once to log in",
+  };
 }
 
 /** Default fallback worker models */
-export const DEFAULT_WORKER_MODELS = [
-  { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash" },
-  { id: "gemini-3.7-flash", name: "Gemini 3.7 Flash" },
-  { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash" },
-  { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro" },
-  { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-  { id: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 Thinking" },
-  { id: "gpt-oss-120b", name: "GPT-OSS 120B" },
-];
+export const DEFAULT_WORKER_MODELS = MODEL_CATALOG.antigravity.map(({ id, name }) => ({ id, name }));
 
 /**
  * Discover available worker models via `agy models`.

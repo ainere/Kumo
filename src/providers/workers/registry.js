@@ -41,6 +41,11 @@ const WORKERS = {
 /** Worker provider ids this registry knows about. */
 export const KNOWN_WORKERS = Object.keys(WORKERS);
 
+// What a worker can actually do, so the bridge can refuse a task instead of
+// returning invented output. Lives in its own module so the config layer can
+// check roles against it without loading every adapter.
+export { workerCapabilities } from "./capabilities.js";
+
 /**
  * Resolve a worker provider adapter.
  *

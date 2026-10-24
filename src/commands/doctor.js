@@ -4,7 +4,7 @@
 
 import { runDiagnostics, isEnvironmentReady } from "../utils/diagnostics.js";
 import { getBanner, c, badge, separator } from "../utils/ui.js";
-import { VERSION } from "../cli.js";
+import { VERSION } from "../version.js";
 
 export async function doctorCommand() {
   const results = await runDiagnostics();
@@ -53,7 +53,7 @@ export async function doctorCommand() {
       console.log(`    ${badge.dot} Install Codex CLI: npm install -g @openai/codex && codex login (or set OPENAI_API_KEY)`);
     }
     if (!results.gemini.ok && !results.geminiApi?.ok && !results.anthropicApi?.ok) {
-      console.log(`    ${badge.dot} Configure Gemini binary: kumo config set cliBinary gemini (or set a Direct API key)`);
+      console.log(`    ${badge.dot} Install the Antigravity CLI (agy), or switch the worker to gemini-cli: kumo model worker <model> medium gemini-cli (or set a Direct API key)`);
     }
     if (!results.orchestratorPath?.ok) {
       console.log(`    ${badge.dot} No orchestrator path: log in to a subscription CLI or set a Direct API key`);

@@ -49,11 +49,10 @@ Inside the Kumo repository root:
    npm install
    npm link --force
    ```
-2. Run the test suite:
+2. Check that Kumo finds your provider CLIs, their logins and its MCP bridge:
    ```bash
-   npm test
+   kumo doctor
    ```
-   You should see all unit tests passing.
 
 ---
 

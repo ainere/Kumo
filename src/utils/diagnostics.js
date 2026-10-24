@@ -4,8 +4,6 @@
  * direct-API key presence, and MCP bridge.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -13,20 +11,42 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { loadConfig, getConfigPath } from "../config/settings.js";
 import { getCliBinary } from "../bridge/agy-runner.js";
 import { findCodexBinary } from "../providers/orchestrators/codex.js";
-
-const execFileAsync = promisify(execFile);
+import { safeSpawn, resolveBinary, killProcessTree } from "./process.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Run a command and return stdout or null if error.
+ *
+ * Goes through resolveBinary + safeSpawn: `execFile` cannot launch the `.cmd`
+ * shims npm installs on Windows (EINVAL), and a bare name would never find
+ * them, so every npm-installed CLI used to be reported as missing.
  */
-async function checkCommandFile(file, argsArray) {
-  try {
-    const { stdout } = await execFileAsync(file, argsArray, { timeout: 10000 });
-    return { ok: true, output: stdout.trim() };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
+function checkCommandFile(file, argsArray) {
+  return new Promise((resolve) => {
+    let proc;
+    try {
+      proc = safeSpawn(resolveBinary(file), argsArray, { stdio: ["ignore", "pipe", "pipe"] });
+    } catch (err) {
+      resolve({ ok: false, error: err.message });
+      return;
+    }
+    let stdout = "";
+    const timer = setTimeout(() => {
+      killProcessTree(proc);
+      resolve({ ok: false, error: "timed out" });
+    }, 10000);
+    proc.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    proc.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ ok: false, error: err.message });
+    });
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      resolve(code === 0 ? { ok: true, output: stdout.trim() } : { ok: false, error: `exit code ${code}` });
+    });
+  });
 }
 
 /**
@@ -89,7 +109,10 @@ export async function runDiagnostics() {
     if (fallbackCheck.ok) {
       results.gemini.installed = true;
       results.gemini.ok = true;
-      results.gemini.details = `Found fallback '${fallback}' (${fallbackCheck.output}). Run: kumo config set cliBinary ${fallback}`;
+      results.gemini.details =
+        fallback === "agy"
+          ? `Found fallback 'agy' (${fallbackCheck.output}). Run: kumo config set cliBinary agy`
+          : `Found 'gemini' (${fallbackCheck.output}) but not 'agy'. Install Antigravity, or use the gemini-cli worker provider.`;
     } else {
       results.gemini.installed = false;
       results.gemini.ok = false;
