@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useRef } from "react";
-import { toast, useStore } from "../store";
+import { setState, toast, useStore } from "../store";
 import { useResolvedMode } from "../theme";
 import type { KumoEvent } from "../types";
 
@@ -71,6 +71,12 @@ export function SceneLayer() {
       if (!m || typeof m !== "object" || m.kumo !== 1 || typeof m.type !== "string") return;
       if (m.type === "ready") {
         ready.current = true;
+        const scenes = Array.isArray(m.scenes) ? m.scenes : [];
+        setState({
+          scenes: scenes
+            .filter((s): s is { id: string; name: string } => typeof s?.id === "string" && typeof s?.name === "string")
+            .map((s) => ({ id: s.id.slice(0, 64), name: s.name.slice(0, 40) })),
+        });
         post({ type: "init", scene: latest.current.scene, theme: latest.current.theme(), layout: measure() });
         document.documentElement.dataset.scene = "ready";
       } else if (m.type === "error" && Date.now() - lastError > 10_000) {
