@@ -3,11 +3,15 @@
  * Runs non-interactive worker tasks using `codex exec`.
  */
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { findCodexBinary } from "../orchestrators/codex.js";
 import {
   runCliWorker,
   buildCompositePrompt,
   mustUseStdinPrompt,
+  grantsWrite,
   DEFAULT_TIMEOUT_MS,
 } from "./cli-runner.js";
 
@@ -15,6 +19,28 @@ export const PROVIDER_INFO = {
   id: "codex",
   name: "OpenAI Codex Worker",
 };
+
+/**
+ * Whether a Codex config that `codex exec` will load defines the kumo-bridge
+ * MCP server — the global one (as older Kumo versions wrote it) or the
+ * workspace's (as `kumo init` writes it).
+ *
+ * @param {string} workspace
+ * @returns {boolean}
+ */
+export function codexConfigDefinesBridge(workspace) {
+  const home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+  for (const file of [path.join(home, "config.toml"), path.join(workspace, ".codex", "config.toml")]) {
+    try {
+      // Bare (`mcp_servers.kumo-bridge.command`, `[mcp_servers.kumo-bridge]`)
+      // or quoted (`[mcp_servers."kumo-bridge"]`) key.
+      if (/mcp_servers\.(?:"kumo-bridge"|kumo-bridge(?![\w-]))/.test(fs.readFileSync(file, "utf-8"))) return true;
+    } catch {
+      /* no such config */
+    }
+  }
+  return false;
+}
 
 const PREVIEW_NOTE =
   "You are running in read-only diff preview mode. DO NOT modify any files on disk.\n" +
@@ -59,12 +85,24 @@ export async function executeTask(opts) {
     previewNote: PREVIEW_NOTE,
   });
 
-  const args = ["exec", "--ephemeral"];
+  // The sandbox is the only thing that makes a read-only task read-only, and
+  // the only thing that lets an approved write land; leaving it unset meant
+  // both depended on whatever the user's own Codex config defaulted to.
+  const args = ["exec", "--ephemeral", "--sandbox", grantsWrite(opts) ? "workspace-write" : "read-only"];
   if (model) {
     args.push("--model", model);
   }
   if (effort) {
     args.push("-c", `model_reasoning_effort="${effort}"`);
+  }
+  // A worker must not reach the bridge that launched it: with write access it
+  // could spawn workers recursively. The bridge's own nested-call guard relies
+  // on an environment variable, and Codex starts MCP servers with a filtered
+  // environment, so the server is switched off here instead. Only when a
+  // config defines it — `enabled=false` on an undefined server is a config
+  // error ("invalid transport") that stops codex from starting at all.
+  if (codexConfigDefinesBridge(workspace)) {
+    args.push("-c", "mcp_servers.kumo-bridge.enabled=false");
   }
 
   // `codex exec -` reads the prompt from stdin. Only used when argv cannot carry

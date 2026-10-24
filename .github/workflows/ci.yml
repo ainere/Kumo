@@ -26,3 +26,15 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: npm ci --ignore-scripts
       - run: npm test
+      # The coverage threshold flags need Node >= 22.8, so the floor runs on the
+      # Node 22 legs only. It guards the bridge and provider adapters, where the
+      # delegate → apply bugs lived while every test stayed green.
+      - name: Coverage floor (bridge + providers)
+        if: matrix.node-version == 22
+        run: >-
+          node --test --experimental-test-coverage
+          --test-coverage-include="src/bridge/**"
+          --test-coverage-include="src/providers/**"
+          --test-coverage-lines=70
+          --test-coverage-branches=55
+          --test-coverage-functions=60

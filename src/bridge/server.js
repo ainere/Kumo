@@ -3,25 +3,25 @@
  *
  * Exposes five role-based worker tools (explore, implement, test, research,
  * review) to any MCP-capable orchestrator and routes each call to one of the
- * fifteen supported worker providers — subscription CLIs (Antigravity/Gemini,
- * Codex, Claude Code, OpenCode, CommandCode, Copilot, Cursor, Gemini CLI,
- * Ollama) or direct HTTP APIs (openai/anthropic/gemini/compat).
+ * 13 supported worker providers — subscription CLIs (Antigravity, Codex,
+ * Claude Code, OpenCode, CommandCode, Copilot, Cursor, Gemini CLI, Ollama) or
+ * direct HTTP APIs (openai/anthropic/gemini/compat).
  *
  * The target workspace comes from `--workspace <path>`, else `KUMO_WORKSPACE`,
  * else the legacy `ORCHESTRATOR_WORKSPACE`, else the process working directory.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { runAgy } from "./agy-runner.js";
-import { getWorker, KNOWN_WORKERS } from "../providers/workers/registry.js";
+import { getWorker, workerCapabilities, KNOWN_WORKERS } from "../providers/workers/registry.js";
 import { getSystemPrompt } from "./prompts.js";
-import { loadConfig, detectProviderForModel } from "../config/settings.js";
+import { loadConfig, detectProviderForModel, canonicalizeProvider } from "../config/settings.js";
 import {
   getLiveLogPath,
   setActiveLiveRun,
@@ -29,7 +29,7 @@ import {
   getApprovalDir,
 } from "../data/sessions.js";
 import { atomicWriteJson } from "../config/paths.js";
-import { VERSION } from "../cli.js";
+import { VERSION } from "../version.js";
 
 // Parse CLI flags
 let workspaceDir = process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd();
@@ -52,6 +52,16 @@ for (let i = 0; i < args.length; i++) {
     i++;
   }
 }
+
+/**
+ * Set in the environment of every worker this bridge spawns, and therefore of
+ * any MCP server that worker starts. A worker CLI that has `kumo-bridge`
+ * registered globally (e.g. `agy mcp add`, or ~/.codex/config.toml) would
+ * otherwise call back into Kumo — and with write permission, recursively
+ * spawn worker after worker.
+ */
+export const NESTED_ENV = "KUMO_INSIDE_WORKER";
+const nestedInWorker = process.env[NESTED_ENV] === "1";
 
 export const PREVIEW_TTL_MS = 15 * 60 * 1000; // 15 minutes TTL
 
@@ -125,66 +135,61 @@ export function consumePendingPreview(previewId) {
 }
 
 /**
- * Capture current git porcelain status (modified and untracked files).
+ * Run git and return stdout, or "" when git fails (not a repo, no HEAD, …).
+ *
+ * @param {string} cwd
+ * @param {string[]} args
+ * @returns {string}
  */
-export function getGitStatus(cwd) {
+function git(cwd, args) {
   try {
-    const out = execSync("git status --porcelain", {
+    return execFileSync("git", args, {
       cwd,
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf-8",
-    }).trim();
-    if (!out) return [];
-    return out
-      .split("\n")
-      .map((l) => {
-        const status = l.slice(0, 2);
-        let p = l.slice(3).trim();
-        if (status.includes("R")) {
-          const arrow = p.indexOf("->");
-          if (arrow !== -1) p = p.slice(arrow + 2).trim();
-        }
-        if ((p.startsWith('"') && p.endsWith('"')) || (p.startsWith("'") && p.endsWith("'"))) {
-          p = p.slice(1, -1);
-        }
-        return p;
-      })
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Capture git diff stat summary.
- */
-export function getGitDiffStat(cwd) {
-  try {
-    const out = execSync("git diff HEAD --stat", {
-      cwd,
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf-8",
-    }).trim();
-    return out || "";
+      maxBuffer: 64 * 1024 * 1024,
+    });
   } catch {
     return "";
   }
 }
 
 /**
+ * Capture current git porcelain status (modified and untracked files).
+ *
+ * `--untracked-files=all` lists every file inside an untracked directory —
+ * the default collapses it to `dir/`, whose content hash is null both before
+ * and after a worker writes into it, so those edits went unreported. `-z`
+ * yields raw paths: no C-style quoting of spaces or non-ASCII names.
+ */
+export function getGitStatus(cwd) {
+  const out = git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  if (!out) return [];
+  const tokens = out.split("\0");
+  const files = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const entry = tokens[i];
+    if (entry.length < 4) continue;
+    const status = entry.slice(0, 2);
+    files.push(entry.slice(3));
+    // In -z mode a rename/copy is followed by its original path as its own token.
+    if (status.includes("R") || status.includes("C")) i++;
+  }
+  return files;
+}
+
+/**
+ * Capture git diff stat summary.
+ */
+export function getGitDiffStat(cwd) {
+  return git(cwd, ["diff", "HEAD", "--stat"]).trim();
+}
+
+/**
  * Capture the names of tracked files with uncommitted modifications.
  */
 export function getGitDiffNames(cwd) {
-  try {
-    const out = execSync("git diff HEAD --name-only", {
-      cwd,
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf-8",
-    }).trim();
-    return out ? out.split("\n").map((l) => l.trim()).filter(Boolean) : [];
-  } catch {
-    return [];
-  }
+  return git(cwd, ["diff", "HEAD", "--name-only", "-z"]).split("\0").filter(Boolean);
 }
 
 function hashFileContent(file) {
@@ -208,11 +213,17 @@ function hashFileContent(file) {
 export function captureWorkspaceState(cwd) {
   const files = Array.from(new Set([...getGitStatus(cwd), ...getGitDiffNames(cwd)]));
   const hashes = new Map();
-  for (const f of files) {
+  // With every untracked file listed, an un-ignored dependency tree could mean
+  // hashing tens of thousands of files twice per write; past the cap, files are
+  // listed but not hashed, so only a path appearing or vanishing shows up.
+  for (const f of files.slice(0, MAX_SNAPSHOT_HASHES)) {
     hashes.set(f, hashFileContent(path.join(cwd, f)));
   }
   return { files, hashes };
 }
+
+/** How many dirty files a workspace snapshot hashes. */
+export const MAX_SNAPSHOT_HASHES = 5000;
 
 /**
  * Files whose content differs between two workspace snapshots.
@@ -225,13 +236,53 @@ export function captureWorkspaceState(cwd) {
  * @returns {string[]}
  */
 export function changedFilesBetween(pre, post) {
+  const before = new Set(pre.files);
   const changed = [];
   for (const f of post.files) {
-    if (!pre.hashes.has(f) || pre.hashes.get(f) !== post.hashes.get(f)) {
-      changed.push(f);
+    if (!before.has(f)) {
+      changed.push(f); // newly dirty
+    } else if (pre.hashes.has(f) && post.hashes.has(f) && pre.hashes.get(f) !== post.hashes.get(f)) {
+      changed.push(f); // was dirty, content changed
     }
+    // Dirty in both snapshots but past the hashing cap: no evidence either way.
   }
   return changed;
+}
+
+/**
+ * The `---`/`+++` header paths of a unified diff, exactly as written (prefix
+ * included, trailing tab/timestamp removed, /dev/null skipped). Only a `---`
+ * line directly followed by a `+++` line counts, so prose and Markdown rules
+ * are not mistaken for headers.
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function diffHeaderPaths(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  const paths = [];
+  const pathOf = (line) => line.slice(4).split("\t")[0].trim().replace(/^"(.*)"$/, "$1");
+  for (let i = 0; i + 1 < lines.length; i++) {
+    if (!lines[i].startsWith("--- ") || !lines[i + 1].startsWith("+++ ")) continue;
+    for (const p of [pathOf(lines[i]), pathOf(lines[i + 1])]) {
+      if (p && p !== "/dev/null") paths.push(p);
+    }
+    i++;
+  }
+  return paths;
+}
+
+/**
+ * How many leading path components `git apply` must strip: 1 when every header
+ * uses git's `a/` `b/` prefixes, otherwise 0. Applying an unprefixed diff with
+ * git's default `-p1` drops the first real directory (`src/index.js` became
+ * `index.js`).
+ *
+ * @param {string[]} headerPaths
+ * @returns {0|1}
+ */
+export function diffStripLevel(headerPaths) {
+  return headerPaths.length > 0 && headerPaths.every((p) => /^[ab]\//.test(p)) ? 1 : 0;
 }
 
 /**
@@ -240,13 +291,12 @@ export function changedFilesBetween(pre, post) {
 export function extractPreviewFiles(previewText) {
   if (!previewText) return [];
   const files = new Set();
-  const diffRegex = /(?:---|\+\+\+)\s+[ab]\/([^\s]+)/g;
-  let match;
-  while ((match = diffRegex.exec(previewText)) !== null) {
-    if (match[1] && match[1] !== "dev/null") {
-      files.add(match[1]);
-    }
+  const headers = diffHeaderPaths(previewText);
+  const level = diffStripLevel(headers);
+  for (const p of headers) {
+    files.add(level === 1 ? p.slice(2) : p);
   }
+  let match;
   const fileHeaderRegex = /(?:\[FILE:\s*|\bFile:\s*|\bmodified:\s*)([^\s\],]+)/gi;
   while ((match = fileHeaderRegex.exec(previewText)) !== null) {
     if (!match[1]) continue;
@@ -299,6 +349,13 @@ export function checkDiffFidelity(previewText, actualModifiedFiles) {
 }
 
 function formatResult(result, toolName) {
+  if (result.refused) {
+    return {
+      content: [{ type: "text", text: `[REFUSED] ${toolName}: ${result.stderr}` }],
+      isError: true,
+    };
+  }
+
   if (result.timedOut) {
     return {
       content: [
@@ -323,6 +380,16 @@ function formatResult(result, toolName) {
     };
   }
 
+  // A CLI can exit 0 having done nothing and explain why only on stderr (agy
+  // does this when a tool needed a permission headless mode cannot grant).
+  // A bare "(no output)" success hid that the worker never answered.
+  const stderr = (result.stderr || "").trim();
+  if (!result.stdout && stderr) {
+    return {
+      content: [{ type: "text", text: `[NO OUTPUT] ${toolName} produced no answer.\n\nstderr:\n${stderr}` }],
+      isError: true,
+    };
+  }
   return {
     content: [
       {
@@ -333,32 +400,170 @@ function formatResult(result, toolName) {
   };
 }
 
-const server = new McpServer({
-  name: "kumo-worker-bridge",
-  version: VERSION,
-  description: "Bridges frontier orchestrators to execution workers across providers with dynamic workspace resolution and safety guardrails.",
-});
+/** A worker result for a task the bridge declined to run. */
+function refusal(message) {
+  return { ok: false, refused: true, code: 1, stdout: "", stderr: message, timedOut: false };
+}
+
+/** Limits on what is inlined for workers that cannot open files themselves. */
+export const INLINE_MAX_FILE_BYTES = 64 * 1024;
+export const INLINE_MAX_TOTAL_BYTES = 256 * 1024;
+
+/**
+ * Read the files a text-only worker (HTTP API, `ollama run`) should see.
+ *
+ * Those workers have no filesystem, so without this they were sent bare paths
+ * and described files they never read. Only regular files inside the workspace
+ * are read (symlinks are resolved first); anything else is listed with the
+ * reason it was left out, so the model can say what it could not see.
+ *
+ * @param {string} workspace
+ * @param {string[]} files
+ * @returns {Array<{ path: string, content: string, truncated?: boolean }>}
+ */
+export function readWorkspaceFiles(workspace, files) {
+  let root;
+  try {
+    root = fs.realpathSync(workspace);
+  } catch {
+    root = path.resolve(workspace);
+  }
+  const out = [];
+  let budget = INLINE_MAX_TOTAL_BYTES;
+  for (const rel of files || []) {
+    const note = (content) => out.push({ path: rel, content });
+    let real;
+    try {
+      real = fs.realpathSync(path.resolve(root, rel));
+    } catch {
+      note("(not found)");
+      continue;
+    }
+    const inside = path.relative(root, real);
+    if (inside.startsWith("..") || path.isAbsolute(inside)) {
+      note("(outside the workspace; not read)");
+      continue;
+    }
+    let stat;
+    try {
+      stat = fs.statSync(real);
+    } catch {
+      note("(unreadable)");
+      continue;
+    }
+    if (!stat.isFile()) {
+      note("(not a regular file)");
+      continue;
+    }
+    if (budget <= 0) {
+      note("(not read: inline size budget exhausted)");
+      continue;
+    }
+    const limit = Math.min(INLINE_MAX_FILE_BYTES, budget);
+    let buf;
+    try {
+      const fd = fs.openSync(real, "r");
+      try {
+        buf = Buffer.alloc(Math.min(stat.size, limit));
+        fs.readSync(fd, buf, 0, buf.length, 0);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      note("(unreadable)");
+      continue;
+    }
+    if (buf.subarray(0, 8192).includes(0)) {
+      note("(binary file; not shown)");
+      continue;
+    }
+    budget -= buf.length;
+    out.push({ path: rel, content: buf.toString("utf-8"), truncated: stat.size > buf.length });
+  }
+  return out;
+}
+
+/**
+ * Decide which worker runs a call, and with which model and effort.
+ *
+ * A per-call provider override wins, then KUMO_WORKER_PROVIDER, then config.
+ * The model and effort are read from config on every call so a `/model worker`
+ * switch applies to the next call; they are only used when the call runs on
+ * the configured provider — handing a Gemini model id to a per-call `claude`
+ * override would just make that CLI fail.
+ *
+ * @param {{ provider?: string, model?: string, effort?: string }} opts
+ * @param {object} config
+ */
+export function resolveWorkerTarget(opts, config) {
+  const requested = opts.provider || null;
+  const configured = canonicalizeProvider(
+    process.env.KUMO_WORKER_PROVIDER ||
+      config.workerProvider ||
+      detectProviderForModel(opts.model || modelOverride || config.workerModel)
+  );
+  const provider = requested || configured;
+  const onConfigured = !requested || canonicalizeProvider(requested) === configured;
+  return {
+    provider,
+    requested,
+    // --model / GEMINI_MODEL are overrides of the configured worker, so they
+    // follow the same rule as the config values.
+    model: opts.model || (onConfigured ? modelOverride || config.workerModel : undefined) || undefined,
+    effort: opts.effort || (onConfigured ? effortOverride || config.workerEffort : undefined) || undefined,
+  };
+}
 
 /**
  * Dispatch task to the active worker provider (subscription CLI or direct API).
- * Per-call provider override wins, then KUMO_WORKER_PROVIDER, then config.
+ *
+ * `permission` ("read" | "write") is what the worker is allowed to do; it is
+ * derived from the legacy `mode` when absent. Tasks a worker cannot perform are
+ * refused here rather than run and answered with invented output.
  */
 export async function dispatchWorkerTask(opts) {
+  if (nestedInWorker) {
+    return refusal(
+      "this Kumo bridge was started from inside a Kumo worker; workers cannot delegate further. Do the task directly."
+    );
+  }
   const config = loadConfig();
+  const workspace = opts.workspace || workspaceDir;
+  const target = resolveWorkerTarget(opts, config);
   // opts.provider is model-authored, so it may only name a known worker: the id
   // becomes the executable the generic worker spawns. Operator-configured
   // fallbacks may opt into an arbitrary CLI.
-  const requested = opts.provider;
-  const configured =
-    process.env.KUMO_WORKER_PROVIDER ||
-    config.workerProvider ||
-    detectProviderForModel(opts.model || modelOverride || config.workerModel);
-  const workerProvider = requested || configured;
-  const worker = getWorker(workerProvider, { allowGeneric: !requested });
+  const worker = getWorker(target.provider, { allowGeneric: !target.requested });
+  const caps = workerCapabilities(target.provider);
+  const permission = opts.permission || (opts.mode === "workspace-write" ? "write" : "read");
+
+  if (permission === "write" && !caps.canWrite) {
+    return refusal(
+      `worker provider '${target.provider}' cannot modify files. Use a CLI worker (codex, claude, antigravity, …), ` +
+        `or switch to diff-review mode so Kumo can apply its proposed diff itself.`
+    );
+  }
+
+  let fileContents = [];
+  if (!caps.readsWorkspace) {
+    if (!opts.files || opts.files.length === 0) {
+      return refusal(
+        `worker provider '${target.provider}' cannot open workspace files on its own. ` +
+          `Pass the files it should read in \`files\`, or use a CLI worker (codex, claude, antigravity, …).`
+      );
+    }
+    fileContents = readWorkspaceFiles(workspace, opts.files);
+  }
+
+  const systemPrompt =
+    opts.systemPrompt ??
+    (opts.role
+      ? getSystemPrompt(opts.role, { workerModel: target.model, workerEffort: target.effort, workspace })
+      : undefined);
 
   const runId = opts.runId || crypto.randomUUID();
-  const liveLogPath = getLiveLogPath(workspaceDir, runId);
-  setActiveLiveRun(workspaceDir, {
+  const liveLogPath = getLiveLogPath(workspace, runId);
+  setActiveLiveRun(workspace, {
     runId,
     tool: opts.toolName || "worker_task",
     timestamp: Date.now(),
@@ -367,32 +572,127 @@ export async function dispatchWorkerTask(opts) {
   try {
     return await worker.executeTask({
       ...opts,
+      workspace,
+      provider: target.provider,
+      model: target.model,
+      effort: target.effort,
+      mode: permission === "write" ? "workspace-write" : "read-only",
+      permission,
+      fileContents,
+      systemPrompt,
       config,
       runId,
       liveLogPath,
     });
   } finally {
-    clearActiveLiveRun(workspaceDir, runId);
+    clearActiveLiveRun(workspace, runId);
+  }
+}
+
+/**
+ * Pull the unified diff out of a worker's preview text. Workers wrap it in
+ * prose and often in a ```diff fence; fenced blocks are preferred, otherwise
+ * everything from the first diff header on is taken.
+ *
+ * @param {string} text
+ * @returns {string|null}
+ */
+export function extractUnifiedDiff(text) {
+  if (!text) return null;
+  const isDiff = (s) => diffHeaderPaths(s).length > 0;
+  const fenced = [];
+  // Fences must sit on their own lines. Unanchored, a lazy match ended at the
+  // first ``` anywhere — such as an added Markdown line "+```bash" — and
+  // silently cut the diff short.
+  const fence = /^```[ \t]*(?:diff|patch)?[ \t]*\r?\n([\s\S]*?)^```[ \t]*$/gm;
+  let match;
+  while ((match = fence.exec(text)) !== null) {
+    if (isDiff(match[1])) fenced.push(match[1]);
+  }
+  let diff = fenced.length > 0 ? fenced.join("\n") : null;
+  if (!diff) {
+    const start = text.search(/^(diff --git |--- \S)/m);
+    if (start === -1) return null;
+    diff = text.slice(start);
+    if (!isDiff(diff)) return null;
+  }
+  return diff.endsWith("\n") ? diff : `${diff}\n`;
+}
+
+/**
+ * Apply an approved preview exactly as it was shown, with `git apply`.
+ *
+ * Re-running the worker after approval — the only path before — applies
+ * whatever the model writes the second time, which need not be what the
+ * operator approved. `--check` runs first so a patch that no longer applies
+ * leaves the tree untouched; git refuses paths outside the working tree.
+ *
+ * No `--recount`: it rewrites hunk line counts to fit whatever body is
+ * present, which hides a truncated diff. A hunk whose counts are wrong is
+ * rejected instead, and the caller falls back or asks for a new preview.
+ *
+ * @param {string} cwd
+ * @param {string} previewText
+ * @returns {{ ok: true } | { ok: false, reason: string }}
+ */
+export function applyApprovedDiff(cwd, previewText) {
+  const diff = extractUnifiedDiff(previewText);
+  if (!diff) return { ok: false, reason: "the preview contains no unified diff" };
+
+  const headers = diffHeaderPaths(diff);
+  const level = diffStripLevel(headers);
+  const targets = headers.map((p) => (level === 1 ? p.slice(2) : p));
+  const unsafe = targets.find((p) => path.isAbsolute(p) || /^[A-Za-z]:/.test(p) || p.split(/[\\/]/).includes(".."));
+  if (unsafe) return { ok: false, reason: `the diff names a path outside the workspace (${unsafe})` };
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-apply-"));
+  const patchFile = path.join(dir, "approved.patch");
+  try {
+    fs.writeFileSync(patchFile, diff, "utf-8");
+    const base = ["apply", `-p${level}`, "--whitespace=nowarn"];
+    const run = (extra) =>
+      spawnSync("git", [...base, ...extra, patchFile], { cwd, encoding: "utf-8", timeout: 60000 });
+    const check = run(["--check"]);
+    if (check.status !== 0) {
+      const why = (check.stderr || check.error?.message || "git apply --check failed").trim().split("\n")[0];
+      return { ok: false, reason: why };
+    }
+    const applied = run([]);
+    if (applied.status !== 0) {
+      return { ok: false, reason: (applied.stderr || "git apply failed").trim().split("\n")[0] };
+    }
+    return { ok: true };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
 // Handler implementations
-async function handleExplore({ task, files, model, effort, provider }) {
-  const activeModel = model || modelOverride || undefined;
-  const activeEffort = effort || effortOverride || undefined;
+async function handleReadTool(kind, { task, files, model, effort, provider }) {
+  const toolName = `worker_${kind}`;
   const result = await dispatchWorkerTask({
-    toolName: "worker_explore",
+    toolName,
     prompt: task,
-    mode: "read-only",
+    permission: "read",
     files: files || [],
     workspace: workspaceDir,
-    model: activeModel,
-    effort: activeEffort,
+    model,
+    effort,
     provider,
-    systemPrompt: getSystemPrompt("explore", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
+    role: kind,
   });
-  return formatResult(result, "worker_explore");
+  return formatResult(result, toolName);
 }
+
+async function handleExplore(args) {
+  return handleReadTool("explore", args);
+}
+
+const server = new McpServer({
+  name: "kumo-worker-bridge",
+  version: VERSION,
+  description: "Bridges frontier orchestrators to execution workers across providers with dynamic workspace resolution and safety guardrails.",
+});
 
 /** How long the bridge waits for a human decision in `interactive` mode. */
 export const APPROVAL_TIMEOUT_MS = 300000;
@@ -475,32 +775,25 @@ async function handleWriteTool(kind, { task, files, confirm, previewId, model, e
   const toolName = kind === "implement" ? "worker_implement" : "worker_test";
   const config = loadConfig();
   const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
-  const activeModel = model || modelOverride || undefined;
-  const activeEffort = effort || effortOverride || undefined;
   const gated = safetyMode === "diff-review" || safetyMode === "interactive";
 
-  const systemPrompt = () =>
-    getSystemPrompt(kind, {
-      workerModel: activeModel,
-      workerEffort: activeEffort,
+  const dispatch = (extra) =>
+    dispatchWorkerTask({
+      toolName,
+      prompt: task,
+      safetyMode,
+      files: files || [],
       workspace: workspaceDir,
+      model,
+      effort,
+      provider,
+      role: kind,
+      ...extra,
     });
 
   // ── Phase 1: preview only ──
   if (gated && !confirm) {
-    const result = await dispatchWorkerTask({
-      toolName,
-      prompt: task,
-      mode: "read-only",
-      previewDiff: true,
-      safetyMode,
-      files: files || [],
-      workspace: workspaceDir,
-      model: activeModel,
-      effort: activeEffort,
-      provider,
-      systemPrompt: systemPrompt(),
-    });
+    const result = await dispatch({ permission: "read", previewDiff: true });
 
     const formatted = formatResult(result, toolName);
     if (result.ok && result.stdout) {
@@ -559,20 +852,36 @@ async function handleWriteTool(kind, { task, files, confirm, previewId, model, e
 
   const preState = captureWorkspaceState(workspaceDir);
 
-  const result = await dispatchWorkerTask({
-    toolName,
-    prompt: task,
-    mode: "workspace-write",
-    // Never widen permissions on confirmation: applying an approved preview must
-    // not run with fewer restrictions than the mode the operator selected.
-    safetyMode,
-    files: files || [],
-    workspace: workspaceDir,
-    model: activeModel,
-    effort: activeEffort,
-    provider,
-    systemPrompt: systemPrompt(),
-  });
+  let result;
+  let note = "";
+  if (confirmedPreview) {
+    // Apply what was approved, byte for byte. Only when that is impossible is
+    // the worker asked to redo the task, and the output says so.
+    const applied = applyApprovedDiff(workspaceDir, confirmedPreview);
+    if (applied.ok) {
+      result = {
+        ok: true,
+        code: 0,
+        stdout: "Applied the approved preview exactly as shown (git apply).",
+        stderr: "",
+        timedOut: false,
+      };
+    } else if (safetyMode === "interactive" && interactiveApprovalAvailable()) {
+      // The operator approved this exact diff, not whatever a re-run writes;
+      // writing anything else would bypass the human gate.
+      return errorResult(
+        `the approved diff could not be applied verbatim (${applied.reason}); nothing was written. ` +
+          `Request a new preview so the operator can approve the actual change.`
+      );
+    } else {
+      note =
+        `\n\n[NOTE: the approved diff could not be applied verbatim (${applied.reason}); ` +
+        `the worker re-ran the task, so the result may differ from the preview.]`;
+      result = await dispatch({ permission: "write" });
+    }
+  } else {
+    result = await dispatch({ permission: "write" });
+  }
 
   if (result.ok && previewId) {
     consumePendingPreview(previewId);
@@ -584,6 +893,9 @@ async function handleWriteTool(kind, { task, files, confirm, previewId, model, e
   const diffStat = getGitDiffStat(workspaceDir);
 
   if (formatted.content && formatted.content[0]) {
+    formatted.content[0].text += note;
+    // Also after an exact apply: it confirms git touched the files the
+    // operator saw, under the paths the preview named.
     if (confirmedPreview) {
       const fidelityWarning = checkDiffFidelity(confirmedPreview, delta);
       if (fidelityWarning) {
@@ -606,38 +918,12 @@ async function handleTest(args) {
   return handleWriteTool("test", args);
 }
 
-async function handleResearch({ task, files, model, effort, provider }) {
-  const activeModel = model || modelOverride || undefined;
-  const activeEffort = effort || effortOverride || undefined;
-  const result = await dispatchWorkerTask({
-    toolName: "worker_research",
-    prompt: task,
-    mode: "read-only",
-    files: files || [],
-    workspace: workspaceDir,
-    model: activeModel,
-    effort: activeEffort,
-    provider,
-    systemPrompt: getSystemPrompt("research", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
-  });
-  return formatResult(result, "worker_research");
+async function handleResearch(args) {
+  return handleReadTool("research", args);
 }
 
-async function handleReview({ task, files, model, effort, provider }) {
-  const activeModel = model || modelOverride || undefined;
-  const activeEffort = effort || effortOverride || undefined;
-  const result = await dispatchWorkerTask({
-    toolName: "worker_review",
-    prompt: task,
-    mode: "read-only",
-    files: files || [],
-    workspace: workspaceDir,
-    model: activeModel,
-    effort: activeEffort,
-    provider,
-    systemPrompt: getSystemPrompt("review", { workerModel: activeModel, workerEffort: activeEffort, workspace: workspaceDir }),
-  });
-  return formatResult(result, "worker_review");
+async function handleReview(args) {
+  return handleReadTool("review", args);
 }
 
 const taskField = z.string().min(1).max(8000).refine((v) => !/^\s*$/.test(v), "task must be non-empty");
@@ -727,6 +1013,9 @@ server.tool(
 );
 
 export async function startServer() {
+  // Set here, not at import: only a running bridge spawns workers, and a
+  // module-level write would leak into any process that merely imports this.
+  process.env[NESTED_ENV] = "1";
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

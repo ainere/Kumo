@@ -50,9 +50,9 @@ The **Model Context Protocol (MCP)** provides an open, standardized RPC protocol
   - No permission, sandbox, or approval flags are passed to the CLI subprocess.
   - Read-only behavior is enforced solely by prompt wording and is strictly **advisory**, not a process-level or OS sandbox. Workers are instructed not to edit files, but the underlying CLI process runs with standard filesystem access.
 - **Write-Enabled Tools (`worker_implement`, `worker_test`)**:
-  - When running in write mode with `safetyMode: "autonomous"`, Kumo passes `-y --approval-mode yolo` to the Gemini CLI and `--dangerously-skip-permissions --mode accept-edits` to `agy`.
+  - The bridge decides each worker call's permission: read-only tools and diff previews run read-only; autonomous writes and confirmed re-runs get write access. With write access, Kumo passes `-y --approval-mode yolo` to the Gemini CLI, `--dangerously-skip-permissions --mode accept-edits` to `agy`, and `--sandbox workspace-write` to `codex exec` (`--sandbox read-only` otherwise).
   - When `trustWorkspace` is enabled (default `true`), `--skip-trust` is passed and `GEMINI_CLI_TRUST_WORKSPACE=true` is set in the child environment.
-  - Under `safetyMode: "diff-review"`, write tools run in diff-preview mode and require the calling orchestrator model to explicitly confirm with `confirm: true` and a matching `previewId`. Under `safetyMode: "interactive"`, a human approval prompt on the REPL TTY gates application.
+  - Under `safetyMode: "diff-review"`, write tools run in diff-preview mode and require the calling orchestrator model to explicitly confirm with `confirm: true` and a matching `previewId`. Under `safetyMode: "interactive"`, a human approval prompt on the REPL TTY gates application. Either way, the approved diff itself is applied with `git apply`; the worker re-runs only if that diff no longer applies, and the result says so.
 ### 3. Rate Limit Optimization for Frontier Models
 - Frontier orchestrators enforce message caps per rolling window.
 - In traditional single-provider workflows, every file read, symbol search, and small code iteration consumes valuable orchestrator turns.
@@ -64,7 +64,7 @@ The **Model Context Protocol (MCP)** provides an open, standardized RPC protocol
 ### 4. Cross-Model Validation & Dynamic Subagents
 A single model reviewing its own generated code has natural confirmation bias. When the **Orchestrator** reviews the **Worker's** code:
 - The Orchestrator analyzes the AST, edge cases, and types with a completely independent model architecture.
-- The `reviewer` subagent (`.codex/agents/reviewer.toml`) dynamically mirrors the active orchestrator model and explicitly names both models for genuine cross-model independence.
+- The `reviewer` subagent (`.codex/agents/reviewer.toml`, created by `kumo init`) mirrors the active orchestrator model and explicitly names both models for genuine cross-model independence.
 - Discrepancies between worker output and project specifications are caught prior to user presentation.
 
 ### 5. Knowledge Graph & Durable Memory

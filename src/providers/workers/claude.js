@@ -8,6 +8,7 @@ import {
   runCliWorker,
   buildCompositePrompt,
   mustUseStdinPrompt,
+  grantsWrite,
   DEFAULT_TIMEOUT_MS,
 } from "./cli-runner.js";
 
@@ -25,8 +26,6 @@ export function findClaudeBinary() {
 export async function executeTask(opts) {
   const {
     prompt,
-    mode = "read-only",
-    safetyMode = "autonomous",
     files = [],
     workspace = process.cwd(),
     model,
@@ -37,7 +36,7 @@ export async function executeTask(opts) {
   } = opts;
 
   const bin = findClaudeBinary();
-  const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files });
+  const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files, fileContents: opts.fileContents });
 
   // Flags first, positional prompt last: `["-p", "--model", m, prompt]` makes the
   // CLI read `--model` as the value of `-p`.
@@ -45,7 +44,7 @@ export async function executeTask(opts) {
   if (model) {
     args.push("--model", model);
   }
-  if (mode === "workspace-write" && safetyMode === "autonomous") {
+  if (grantsWrite(opts)) {
     args.push("--dangerously-skip-permissions");
   }
 

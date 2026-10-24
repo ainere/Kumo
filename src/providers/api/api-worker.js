@@ -12,6 +12,7 @@
 import fs from "node:fs";
 import { chatComplete, ApiError } from "./api-transport.js";
 import { loadConfig } from "../../config/settings.js";
+import { buildCompositePrompt } from "../workers/cli-runner.js";
 
 const DEFAULT_TIMEOUT_MS = 120000;
 
@@ -19,7 +20,9 @@ export async function executeApiTask({
   provider,
   prompt,
   mode = "read-only",
+  permission,
   files = [],
+  fileContents = [],
   model,
   effort,
   systemPrompt,
@@ -29,7 +32,7 @@ export async function executeApiTask({
   config,
   liveLogPath = null,
 } = {}) {
-  if (mode === "workspace-write") {
+  if (permission === "write" || mode === "workspace-write") {
     return {
       ok: false,
       code: 1,
@@ -43,17 +46,9 @@ export async function executeApiTask({
   const effectiveConfig = config || loadConfig();
   const effectiveTimeout = timeoutMs ?? effectiveConfig?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  let compositePrompt = "";
-  if (systemPrompt) {
-    compositePrompt += `[System Instructions]\n${systemPrompt}\n\n`;
-  }
-  if (previewDiff) {
-    compositePrompt += `[DIFF PREVIEW MODE]\nProduce a complete unified git diff without modifying files on disk.\n\n`;
-  }
-  if (files && files.length > 0) {
-    compositePrompt += `[Relevant Files]\n${files.map((f) => `- ${f}`).join("\n")}\n\n`;
-  }
-  compositePrompt += `[Task]\n${prompt}`;
+  // The model sees no filesystem: only paths plus whatever contents the bridge
+  // inlined. Without the contents it would describe files it never read.
+  const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files, fileContents });
 
   try {
     const { text } = await chatComplete({

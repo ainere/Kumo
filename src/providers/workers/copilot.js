@@ -7,6 +7,7 @@ import { resolveBinary } from "../../utils/process.js";
 import {
   runCliWorker,
   buildCompositePrompt,
+  grantsWrite,
   DEFAULT_TIMEOUT_MS,
 } from "./cli-runner.js";
 
@@ -23,8 +24,6 @@ export function findCopilotBinary() {
 export async function executeTask(opts) {
   const {
     prompt,
-    mode = "read-only",
-    safetyMode = "autonomous",
     files = [],
     workspace = process.cwd(),
     model,
@@ -36,7 +35,7 @@ export async function executeTask(opts) {
   } = opts;
 
   const bin = findCopilotBinary();
-  const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files });
+  const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files, fileContents: opts.fileContents });
 
   // Flags first, positional prompt last.
   const args = ["copilot"];
@@ -44,7 +43,7 @@ export async function executeTask(opts) {
     args.push("--model", model);
   }
   void effort; // gh copilot has no --effort flag; effort stays a no-op.
-  if (mode === "workspace-write" && safetyMode === "autonomous") {
+  if (grantsWrite(opts)) {
     args.push("--allow-all-tools");
   }
   // `gh copilot` has no documented stdin prompt form, so the prompt stays in argv.

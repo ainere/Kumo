@@ -18,7 +18,9 @@ import {
   detectProviderForModel,
   isCodexModel,
 } from "../config/settings.js";
-import { createOrchestratorClient } from "../providers/orchestrators/registry.js";
+import { createOrchestratorClient, orchestratorDelegates } from "../providers/orchestrators/registry.js";
+import { isToolCallItem, toolNameOf, toolArgsOf } from "../providers/orchestrators/items.js";
+import { syncAgentConfigs } from "../config/sync.js";
 import { getAgyUsage } from "../bridge/agy-runner.js";
 import { launchInNewWindow } from "../utils/window-launcher.js";
 import { getCachedQuotas, saveCachedQuotas } from "../utils/quota-cache.js";
@@ -44,12 +46,13 @@ import {
   loadTurnLog,
   getLiveLogPath,
   getActiveLiveRun,
+  readLiveLogChunk,
   getApprovalDir,
   isValidId,
 } from "../data/sessions.js";
-import { awaitTurnCompletion } from "../providers/orchestrators/turn-wait.js";
+import { runTurn } from "../providers/orchestrators/turn-wait.js";
 import { configFile } from "../config/paths.js";
-import { VERSION } from "../cli.js";
+import { VERSION } from "../version.js";
 
 function getOrchestratorPeriod(limits) {
   if (!limits) return "Monthly";
@@ -282,6 +285,15 @@ export async function startCommand(opts = {}) {
   let client = null;
   let clientReady = null;
   let isTurnActive = false;
+  // The running turn's handle (from runTurn) — Ctrl+C asks it to stop.
+  let activeTurn = null;
+  // The orchestrator's answer text for the running turn. It is kept apart from
+  // streamBuffers (the Tab-focus replay buffer): a turn_completed listener used
+  // to clear those before the turn's own code read them, so every saved
+  // transcript had an empty response.
+  let turnTranscript = null;
+  // Set when the orchestrator process exits; the next prompt restarts it.
+  let needsReconnect = false;
   const activeTools = new Map();
   const streamBuffers = new Map();
   const tailIntervals = new Map();
@@ -321,51 +333,35 @@ export async function startCommand(opts = {}) {
     }
 
     let offset = 0;
-    let fd = null;
-    let resolvedLogPath = null;
+    let runId = null;
+
+    // Copy whatever the worker has written since the last read.
+    const pump = () => {
+      if (!runId) return;
+      const chunk = readLiveLogChunk(currentWorkspace, runId, offset);
+      offset = chunk.offset;
+      if (chunk.text) {
+        appendToBuffer(itemId, chunk.text);
+        if (focusedStream === itemId) {
+          process.stdout.write(chunk.text);
+        }
+      }
+    };
 
     const interval = setInterval(() => {
       try {
-        if (!resolvedLogPath) {
-          const directPath = getLiveLogPath(currentWorkspace, itemId);
-          if (fs.existsSync(directPath)) {
-            resolvedLogPath = directPath;
+        if (!runId) {
+          if (fs.existsSync(getLiveLogPath(currentWorkspace, itemId))) {
+            runId = itemId;
           } else {
             const activeRun = getActiveLiveRun(currentWorkspace, toolInfo.runId);
-            if (activeRun && activeRun.runId) {
+            if (activeRun?.runId && fs.existsSync(getLiveLogPath(currentWorkspace, activeRun.runId))) {
               toolInfo.runId = activeRun.runId;
-              const activePath = getLiveLogPath(currentWorkspace, activeRun.runId);
-              if (fs.existsSync(activePath)) {
-                resolvedLogPath = activePath;
-              }
+              runId = activeRun.runId;
             }
           }
         }
-
-        if (!resolvedLogPath || !fs.existsSync(resolvedLogPath)) {
-          updateWorkerTitle(toolInfo);
-          return;
-        }
-
-        const stat = fs.statSync(resolvedLogPath);
-        if (stat.size > offset) {
-          if (fd === null) {
-            fd = fs.openSync(resolvedLogPath, "r");
-          }
-          const bytesToRead = stat.size - offset;
-          const buf = Buffer.alloc(bytesToRead);
-          const bytesRead = fs.readSync(fd, buf, 0, bytesToRead, offset);
-          offset += bytesRead;
-
-          if (bytesRead > 0) {
-            const chunkStr = buf.toString("utf-8", 0, bytesRead);
-            appendToBuffer(itemId, chunkStr);
-            if (focusedStream === itemId) {
-              process.stdout.write(chunkStr);
-            }
-          }
-        }
-
+        pump();
         updateWorkerTitle(toolInfo);
       } catch {
         /* ignore transient tailing errors */
@@ -375,16 +371,9 @@ export async function startCommand(opts = {}) {
     tailIntervals.set(itemId, {
       interval,
       toolInfo,
-      getOffset: () => offset,
-      getFd: () => fd,
-      getLogPath: () => resolvedLogPath,
-      cleanup: () => {
-        clearInterval(interval);
-        if (fd !== null) {
-          try { fs.closeSync(fd); } catch {}
-          fd = null;
-        }
-      },
+      pump,
+      getRunId: () => runId,
+      cleanup: () => clearInterval(interval),
     });
   }
 
@@ -395,27 +384,16 @@ export async function startCommand(opts = {}) {
     tailIntervals.delete(itemId);
     tailer.cleanup();
 
-    const logPath = tailer.getLogPath() || getLiveLogPath(currentWorkspace, itemId);
-    if (logPath && fs.existsSync(logPath)) {
-      try {
-        const stat = fs.statSync(logPath);
-        const offset = tailer.getOffset();
-        if (stat.size > offset) {
-          const fd = fs.openSync(logPath, "r");
-          const bytesToRead = stat.size - offset;
-          const buf = Buffer.alloc(bytesToRead);
-          fs.readSync(fd, buf, 0, bytesToRead, offset);
-          fs.closeSync(fd);
-          const chunkStr = buf.toString("utf-8");
-          appendToBuffer(itemId, chunkStr);
-          if (focusedStream === itemId) {
-            process.stdout.write(chunkStr);
-          }
-        }
-        try {
-          fs.unlinkSync(logPath);
-        } catch {}
-      } catch {}
+    try {
+      tailer.pump(); // drain the tail of the log
+      const runId = tailer.getRunId();
+      // The tailer may have adopted another call's run (the bridge does not yet
+      // learn the orchestrator's call id); never delete a log still being written.
+      if (runId && !getActiveLiveRun(currentWorkspace, runId)) {
+        fs.unlinkSync(getLiveLogPath(currentWorkspace, runId));
+      }
+    } catch {
+      /* best effort */
     }
 
     if (focusedStream === itemId) {
@@ -461,6 +439,8 @@ export async function startCommand(opts = {}) {
 
   function attachClientListeners(cl) {
     cl.on("delta", (chunk) => {
+      if (cl !== client) return;
+      if (turnTranscript) turnTranscript.push(chunk);
       appendToBuffer("orchestrator", chunk);
       if (focusedStream === "orchestrator") {
         spinner.stop();
@@ -469,6 +449,7 @@ export async function startCommand(opts = {}) {
     });
 
     cl.on("reasoning", (chunk) => {
+      if (cl !== client) return;
       if (chunk) {
         const formatted = `${c.dim}${chunk}${c.reset}`;
         appendToBuffer("orchestrator", formatted);
@@ -481,40 +462,51 @@ export async function startCommand(opts = {}) {
       }
     });
 
-    cl.on("turn_completed", () => {
-      for (const itemId of activeTools.keys()) {
-        stopTailing(itemId);
-      }
-      activeTools.clear();
-      tailIntervals.clear();
-      streamBuffers.clear();
-      focusedStream = "orchestrator";
+    // Turn teardown (tailers, buffers, spinner) happens once, in the prompt
+    // handler's `finally`, after runTurn has settled.
+
+    cl.on("warning", (w) => {
+      if (cl !== client) return;
       spinner.stop();
-      setKumoTitle(currentWorkspace);
+      console.log(`\n  ${badge.warn} ${c.dim}${w?.message || w}${c.reset}`);
+    });
+
+    cl.on("notice", (text) => {
+      if (cl !== client) return;
+      console.log(`  ${badge.info} ${c.dim}${text}${c.reset}`);
+    });
+
+    cl.on("server_request", (req) => {
+      if (cl !== client) {
+        req.decline();
+        return;
+      }
+      if (!req.isApproval || !process.stdin.isTTY || !process.stdout.isTTY) {
+        req.decline();
+        return;
+      }
+      void withApprovalLock(async () => {
+        spinner.stop();
+        const approved = await askApproval({ tool: `codex: ${req.method}`, previewText: req.description });
+        if (approved) req.approve();
+        else req.decline();
+      }).catch(() => req.decline());
     });
 
     cl.on("item_started", (params) => {
+      if (cl !== client) return;
       const item = params?.item || {};
       // item.id reaches the filesystem as live-<id>.log; degrade instead of throwing.
       const itemId = isValidId(item.id) ? item.id : randomUUID();
-      if (item.type === "tool_call" || item.type === "dynamic_tool_call" || item.type === "mcp_tool_call") {
-        const toolName = item.name || item.tool || "tool";
+      // Codex reports MCP calls as `mcpToolCall`; matching only the legacy
+      // spellings meant no Codex tool call was ever shown.
+      if (isToolCallItem(item)) {
+        const toolName = toolNameOf(item);
+        const args = toolArgsOf(item);
+        const taskPreview = typeof args.task === "string" ? args.task : "";
 
-        let taskPreview = "";
-        const args = item.arguments || item.input || {};
-        if (typeof args === "string") {
-          try {
-            const parsed = JSON.parse(args);
-            taskPreview = parsed.task || "";
-          } catch {
-            taskPreview = args;
-          }
-        } else {
-          taskPreview = args.task || "";
-        }
-
-        const workerModel = (typeof args === "object" && args?.model) || item.model || config.workerModel;
-        const workerEffort = (typeof args === "object" && args?.effort) || item.effort || config.workerEffort;
+        const workerModel = args.model || item.model || config.workerModel;
+        const workerEffort = args.effort || item.effort || config.workerEffort;
 
         const toolInfo = {
           id: itemId,
@@ -546,13 +538,14 @@ export async function startCommand(opts = {}) {
     });
 
     cl.on("item_completed", (params) => {
+      if (cl !== client) return;
       const item = params?.item || {};
       let itemId = item.id;
       if ((!itemId || !activeTools.has(itemId)) && activeTools.size > 0) {
         const toolName = item.name || item.tool;
+        const args = toolArgsOf(item);
         const sig = (typeof item.task === "string" ? item.task : "") ||
-          (typeof item.arguments === "object" ? (item.arguments?.task || "") : "") ||
-          (typeof item.input === "object" ? (item.input?.task || "") : "");
+          (typeof args.task === "string" ? args.task : "");
 
         if (sig || toolName) {
           for (const [id, tool] of activeTools.entries()) {
@@ -579,57 +572,45 @@ export async function startCommand(opts = {}) {
       }
     });
 
+    // During a turn, runTurn turns these into the turn's outcome and the
+    // prompt handler reports it; resetting state here as well raced that
+    // handler and re-prompted twice. Only errors between turns print here.
     cl.on("server_error", (err) => {
-      for (const itemId of activeTools.keys()) {
-        stopTailing(itemId);
-      }
-      activeTools.clear();
-      tailIntervals.clear();
-      focusedStream = "orchestrator";
-      spinner.stop();
-      setKumoTitle(currentWorkspace);
-      console.error(`\n${badge.fail} ${err.message || JSON.stringify(err)}`);
-      if (isTurnActive) {
-        isTurnActive = false;
-        rl.resume();
-        rl.prompt();
-      }
+      if (cl !== client || isTurnActive) return;
+      console.error(`\n${badge.fail} ${err?.message || JSON.stringify(err)}`);
     });
 
-    cl.on("close", async (code) => {
-      if (isTurnActive) {
-        for (const itemId of activeTools.keys()) {
-          stopTailing(itemId);
-        }
-        activeTools.clear();
-        tailIntervals.clear();
-        focusedStream = "orchestrator";
-        spinner.stop();
-        isTurnActive = false;
-        console.error(`\n  ${badge.fail} Orchestrator process exited unexpectedly (code ${code}).`);
-        console.log(`  ${c.dim}Attempting to reconnect...${c.reset}`);
-
-        try {
-          await initClient();
-          console.log(`  ${badge.ok} Reconnected.\n`);
-        } catch (e) {
-          console.error(`  ${badge.fail} Reconnection failed: ${e.message}`);
-          console.log(`  ${c.dim}Type any prompt to retry, or /exit to quit.${c.reset}\n`);
-        }
-        // The turn teardown owns re-prompting; doing it here too double-prompts.
+    cl.on("close", (code) => {
+      // A client replaced by initClient() reports its exit late; ignore it.
+      if (cl !== client) return;
+      needsReconnect = true;
+      if (!isTurnActive) {
+        console.error(`\n  ${badge.warn} Orchestrator process exited (code ${code}); it restarts with your next prompt.`);
       }
     });
   }
 
   async function initClient() {
-    if (client) {
+    const previous = client;
+    // Detach first: the old client's late `close` must not flag the new one.
+    client = null;
+    if (previous) {
       try {
-        await client.stop();
+        await previous.stop();
       } catch {}
     }
+    needsReconnect = false;
+
+    const provider = config.orchestratorProvider || detectProviderForModel(config.orchestratorModel);
+    if (!orchestratorDelegates(provider)) {
+      console.log(
+        `  ${badge.warn} ${c.dim}${provider} cannot call Kumo's worker tools; it answers prompts on its own.${c.reset}`
+      );
+    }
+    refreshProjectConfigs();
 
     client = createOrchestratorClient({
-      provider: config.orchestratorProvider || detectProviderForModel(config.orchestratorModel),
+      provider,
       model: config.orchestratorModel,
       effort: config.reasoningEffort,
       workspace: currentWorkspace,
@@ -645,12 +626,19 @@ export async function startCommand(opts = {}) {
     });
 
     attachClientListeners(client);
-    await client.start();
-    await client.startThread({
-      workspace: currentWorkspace,
-      model: config.orchestratorModel,
-      reasoningEffort: config.reasoningEffort,
-    });
+    try {
+      await client.start();
+      await client.startThread({
+        workspace: currentWorkspace,
+        model: config.orchestratorModel,
+        reasoningEffort: config.reasoningEffort,
+      });
+    } catch (err) {
+      // A client with no thread fails every later prompt with "No active
+      // thread"; retry the whole start on the next prompt instead.
+      needsReconnect = true;
+      throw err;
+    }
   }
 
   // Asynchronously initialize background client and fetch fresh live quotas.
@@ -751,14 +739,23 @@ export async function startCommand(opts = {}) {
     readline.emitKeypressEvents(process.stdin);
   }
 
+  /**
+   * Ask the running turn to stop. Input stays blocked until runTurn reports
+   * that it has actually ended — re-enabling it here let a second turn start
+   * on top of one the orchestrator was still running.
+   */
+  function interruptActiveTurn() {
+    // Both readline's SIGINT and the raw keypress listener see one Ctrl+C.
+    if (!activeTurn || activeTurn.interruptRequested) return;
+    activeTurn.interruptRequested = true;
+    console.log(`\n  ${badge.warn} Interrupting active task...`);
+    activeTurn.interrupt();
+  }
+
   const onKeypress = (str, key) => {
     if (!isTurnActive) return;
     if ((key?.ctrl && key?.name === "c") || str === "\u0003") {
-      if (isTurnActive) {
-        console.log(`\n  ${badge.warn} Interrupting active task...`);
-        client.interruptTurn().catch(() => {});
-        isTurnActive = false;
-      }
+      interruptActiveTurn();
       return;
     }
     if (key?.name === "tab" || str === "\t") {
@@ -797,10 +794,34 @@ export async function startCommand(opts = {}) {
     }
   }
 
+  /**
+   * Keep provider files current in workspaces that opted in via `kumo init`.
+   * Workspaces without Kumo-managed files are never written to.
+   */
+  function refreshProjectConfigs() {
+    syncAgentConfigs(currentWorkspace, config, { onlyIfManaged: true });
+  }
+
   // ── interactive safety mode: human approval handshake ──
   let approvalInterval = null;
   let approvalBusy = false;
   const handledApprovals = new Set();
+
+  // Codex approval requests and bridge write approvals both read one key from
+  // the same terminal; they must take turns or keystrokes go to the wrong one.
+  let approvalChain = Promise.resolve();
+  function withApprovalLock(fn) {
+    const run = approvalChain.then(async () => {
+      approvalBusy = true;
+      try {
+        return await fn();
+      } finally {
+        approvalBusy = false;
+      }
+    });
+    approvalChain = run.catch(() => {});
+    return run;
+  }
 
   /**
    * Render a pending write preview and read a single-key decision.
@@ -865,18 +886,17 @@ export async function startCommand(opts = {}) {
         }
 
         handledApprovals.add(previewId);
-        approvalBusy = true;
         try {
-          const approved = await askApproval(record);
-          fs.writeFileSync(
-            path.join(dir, `${previewId}.decision.json`),
-            JSON.stringify({ approved, decidedAt: Date.now() }, null, 2),
-            { encoding: "utf-8", mode: 0o600 }
-          );
+          await withApprovalLock(async () => {
+            const approved = await askApproval(record);
+            fs.writeFileSync(
+              path.join(dir, `${previewId}.decision.json`),
+              JSON.stringify({ approved, decidedAt: Date.now() }, null, 2),
+              { encoding: "utf-8", mode: 0o600 }
+            );
+          });
         } catch {
           /* the bridge times out on its own if we cannot answer */
-        } finally {
-          approvalBusy = false;
         }
         break;
       }
@@ -887,7 +907,6 @@ export async function startCommand(opts = {}) {
   function stopApprovalWatcher() {
     clearInterval(approvalInterval);
     approvalInterval = null;
-    approvalBusy = false;
   }
 
   // Registered once, outside every per-turn handler, so repeated turns cannot
@@ -1141,7 +1160,12 @@ export async function startCommand(opts = {}) {
 
               console.clear();
               renderHeader(currentWorkspace, config, codexLimits, agyUsage);
-              console.log(`  ${badge.ok} Switched to: ${chatMeta?.title || chosen}\n`);
+              console.log(`  ${badge.ok} Switched to: ${chatMeta?.title || chosen}`);
+              // Provider thread resume is not wired up yet (planned): the log
+              // switches, but the orchestrator itself starts with no memory.
+              console.log(
+                `  ${c.dim}New turns are saved to this chat, but the orchestrator starts a fresh conversation — earlier turns are not restored.${c.reset}\n`
+              );
             }
           } finally {
             process.stdin.resume();
@@ -1582,29 +1606,30 @@ export async function startCommand(opts = {}) {
       // The background client initializer runs unawaited at startup; a fast first
       // prompt would otherwise dereference a null client.
       if (clientReady) await clientReady;
-      if (!client) {
-        throw new Error("Orchestrator client is not available. Check `kumo doctor`.");
+      if (needsReconnect || !client) {
+        console.log(`  ${c.dim}Starting the orchestrator...${c.reset}`);
+        await initClient();
       }
+      refreshProjectConfigs();
 
       if (config.safetyMode === "interactive") {
         startApprovalWatcher();
       }
 
-      const startTurnResult = await client.startTurn(input, {
-        model: config.orchestratorModel,
-        effort: config.reasoningEffort,
-      });
-
-      // Races turn_completed against server_error, close, and a timeout. Waiting
-      // on turn_completed alone deadlocks the REPL whenever the turn fails.
-      const outcome = await awaitTurnCompletion(client, {
-        timeoutMs: config.timeoutMs,
-        startTurnResult,
-      });
+      turnTranscript = [];
+      const turnClient = client;
+      // Races turn_completed against server_error, close, and a timeout, with
+      // the listeners attached before the prompt is sent. On timeout or Ctrl+C
+      // the orchestrator is told to stop, and the prompt only comes back once
+      // the turn has really ended.
+      activeTurn = runTurn(
+        turnClient,
+        () => turnClient.startTurn(input, { model: config.orchestratorModel, effort: config.reasoningEffort }),
+        { timeoutMs: config.turnTimeoutMs }
+      );
+      const outcome = await activeTurn.done;
       turnOk = outcome.ok;
-
-      // Capture before either turn_completed's or the teardown's streamBuffers.clear().
-      responseText = (streamBuffers.get("orchestrator") || []).join("");
+      responseText = turnTranscript.join("");
 
       if (!turnOk) {
         console.error(`\n  ${badge.fail} ${outcome.reason}`);
@@ -1621,6 +1646,8 @@ export async function startCommand(opts = {}) {
     } catch (err) {
       console.error(`\n${badge.fail} Turn failed: ${err.message}`);
     } finally {
+      activeTurn = null;
+      turnTranscript = null;
       for (const itemId of activeTools.keys()) {
         stopTailing(itemId);
       }
@@ -1673,11 +1700,7 @@ export async function startCommand(opts = {}) {
   let sigintCount = 0;
   rl.on("SIGINT", async () => {
     if (isTurnActive) {
-      console.log(`\n  ${badge.warn} Interrupting active task...`);
-      if (client) await client.interruptTurn().catch(() => {});
-      isTurnActive = false;
-      rl.resume();
-      rl.prompt();
+      interruptActiveTurn();
       return;
     }
 

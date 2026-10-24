@@ -9,7 +9,7 @@
 
 **Kumo** is a modular CLI application that pairs frontier reasoning models with high-throughput execution workers across independent AI ecosystems.
 
-It coordinates frontier models across **Anthropic Claude** (Claude Opus 4.6 Thinking, Claude Sonnet 4.6), **OpenAI ChatGPT / Codex** (ChatGPT 6 Astra, Sol, Terra, Luna, GPT-5.5), and **Google Gemini** (Gemini 3.8 / 3.7 / 3.6 Flash, Gemini 3.1 Pro) — allowing **any of 13 providers to serve as Orchestrator or Worker** (e.g. Claude Opus Orchestrator + Codex Worker, or Codex Orchestrator + Gemini Worker) running on your existing subscriptions by default, with optional direct API usage (metered env-var keys, never stored).
+It coordinates frontier models across **Anthropic Claude** (Claude Opus 4.6 Thinking, Claude Sonnet 4.6), **OpenAI ChatGPT / Codex** (ChatGPT 6 Astra, Sol, Terra, Luna, GPT-5.5), and **Google Gemini** (Gemini 3.8 / 3.7 / 3.6 Flash, Gemini 3.1 Pro) — with **13 providers to pick from for either role** (e.g. Claude Opus Orchestrator + Codex Worker, or Codex Orchestrator + Gemini Worker) running on your existing subscriptions by default, with optional direct API usage (metered env-var keys, never stored). Not every provider can do every job: only Codex, Claude Code and Antigravity can delegate to workers, and API/Ollama workers cannot touch files — see [What Each Provider Can Do](#what-each-provider-can-do).
 
 ---
 
@@ -136,18 +136,20 @@ Kumo provides three safety modes for worker execution (`kumo config set safetyMo
 | Safety Mode | Behavior | Use Case |
 |---|---|---|
 | `autonomous` (Default) | Automatically applies file changes with no approval gate, then appends verified post-execution `[Applied Files & Diff Summary]` to tool output. | Fast headless execution, prototyping, internal repos. |
-| `diff-review` | Two-phase programmatic preview gate: Phase 1 generates a proposed unified diff preview without modifying files (`confirm: false`). Phase 2 applies changes only when the *calling orchestrator model* programmatically re-invokes with `confirm: true` and a matching `previewId`, backed by diff-fidelity verification. | Multi-turn programmatic validation, headless CI pipelines. |
-| `interactive` | Two-phase human approval gate: generates a proposed unified diff preview (Phase 1) and prompts a human operator on the interactive TTY in the `kumo` REPL (`Apply changes? [y/N/d]`) before changes apply (Phase 2). In non-TTY environments, behaves identically to `diff-review`. | Critical client work, production codebases, high-stakes manual oversight. |
+| `diff-review` | Two-phase programmatic preview gate: Phase 1 runs the worker read-only to produce a unified diff (`confirm: false`). Phase 2 runs only when the *calling orchestrator model* re-invokes with `confirm: true` and a matching `previewId`; Kumo then applies **exactly the approved diff** with `git apply` (checked first, so a stale patch leaves the tree untouched). Only if the diff no longer applies is the worker asked to redo the task with write permission, and the result says so and lists any divergence from the preview. Note the orchestrator model approves its own previews here — this is a review step, not a human gate. | Multi-turn programmatic validation, headless CI pipelines. |
+| `interactive` | Same two phases, but Phase 2 first asks a human on the `kumo` REPL's TTY (`Apply changes? [y/N/d]`). If the approved diff no longer applies, nothing is written and a new preview is requested — the worker is never re-run with write access behind the operator's back. Without a REPL listening (e.g. `kumo run`), it behaves like `diff-review`. | Critical client work, production codebases, high-stakes manual oversight. |
+
+The worker's permission is decided per call by the bridge, not by the safety mode: read-only tools and previews launch the worker read-only (e.g. `codex exec --sandbox read-only`), autonomous writes and confirmed re-runs launch it with write access (`--sandbox workspace-write`, `--dangerously-skip-permissions`, `--approval-mode yolo`, … depending on the CLI). Codex approval requests that reach the orchestrator are shown in the REPL as `y/N` prompts and declined automatically in `kumo run`.
 
 ---
 
 ## Features & Capabilities
 
-- **Subscriptions by Default**: Connects directly to your logged-in consumer subscriptions across 9 CLI providers (`codex, antigravity, claude, opencode, commandcode, copilot, cursor, gemini-cli, ollama`) — zero keys on disk. Kumo never persists your keys. Only the API keys relevant to the selected provider are forwarded to the provider CLIs Kumo launches; other secret-looking environment variables are stripped from the child environment.
+- **Subscriptions by Default**: Connects directly to your logged-in consumer subscriptions across 9 CLI providers (`codex, antigravity, claude, opencode, commandcode, copilot, cursor, gemini-cli, ollama`) — zero keys on disk. Kumo never persists your keys. When it launches a worker CLI it forwards only the API keys that provider needs and strips other secret-looking environment variables (`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*PASSWORD*`, `*CREDENTIAL*`). This is best-effort defense in depth, not isolation: the name match can miss credentials (e.g. a `DATABASE_URL` with a password), orchestrator CLIs receive your full environment, and a worker with write access can read any file your user can.
 - **Direct API (optional, env keys never stored)**: `openai-api (OPENAI_API_KEY), anthropic-api (ANTHROPIC_API_KEY), gemini-api (GEMINI_API_KEY), compat-api (COMPAT_BASE_URL + optional COMPAT_API_KEY)` — per-role or per-call (`provider: "anthropic-api"`), mixed with subscriptions; non-secret base-URL overrides via `kumo config set <name>BaseUrl`.
 - **Multi-Provider Architecture**: Frontier reasoning orchestrator breaks down complex architecture and dispatches bounded execution tasks to high-throughput workers via local MCP stdio bridge.
-- **Dynamic Model Tracking & Role Synchronization**: Changing active models via `/model` or presets immediately updates worker prompts and subagent instructions (`.codex/agents/reviewer.toml`), ensuring each role dynamically reflects which model is operating.
-- **Multi-Chat Session Persistence**: Persistent local conversation index and turn logging under `~/.kumo/sessions/` with instant switching (`/chats`) and Markdown export (`/save`).
+- **Dynamic Model Tracking & Role Synchronization**: The bridge reads the worker model and effort from config on every call, so `/model worker …` applies to the next worker call without restarting the session. Worker prompts name the active models. Project files (`.codex/config.toml`, `.codex/agents/reviewer.toml`, `.agents/mcp_config.json`) are **opt-in**: `kumo init` creates them, and sessions then keep them current — Kumo never writes them into a workspace you have not initialized, never into the directory you happen to run `kumo config` from, never overwrites a `reviewer.toml` it did not create, and never redefines a key you set yourself in `config.toml`. The one exception is `.agents/mcp_config.json` (merged, not overwritten) when Antigravity is the orchestrator, because that is the only way it can reach the worker tools.
+- **Multi-Chat Session Persistence**: Persistent local conversation index and turn logging under `~/.kumo/sessions/` (prompt and response per turn), chat switching (`/chats`) and Markdown export (`/save`). Switching chats changes where new turns are saved; the orchestrator does not yet get the earlier turns back (provider thread resume is planned).
 - **Global Project Registry**: Automatically tracks workspaces with quick switching (`/projects` or `/cd <path>`).
 - **Provider-First Model Picker**: Arrow-key dialog (`/model` or `kumo model`) grouping Subscription CLIs and Direct API providers (see Model Configuration below) with atomic flicker-free redraw and back navigation.
 - **Live Multi-Provider Quota Meters**: Real-time 5-hour, weekly, and monthly quota progress bars that dynamically adapt based on active orchestrator and worker providers.
@@ -155,6 +157,29 @@ Kumo provides three safety modes for worker execution (`kumo config set safetyMo
 - **Context-Aware Smart Suggestions**: Project type detection (`package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`) with inline recommended prompt actions.
 - **Live Thinking Spinner & Timer**: Non-blocking animated terminal spinner with elapsed second timer and clean Ctrl+C task interruption.
 - **Live Agent Visibility & Focus Switching**: Real-time worker output streaming with side-channel log tailing, model & effort indicators (`gemini-3.8-flash, effort: medium`), dimmed reasoning deltas, ring-buffered streams, and `Tab` key stream focus switching between Orchestrator and active Worker subprocesses.
+
+---
+
+## What Each Provider Can Do
+
+Every provider can be selected for either role, but not every pairing does real work:
+
+| Provider | As orchestrator | As worker |
+|---|---|---|
+| `codex` | Delegates (bridge passed per thread via `thread/start`); live quotas; approval prompts | Reads and writes files (`codex exec --sandbox …`) |
+| `claude` | Delegates (`--mcp-config` + `--allowedTools mcp__kumo-bridge`); keeps one conversation per thread (`--session-id` / `--resume`) | Reads and writes files |
+| `antigravity` | Delegates (via `.agents/mcp_config.json` in the workspace) | Reads and writes files |
+| `cursor`, `gemini-cli`, `copilot`, `opencode`, `commandcode` | Answers on its own — **cannot call worker tools** | Reads and writes files |
+| `ollama` | Answers on its own — **cannot call worker tools** | Text only: sees only the files you pass in `files` (contents are inlined); refused for writes |
+| `openai-api`, `anthropic-api`, `gemini-api`, `compat-api` | Single-shot chat, no tools, no memory between turns | Text only, like `ollama` |
+
+When a session starts with an orchestrator that cannot delegate, Kumo says so. A text-only worker asked to explore with no `files`, or to write in `autonomous` mode, is refused with a `[REFUSED]` result instead of returning invented output. In `diff-review` mode a text-only worker can still propose a diff, which Kumo applies itself. A worker that exits successfully without answering (its reason only on stderr) is reported as `[NO OUTPUT]` with that reason.
+
+Provider notes, verified against the installed CLIs (codex-cli 0.153, Claude Code 2.1, agy 1.2):
+
+- **Codex orchestrator.** Codex asks before every MCP tool call. Kumo allows calls to its own `kumo-bridge` automatically, because what the worker may do is already governed by the safety mode. Calls to any other MCP server go to you as a REPL prompt, and `kumo run` declines them. Codex starts MCP servers with a filtered environment, so Kumo forwards its `KUMO_*` settings, CLI overrides and API keys to the bridge by name. The first turn waits until the bridge reports it is ready. If your configured model is not on your account's Codex model list, the session warns you and names the models you can use.
+- **Antigravity (`agy`) as a worker.** Headless agy auto-denies any tool that needs a permission prompt, and that includes the shell commands it uses to list files. Read-only tasks therefore come back `[NO OUTPUT]` (with agy's explanation) unless you allow the read-only commands you want under `permissions.allow` in `~/.gemini/antigravity-cli/settings.json`. Otherwise, pick Codex or Claude as the worker for exploration and review. Write tasks run with `--dangerously-skip-permissions` and are unaffected.
+- **No recursion.** Workers cannot call back into Kumo: a bridge started inside a worker refuses every call, and Codex workers switch off `kumo-bridge` when a Codex config defines it.
 
 ---
 
@@ -287,8 +312,8 @@ Inside an interactive Kumo session (`kumo ›`), manage sessions, workspaces, mo
 | `kumo config get <key>` | View the value of a specific configuration property |
 | `kumo config set <key> <val>` | Update a specific configuration property (incl. `<name>BaseUrl` overrides) |
 | `kumo config reset` | Reset global configuration to defaults |
-| `kumo init [-d, --dir <path>]` | (Optional) Initialize repository rule files (`AGENTS.md`, `GEMINI.md`) |
-| `kumo init --dry-run` | Preview rule files (`AGENTS.md`, `GEMINI.md`) without writing to disk |
+| `kumo init [-d, --dir <path>]` | (Optional) Initialize repository rule files (`AGENTS.md`, `GEMINI.md`) and opt the workspace in to provider-config sync (`.codex/config.toml`, `.codex/agents/reviewer.toml`, `.agents/mcp_config.json`) |
+| `kumo init --dry-run` | Preview what `kumo init` would write, without writing to disk |
 | `kumo banner` | Display the KUMO Cloud Cumulus banner |
 | `kumo version` | Print the Kumo version |
 
@@ -303,7 +328,8 @@ Kumo inspects the following environment variables to configure workspaces, execu
 | `KUMO_WORKSPACE` | `src/bridge/server.js`, `src/bridge/agy-runner.js` | Target workspace directory for the MCP bridge |
 | `ORCHESTRATOR_WORKSPACE` | `src/bridge/server.js`, `src/bridge/agy-runner.js` | Legacy fallback for `KUMO_WORKSPACE` |
 | `KUMO_HOME` | `src/config/paths.js` | Overrides the `~/.kumo` state directory (used for testing and isolated sessions) |
-| `KUMO_NO_SYNC` | `src/config/sync.js` | Set to `1` to disable provider config synchronization (`syncAgentConfigs` no-op) |
+| `KUMO_NO_SYNC` | `src/config/sync.js` | Set to `1` to disable every provider-config write, including `kumo init`'s sync and Antigravity's `.agents/mcp_config.json` |
+| `KUMO_LIVE_TESTS` | `tests/` | Set to `1` to also run tests that call real CLIs and accounts (Codex rate limits, Codex protocol schema check) |
 | `KUMO_SAFETY_MODE` | `src/bridge/server.js`, `src/bridge/agy-runner.js` | Override safety mode (`autonomous`, `diff-review`, `interactive`) |
 | `KUMO_HERE` | `src/commands/start.js` | Run interactive session directly in current terminal (equivalent to `--here`) |
 | `KUMO_DEBUG` | `src/providers/orchestrators/agy-client.js`, `src/providers/orchestrators/codex-client.js` | Enable verbose client notification and tool-call logging |
@@ -315,6 +341,9 @@ Kumo inspects the following environment variables to configure workspaces, execu
 | `GEMINI_MODEL` | `src/bridge/server.js`, `src/bridge/agy-runner.js` | Override worker model for execution worker dispatches |
 | `GEMINI_EFFORT` / `WORKER_EFFORT` | `src/bridge/agy-runner.js` | Override worker reasoning effort (`low`, `medium`, `high`) |
 | `GEMINI_TIMEOUT_MS` | `src/bridge/agy-runner.js` | Execution worker subprocess timeout in milliseconds (default: 300000 / 5m) |
+| `AGY_BIN` / `CODEX_BIN` / `CLAUDE_BIN` / `OLLAMA_BIN` / … | provider adapters | Absolute path to a provider CLI, overriding PATH lookup |
+
+Timeouts are configured separately: `timeoutMs` (default 5 min) bounds each worker call, `turnTimeoutMs` (default 30 min) bounds a whole orchestrator turn. A timed-out or Ctrl+C'd turn is interrupted at the orchestrator, and the prompt returns only once it has actually stopped. The Antigravity provider prefers the `agy` binary; set `cliBinary` (or `AGY_BIN`) to override it, or choose the `gemini-cli` provider to use the Gemini CLI as a worker.
 | `OPENAI_BASE_URL` | `src/providers/api/api-transport.js` | Endpoint override for `openai-api` provider |
 | `ANTHROPIC_BASE_URL` | `src/providers/api/api-transport.js` | Endpoint override for `anthropic-api` provider |
 | `GEMINI_BASE_URL` / `GOOGLE_GENERATIVE_AI_BASE_URL` | `src/providers/api/api-transport.js` | Endpoint override for `gemini-api` provider |
@@ -325,9 +354,11 @@ Kumo inspects the following environment variables to configure workspaces, execu
 
 The codebase implements a decoupled, unhardcoded provider and data persistence structure:
 - **Orchestrators** ([`src/providers/orchestrators/`](src/providers/orchestrators/)):
-  - `codex-client.js`: OpenAI Codex app-server client supporting streaming turns and live rate limits.
+  - `codex-client.js`: OpenAI Codex app-server client supporting streaming turns, live rate limits, turn status, and server→client approval requests (shapes follow `codex app-server generate-json-schema`).
   - `agy-client.js`: Google Antigravity / Gemini CLI client supporting stream-json turns.
-  - `claude-client.js`: Anthropic Claude Code CLI client supporting print mode turns.
+  - `claude-client.js`: Anthropic Claude Code CLI client: print-mode turns with the bridge via `--mcp-config`, headless tool permission, and session resume.
+  - `turn-wait.js`: `runTurn()` — attaches terminal-event listeners before submitting, interrupts on timeout or Ctrl+C.
+  - `items.js`: provider-neutral helpers for recognizing tool-call items (`mcpToolCall`, `mcp_tool_call`, …).
   - `opencode-client.js`: OpenCode CLI client.
   - `commandcode-client.js`: CommandCode CLI client.
   - `copilot-client.js`: GitHub Copilot CLI client (`gh copilot`).
@@ -335,7 +366,7 @@ The codebase implements a decoupled, unhardcoded provider and data persistence s
   - `gemini-cli-client.js`: Standalone Gemini CLI client (`gemini`, distinct from `agy`).
   - `ollama-client.js`: Ollama local runner client (`ollama run <model>`).
   - `generic-client.js`: Universal CLI orchestrator adapter that can drive any arbitrary AI CLI tool without hardcoding.
-  - `registry.js`: Open-ended orchestrator provider registry and factory (13 providers incl. direct APIs).
+  - `registry.js`: Open-ended orchestrator provider registry and factory (13 providers incl. direct APIs), with `orchestratorDelegates()` reporting which can reach the worker tools.
 - **Direct-API transport** ([`src/providers/api/`](src/providers/api/)):
   - `api-transport.js`: Zero-dependency native-fetch transport (`getApiKey`, `resolveBaseUrl`, `ApiError`, `chatComplete`); keys live only in env vars, never on disk.
   - `openai-api-client.js` (+ `compat-api` via `provider` option), `anthropic-api-client.js`, `gemini-api-client.js`: single-shot orchestrator clients behind the standard client surface (`getRateLimits()` always `null`).
@@ -352,11 +383,11 @@ The codebase implements a decoupled, unhardcoded provider and data persistence s
   - `ollama.js`: Ollama local worker (`ollama run <model||"llama3.1">`).
   - `openai-api.js`, `anthropic-api.js`, `gemini-api.js`, `compat-api.js`: thin direct-API adapters over `executeApiTask`.
   - `generic.js`: Universal worker adapter for any arbitrary CLI execution tool.
-  - `registry.js`: Open-ended worker provider registry.
+  - `registry.js`: Open-ended worker provider registry, with `workerCapabilities()` (`canWrite`, `readsWorkspace`) used by the bridge to refuse impossible tasks.
 - **MCP Bridge** ([`src/bridge/`](src/bridge/)):
   - `prompts.js`: Role prompts for `explore`, `implement`, `test`, `research`, and `review`.
   - `agy-runner.js`: Subprocess executor enforcing timeout, permission sandboxes, and transient socket reset recovery.
-  - `server.js`: Standard MCP stdio server routing requests dynamically to the active worker provider, with optional per-call `provider` override.
+  - `server.js`: Standard MCP stdio server routing requests dynamically to the active worker provider, with optional per-call `provider` override, per-call read/write permission, file inlining for text-only workers, and `git apply` of approved previews.
 - **Session Persistence & Projects** ([`src/data/sessions.js`](src/data/sessions.js)):
   - Project registry (`~/.kumo/projects.json`), multi-chat persistence, append-only turn logs (`~/.kumo/sessions/<hash>/`), and Markdown export.
 - **Terminal UI & Utilities** ([`src/utils/`](src/utils/)):
@@ -364,3 +395,21 @@ The codebase implements a decoupled, unhardcoded provider and data persistence s
   - `model-picker.js`: Interactive arrow-key navigation with atomic flicker-free redraw and provider-first selection.
   - `history.js`: Readline history manager with slash-command filtering and history clearing.
   - `spinner.js`: Non-blocking terminal thinking spinner with live elapsed second timer.
+
+---
+
+## Development & Testing
+
+```powershell
+npm test
+```
+
+The suite runs offline against stub CLIs and a sandboxed `KUMO_HOME`. It drives the real paths end to end: the MCP bridge over stdio (worker permissions per call, `git apply` of approved previews, refusals for text-only workers), the interactive REPL over pipes (saved transcripts), `kumo run` with fake clients, and argument passing through real `cmd.exe` `.cmd` shims on Windows. Codex event fixtures in `tests/fixtures/codex-protocol.json` follow the app-server schema.
+
+To also run the tests that use real CLIs and accounts (Codex rate limits, and a check of the fixtures against `codex app-server generate-json-schema`):
+
+```powershell
+$env:KUMO_LIVE_TESTS = "1"; npm test
+```
+
+CI runs the suite on Windows and Linux with Node 20 and 22, plus a coverage floor for `src/bridge` and `src/providers` on Node 22.

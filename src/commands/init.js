@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { c, badge, separator } from "../utils/ui.js";
 import { getObsidianVaultPath, loadConfig } from "../config/settings.js";
+import { syncAgentConfigs } from "../config/sync.js";
 
 function getAgentsTemplate(vaultPath) {
   const config = loadConfig();
@@ -71,6 +72,7 @@ export function initCommand(opts = {}) {
   if (opts.dryRun) {
     console.log(`  ${badge.info} [Dry Run] Would create: ${agentsPath}`);
     console.log(`  ${badge.info} [Dry Run] Would create: ${workerPath}`);
+    console.log(`  ${badge.info} [Dry Run] Would sync Kumo's provider configs (.codex/, .agents/mcp_config.json)`);
     return;
   }
 
@@ -89,6 +91,16 @@ export function initCommand(opts = {}) {
     console.log(`  ${badge.ok} Created ${workerPath}`);
   } else {
     console.log(`  ${badge.info} ${workerPath} already exists (skipping)`);
+  }
+
+  // Opting in: from now on, sessions in this workspace keep these files in
+  // step with the active models (they only refresh workspaces set up here).
+  const report = syncAgentConfigs(targetDir, loadConfig());
+  for (const file of report.written) {
+    console.log(`  ${badge.ok} Synced ${file}`);
+  }
+  for (const entry of report.skipped) {
+    console.log(`  ${badge.info} Left your own setting in place: ${entry}`);
   }
 
   console.log(`\n${badge.ok} Initialization complete. Run 'kumo' to start an interactive session.\n`);

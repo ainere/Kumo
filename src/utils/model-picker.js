@@ -103,12 +103,9 @@ export async function getOrchestratorModels() {
       const models = [];
       const seen = new Set();
 
-      // Ensure frontier Astra & Sol are at the top
-      for (const m of DEFAULT_CODEX_MODELS.slice(0, 2)) {
-        seen.add(m.id);
-        models.push(m);
-      }
-
+      // The server's list is authoritative: it is what this account can run.
+      // Pinning the built-in Astra/Sol entries on top offered models that
+      // Codex then rejected at the first turn with `model_not_found`.
       for (const item of res.data) {
         if (!seen.has(item.id)) {
           seen.add(item.id);

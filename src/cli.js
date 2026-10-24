@@ -3,9 +3,7 @@
  */
 
 import { Command } from "commander";
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
+import { VERSION } from "./version.js";
 import { startCommand } from "./commands/start.js";
 import { runCommand } from "./commands/run.js";
 import { doctorCommand } from "./commands/doctor.js";
@@ -16,10 +14,7 @@ import { bannerCommand } from "./commands/banner.js";
 import { statusCommand } from "./commands/status.js";
 import { graphCommand } from "./commands/graph.js";
 
-// Read version once from package.json — single source of truth
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"));
-export const VERSION = pkg.version;
+export { VERSION };
 
 export function createCli() {
   const program = new Command();
@@ -27,7 +22,11 @@ export function createCli() {
   program
     .name("kumo")
     .description("KUMO — Cross-provider CLI orchestrator pairing frontier reasoning models with high-speed execution workers")
-    .version(VERSION);
+    .version(VERSION)
+    // The root command and most subcommands all define `-d, --dir`. Without
+    // this, commander lets the root claim the option anywhere on the line, so
+    // `kumo run "…" -d <path>` silently ran in the current directory.
+    .enablePositionalOptions();
 
   // Default interactive command (launches new window and closes old CMD by default)
   program

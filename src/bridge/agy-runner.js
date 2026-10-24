@@ -16,9 +16,10 @@ import {
   safeSpawn,
   childEnvFor,
   killProcessTree,
+  stopProcessTree,
   resolveBinary,
 } from "../utils/process.js";
-import { mustUseStdinPrompt } from "../providers/workers/cli-runner.js";
+import { mustUseStdinPrompt, grantsWrite } from "../providers/workers/cli-runner.js";
 
 /** Default timeout per invocation (5 minutes). */
 const DEFAULT_TIMEOUT_MS = clampTimeout(process.env.GEMINI_TIMEOUT_MS || "300000");
@@ -45,13 +46,37 @@ export const MAX_OUTPUT_BYTES = 1024 * 1024;
 let detectedBin = null;
 
 /**
- * Determine which binary to invoke:
+ * The value `cliBinary` defaulted to before Antigravity became the preferred
+ * CLI. Every config written by an older Kumo stores it explicitly, so it cannot
+ * be told apart from a deliberate choice; it is therefore treated as "no
+ * preference" and only used when `agy` is absent. Users who want the Gemini CLI
+ * as a worker select the `gemini-cli` provider instead.
+ */
+const LEGACY_DEFAULT_CLI_BINARY = "gemini";
+
+/**
+ * Resolve a configured binary to an existing absolute path, or null.
+ *
+ * @param {string} bin
+ * @returns {string|null}
+ */
+function existingBinary(bin) {
+  if (!bin) return null;
+  // A plain existsSync resolves a bare name against the CWD; resolveBinary
+  // searches PATH and returns the bare name on a miss.
+  const resolved = resolveBinary(bin);
+  return path.isAbsolute(resolved) && fs.existsSync(resolved) ? resolved : null;
+}
+
+/**
+ * Determine which binary the Antigravity provider invokes:
  * 1. Environment variable AGY_BIN or GEMINI_BIN
  * 2. Cached detected binary
- * 3. Stored user config in ~/.kumo/config.json
+ * 3. A non-default `cliBinary` from ~/.kumo/config.json
  * 4. Local AppData agy.exe installation (standard Antigravity CLI path)
- * 5. System PATH via where.exe / which
- * 6. Fallback "agy"
+ * 5. `agy` on PATH
+ * 6. The legacy default `gemini` on PATH
+ * 7. Fallback "agy"
  * @returns {string}
  */
 export function getCliBinary() {
@@ -59,19 +84,19 @@ export function getCliBinary() {
   if (process.env.GEMINI_BIN && fs.existsSync(process.env.GEMINI_BIN)) return process.env.GEMINI_BIN;
   if (detectedBin) return detectedBin;
 
+  let configured = null;
   try {
-    const config = loadConfig();
-    if (config?.cliBinary) {
-      // The default is the bare name "gemini"; a plain existsSync resolves it
-      // against the CWD, so the configured binary was always discarded.
-      const resolved = resolveBinary(config.cliBinary);
-      if (path.isAbsolute(resolved) && fs.existsSync(resolved)) {
-        detectedBin = resolved;
-        return detectedBin;
-      }
-    }
+    configured = loadConfig()?.cliBinary || null;
   } catch {
     /* fallback */
+  }
+
+  if (configured && configured !== LEGACY_DEFAULT_CLI_BINARY) {
+    const found = existingBinary(configured);
+    if (found) {
+      detectedBin = found;
+      return detectedBin;
+    }
   }
 
   // Check local AppData agy installation (standard Antigravity CLI path on Windows)
@@ -84,16 +109,25 @@ export function getCliBinary() {
     }
   }
 
-  // Check if agy is on PATH. resolveBinary returns the bare name on a miss,
-  // so an absolute result is the signal that it was actually found.
-  const found = resolveBinary("agy");
-  if (path.isAbsolute(found) && fs.existsSync(found)) {
-    detectedBin = found;
+  const agy = existingBinary("agy");
+  if (agy) {
+    detectedBin = agy;
+    return detectedBin;
+  }
+
+  const legacy = existingBinary(configured || LEGACY_DEFAULT_CLI_BINARY);
+  if (legacy) {
+    detectedBin = legacy;
     return detectedBin;
   }
 
   detectedBin = process.env.GEMINI_BIN || "agy";
   return detectedBin;
+}
+
+/** Test seam: forget the memoized Antigravity binary. */
+export function clearCliBinaryCache() {
+  detectedBin = null;
 }
 
 /**
@@ -130,8 +164,15 @@ export async function runAgy(opts) {
 
   const {
     prompt,
-    model = opts.model || process.env.GEMINI_MODEL || config.workerModel || null,
-    effort = opts.effort || process.env.GEMINI_EFFORT || process.env.WORKER_EFFORT || config.workerEffort || null,
+    // From the bridge, `provider` is set and model/effort are already resolved —
+    // possibly to nothing, for a per-call override. Falling back to config here
+    // would hand agy the configured worker's model, which may belong to another CLI.
+    model = "provider" in opts
+      ? opts.model || null
+      : opts.model || process.env.GEMINI_MODEL || config.workerModel || null,
+    effort = "provider" in opts
+      ? opts.effort || null
+      : opts.effort || process.env.GEMINI_EFFORT || process.env.WORKER_EFFORT || config.workerEffort || null,
     mode = "read-only",
     files = [],
     workspace = opts.workspace || opts.cwd || process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd(),
@@ -147,9 +188,10 @@ export async function runAgy(opts) {
   let bin = getCliBinary();
   // If model is a Claude model, ensure agy is used as gemini CLI only supports Gemini models
   if (model && model.toLowerCase().startsWith("claude-") && path.basename(bin).toLowerCase().startsWith("gemini")) {
-    bin = process.env.AGY_BIN || "agy";
+    bin = process.env.AGY_BIN || resolveBinary("agy");
   }
   const isGeminiCli = path.basename(bin).toLowerCase().startsWith("gemini");
+  const canWrite = grantsWrite({ permission: opts.permission, mode, safetyMode });
   const args = [];
 
   let compositePrompt = "";
@@ -164,6 +206,14 @@ export async function runAgy(opts) {
   }
   if (files && files.length > 0) {
     compositePrompt += `[Relevant Files]\n${files.map((f) => `- ${f}`).join("\n")}\n\n`;
+  }
+  if (!canWrite) {
+    // Headless agy auto-denies any tool that needs a permission prompt —
+    // shell commands included — and then exits 0 with no output. Steering the
+    // model to its built-in file tools keeps a read-only task answerable.
+    compositePrompt +=
+      `[Permissions]\nThis task is read-only. Do not create, modify, or delete files. ` +
+      `Shell commands and MCP tools are not available; use only your built-in file listing, reading, and search tools.\n\n`;
   }
   compositePrompt += `[Task]\n${prompt}`;
 
@@ -180,7 +230,7 @@ export async function runAgy(opts) {
     if (trustWorkspace) {
       args.push("--skip-trust");
     }
-    if (mode === "workspace-write" && safetyMode === "autonomous") {
+    if (canWrite) {
       args.push("-y");
       args.push("--approval-mode", "yolo");
     }
@@ -194,11 +244,8 @@ export async function runAgy(opts) {
     if (effort && supportsEffort(model)) {
       args.push("--effort", effort);
     }
-    if (mode === "workspace-write" && safetyMode === "autonomous") {
+    if (canWrite) {
       args.push("--dangerously-skip-permissions");
-    }
-
-    if (mode === "workspace-write" && safetyMode === "autonomous") {
       args.push("--mode", "accept-edits");
     }
   }
@@ -267,12 +314,9 @@ export async function runAgy(opts) {
       const timer = setTimeout(() => {
         if (!settled) {
           timedOut = true;
-          try {
-            proc.kill("SIGTERM");
-          } catch {
-            /* already gone */
-          }
-          // SIGTERM reaches only the shim on Windows; escalate to the whole tree.
+          // Tree kill on Windows, where SIGTERM would stop only the shim; see
+          // runCliWorker for why a delayed escalation alone is not enough.
+          stopProcessTree(proc);
           escalation = setTimeout(() => killProcessTree(proc), 5000);
           escalation.unref?.();
         }
@@ -295,6 +339,7 @@ export async function runAgy(opts) {
       proc.on("error", (err) => {
         settled = true;
         clearTimeout(timer);
+        clearTimeout(escalation);
 
         resolve({
           ok: false,
@@ -307,7 +352,9 @@ export async function runAgy(opts) {
     });
 
   let attempts = 0;
-  const maxAttempts = 2;
+  // A write task may already have edited files when the connection dropped;
+  // running it again would apply those edits a second time.
+  const maxAttempts = canWrite ? 1 : 2;
   while (attempts < maxAttempts) {
     attempts++;
     const res = await executeOnce();
