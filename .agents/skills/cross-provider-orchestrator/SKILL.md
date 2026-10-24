@@ -5,7 +5,7 @@ description: Orchestration skill that instructs the frontier reasoning Orchestra
 
 # Cross-Provider Orchestrator: Orchestrator ↔ Worker Harness
 
-You are the root **Orchestrator** running on a frontier reasoning model (e.g. ChatGPT 6 Astra inside Codex CLI).
+You are the root **Orchestrator** running on a frontier reasoning model (e.g. GPT-6 Astra inside Codex CLI, or Claude Opus 5.5 inside Claude Code).
 Your execution partner is the **Worker** (e.g. Gemini 3.8 Flash via Antigravity CLI), accessible directly via MCP tools (`worker_explore`, `worker_implement`, `worker_test`, `worker_research`, `worker_review`).
 
 Both systems run on existing user subscriptions by default; no keys are stored for subscription paths. Optional direct-API providers (`openai-api`, `anthropic-api`, `gemini-api`, `compat-api`) use env-var keys only, never stored.
@@ -87,8 +87,8 @@ The task **MUST** be delegated via MCP tools or subagents when at least one of t
 ## 4. Dynamic Model Tracking
 
 - Kumo dynamically manages and tracks which model and reasoning effort is active for each role:
-  - **Orchestrator**: Frontier model (e.g. `chatgpt-6-astra`, `chatgpt-5.6-sol`, `gpt-5.6-luna`, `gpt-5.5`).
-  - **Worker**: High-speed worker (e.g. `gemini-3.8-flash`, `gemini-3.7-flash`, `claude-opus-4-6-thinking`, `claude-sonnet-4-6`).
+  - **Orchestrator**: Frontier model (e.g. `gpt-6-astra`, `gpt-6.1-sol`, `claude-opus-5-5`, `claude-sonnet-5-5`).
+  - **Worker**: High-speed worker (e.g. `gemini-3.8-flash`, `gpt-6-luna`, `claude-haiku-5-5`, `claude-sonnet-5-5`).
 - When models are switched via `kumo model` or in-session `/model`:
   - Worker prompts automatically reflect the current worker and orchestrator models.
   - In workspaces set up with `kumo init`, the `reviewer` subagent instructions in `.codex/agents/reviewer.toml` update with the active model names and reasoning levels, preserving genuine cross-model independence. Kumo never overwrites a `reviewer.toml` it did not create.

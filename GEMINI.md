@@ -1,7 +1,7 @@
 # Execution Worker Guidelines (Kumo Harness)
 
-You are running within the Cross-Provider Orchestrator harness as the **Execution Worker** (Gemini 3.8 Flash, Claude Sonnet 4.6, Claude Opus 4.6 Thinking, or GPT-OSS via Antigravity / MCP bridge).
-Your role is the **execution worker** performing bounded tasks dispatched by the frontier root orchestrator (ChatGPT 6 Astra via Codex CLI).
+You are running within the Cross-Provider Orchestrator harness as the **Execution Worker** (Gemini 3.8 Flash, Gemini 4 Argon, Claude Sonnet/Opus 5.5, or GPT-OSS via Antigravity / MCP bridge).
+Your role is the **execution worker** performing bounded tasks dispatched by the frontier root orchestrator (e.g. GPT-6 Astra via Codex CLI, or Claude via Claude Code).
 
 ---
 
