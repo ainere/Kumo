@@ -47,7 +47,9 @@ test("progressBar clamps and renders correct visual bars", () => {
 
 test("formatResetTime calculates relative countdown", () => {
   const nowSec = Math.floor(Date.now() / 1000);
-  const futureSec = nowSec + 86400 * 5 + 3600 * 3; // 5 days, 3 hours
+  // 5 days, 3 hours, plus a minute of slack: if the clock ticks over a second
+  // before formatResetTime reads it, an exact 5d3h would print "5d 2h".
+  const futureSec = nowSec + 86400 * 5 + 3600 * 3 + 60;
 
   const formatted = formatResetTime(futureSec);
   assert.ok(formatted.includes("in 5d 3h"), `Expected 'in 5d 3h', got: ${formatted}`);

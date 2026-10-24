@@ -91,7 +91,7 @@ The task **MUST** be delegated via MCP tools or subagents when at least one of t
   - **Worker**: High-speed worker (e.g. `gemini-3.8-flash`, `gemini-3.7-flash`, `claude-opus-4-6-thinking`, `claude-sonnet-4-6`).
 - When models are switched via `kumo model` or in-session `/model`:
   - Worker prompts automatically reflect the current worker and orchestrator models.
-  - The `reviewer` subagent instructions in `.codex/agents/reviewer.toml` automatically update with the active model names and reasoning levels, preserving genuine cross-model independence.
+  - In workspaces set up with `kumo init`, the `reviewer` subagent instructions in `.codex/agents/reviewer.toml` update with the active model names and reasoning levels, preserving genuine cross-model independence. Kumo never overwrites a `reviewer.toml` it did not create.
 
 ---
 

@@ -232,7 +232,7 @@ function printModelList(config) {
   const workerModelFull = config.workerEffort ? `${config.workerModel}-${config.workerEffort}` : config.workerModel;
   console.log(`  ${c.gray}Orchestrator:${c.reset}      ${c.brightCyan}${orchModelFull}${c.reset} (${config.orchestratorProvider === 'codex' ? 'ChatGPT Plus' : config.orchestratorProvider})`);
   console.log(`  ${c.gray}Worker:${c.reset}            ${c.brightBlue}${workerModelFull}${c.reset} (${config.workerProvider === 'gemini' ? 'Google AI Pro' : config.workerProvider})`);
-  console.log(`  ${c.gray}CLI Binary:${c.reset}        ${config.cliBinary || 'gemini'}`);
+  console.log(`  ${c.gray}CLI Binary:${c.reset}        ${config.cliBinary || 'agy'}`);
 
   console.log(`\n${c.bold}Available Presets:${c.reset}`);
   for (const [key, preset] of Object.entries(PRESETS)) {

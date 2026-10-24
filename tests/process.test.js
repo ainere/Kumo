@@ -21,9 +21,11 @@ import {
   spawnWithLiveLog,
   childEnvFor,
   resolveBinary,
+  pickWindowsCandidate,
   clearBinaryCache,
   SECRET_ENV_RE,
 } from "../src/utils/process.js";
+import { runCliWorker } from "../src/providers/workers/cli-runner.js";
 
 test("isWindowsBatch identifies batch scripts on win32 and never elsewhere", () => {
   assert.strictEqual(isWindowsBatch("C:\\bin\\codex.cmd", "win32"), true);
@@ -36,13 +38,62 @@ test("isWindowsBatch identifies batch scripts on win32 and never elsewhere", () 
   assert.strictEqual(isWindowsBatch("/usr/bin/codex", "linux"), false);
 });
 
-test("quoteCmdArg quotes metacharacters and neutralizes percent expansion", () => {
+test("quoteCmdArg leaves safe tokens bare and never emits a %NAME% pair", () => {
   assert.strictEqual(quoteCmdArg("app-server"), "app-server");
   assert.strictEqual(quoteCmdArg("--stdio"), "--stdio");
   assert.strictEqual(quoteCmdArg("a&b"), '"a&b"');
-  assert.strictEqual(quoteCmdArg("c|d"), '"c|d"');
-  assert.strictEqual(quoteCmdArg("%PATH%"), '"%%PATH%%"');
-  assert.strictEqual(quoteCmdArg('q"q'), '"q""q"');
+  // cmd.exe expands %NAME% even inside quotes, and on a `cmd /c` line `%%` is
+  // not an escape. The quoted form must contain no %...% pair at all.
+  for (const arg of ["%PATH%", "see %USERPROFILE% now", "100%", "%%"]) {
+    assert.doesNotMatch(quoteCmdArg(arg), /%[^%^"]*%/, `${arg} must not leave an expandable pair`);
+  }
+});
+
+/**
+ * Arguments that broke, or could break, the trip through cmd.exe into a .cmd
+ * shim. Each must arrive at the program unchanged.
+ */
+const CMD_ROUND_TRIP_CASES = [
+  "coverage 100%",
+  "see %USERPROFILE% dir",
+  "%PATH%",
+  "%%",
+  "x % y % z",
+  'say "hi" & calc',
+  "a|b<c>d^e",
+  "!x!",
+  "(paren) [br]",
+  "trailing\\",
+  "C:\\my dir\\",
+  'a\\"b',
+  'q"q',
+  "unicode ünï 雲",
+  " ",
+];
+
+test("arguments reach a program behind a .cmd shim byte-for-byte", { skip: process.platform !== "win32" && "cmd.exe only exists on Windows" }, async () => {
+  // Drive the real path: safeSpawn → cmd.exe /d /s /c → .cmd shim → node.
+  // The old test compared quoteCmdArg's output to a hand-written string and
+  // so certified "%%PATH%%", which cmd.exe still expands.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-argv-"));
+  try {
+    const echo = path.join(dir, "echo.cjs");
+    fs.writeFileSync(echo, "process.stdout.write(JSON.stringify(process.argv.slice(2)));");
+    const shim = path.join(dir, "echo-args.cmd");
+    fs.writeFileSync(shim, `@echo off\r\n"${process.execPath}" "${echo}" %*\r\n`);
+
+    const proc = safeSpawn(shim, CMD_ROUND_TRIP_CASES, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (c) => (stdout += c));
+    proc.stderr.on("data", (c) => (stderr += c));
+    const code = await new Promise((resolve) => proc.on("close", resolve));
+
+    assert.strictEqual(code, 0, stderr);
+    assert.deepStrictEqual(JSON.parse(stdout), CMD_ROUND_TRIP_CASES);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("quoteCmdArg refuses newlines, which cmd.exe treats as command separators", () => {
@@ -91,10 +142,10 @@ test("prepareSpawn leaves tildes unquoted; 8.3 short paths are ordinary paths", 
 });
 
 test("prepareSpawn quotes every dangerous token it splices into the cmd line", () => {
-  const prep = prepareSpawn("x.cmd", ["a&b", "c|d", "%PATH%", 'q"q'], {}, "win32");
+  const prep = prepareSpawn("x.cmd", ["a&b", "c|d", 'q"q'], {}, "win32");
+  // Metacharacters stay inside a quoted run, where cmd.exe treats them as text.
   assert.ok(prep.args[3].includes('"a&b"'));
   assert.ok(prep.args[3].includes('"c|d"'));
-  assert.ok(prep.args[3].includes('"%%PATH%%"'));
   assert.ok(prep.args[3].includes('"q""q"'));
 });
 
@@ -225,6 +276,83 @@ test("SECRET_ENV_RE matches credential-shaped names and not ordinary ones", () =
   }
   for (const name of ["PATH", "HOME", "APPDATA", "ComSpec", "TEMP", "KUMO_WORKSPACE"]) {
     assert.ok(!SECRET_ENV_RE.test(name), `${name} must not be stripped`);
+  }
+});
+
+test("pickWindowsCandidate skips npm's extensionless shell shim", () => {
+  // Real `where.exe gemini` output on a machine with the npm-installed CLI:
+  // the POSIX script is listed first, and CreateProcess cannot run it.
+  const lines = [
+    "C:\\Users\\u\\AppData\\Roaming\\npm\\gemini",
+    "C:\\Users\\u\\AppData\\Roaming\\npm\\gemini.cmd",
+  ];
+  assert.strictEqual(pickWindowsCandidate(lines, ".COM;.EXE;.BAT;.CMD"), lines[1]);
+  assert.strictEqual(pickWindowsCandidate(["C:\\a\\tool.ps1", "C:\\b\\tool.exe"], ".EXE;.CMD"), "C:\\b\\tool.exe");
+  assert.strictEqual(pickWindowsCandidate(["C:\\a\\tool"], ".EXE;.CMD"), null);
+  // PATHEXT also lists script types that CreateProcess cannot start directly.
+  const defaultPathext = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC";
+  assert.strictEqual(pickWindowsCandidate(["C:\\a\\tool.js", "C:\\a\\tool.cmd"], defaultPathext), "C:\\a\\tool.cmd");
+});
+
+test("resolveBinary finds the runnable shim for a bare npm-style name", { skip: process.platform !== "win32" && "where.exe shim layout is Windows-only" }, async () => {
+  // Lay out a CLI the way npm does — extensionless script plus .cmd — and put
+  // it first on PATH. Before the fix the bare name resolved to the script.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-npmbin-"));
+  const name = `kumo-probe-${process.pid}`;
+  fs.writeFileSync(path.join(dir, name), "#!/bin/sh\necho posix\n");
+  fs.writeFileSync(path.join(dir, `${name}.cmd`), "@echo SHIM_OK\r\n");
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${dir}${path.delimiter}${savedPath}`;
+  clearBinaryCache();
+  try {
+    const resolved = resolveBinary(name);
+    assert.strictEqual(resolved.toLowerCase(), path.join(dir, `${name}.cmd`).toLowerCase());
+
+    const proc = safeSpawn(resolved, [], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    proc.stdout.on("data", (c) => (stdout += c));
+    const code = await new Promise((resolve) => proc.on("close", resolve));
+    assert.strictEqual(code, 0);
+    assert.strictEqual(stdout.trim(), "SHIM_OK");
+  } finally {
+    process.env.PATH = savedPath;
+    clearBinaryCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a worker timeout kills the whole process tree, not just the shim", { skip: process.platform !== "win32" && "the orphaning is a Windows-only failure" }, async () => {
+  // The shim starts a long-lived grandchild (the real worker). A SIGTERM on
+  // Windows killed only the shim, which then counted as exited, so the
+  // delayed tree kill skipped it and the worker ran on.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-orphan-"));
+  const pidFile = path.join(dir, "worker.pid");
+  const worker = path.join(dir, "worker.cjs");
+  fs.writeFileSync(
+    worker,
+    `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 60000);`
+  );
+  const shim = path.join(dir, "slow-worker.cmd");
+  fs.writeFileSync(shim, `@echo off\r\n"${process.execPath}" "${worker}"\r\n`);
+
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  try {
+    const res = await runCliWorker({ providerId: "test", bin: shim, args: [], workspace: dir, timeoutMs: 1500 });
+    assert.strictEqual(res.timedOut, true);
+    const pid = Number(fs.readFileSync(pidFile, "utf-8"));
+    // taskkill is synchronous, but give the OS a moment to reap the process.
+    for (let i = 0; i < 20 && alive(pid); i++) await new Promise((r) => setTimeout(r, 100));
+    assert.strictEqual(alive(pid), false, "the grandchild worker must not outlive the timeout");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

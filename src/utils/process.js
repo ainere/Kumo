@@ -34,9 +34,17 @@ export function isWindowsBatch(bin, platform = process.platform) {
 }
 
 /**
- * Quote a single argument for `cmd /s /c`.
- * Safe chars pass through; otherwise double-quote, double inner quotes,
- * and neutralize `%VAR%` expansion. `& | < > ^` are inert inside quotes.
+ * Quote a single argument for `cmd /s /c`, so the program behind a `.cmd` shim
+ * receives it byte-for-byte.
+ *
+ * Two parsers read the result. cmd.exe tracks quote parity (so inner quotes are
+ * doubled, keeping `& | < > ^` inside a quoted run) and expands `%NAME%` even
+ * inside quotes. `%%` is only an escape inside batch files — on a `cmd /c` line
+ * it survives literally and `%%PATH%%` still expands — so every `%` is instead
+ * stepped out of the quoted run as `^%`: the percent pass never sees a
+ * `%NAME%` pair, and the caret pass then leaves a plain `%`. The target's
+ * MSVCRT argv parser treats backslashes before a `"` as escapes, so those runs
+ * are doubled.
  *
  * `~` is in the safe set: it is inert to cmd.exe and appears in every 8.3
  * short path (`C:\Users\RUNNER~1\...`), so quoting it buys nothing.
@@ -53,7 +61,24 @@ export function quoteCmdArg(s) {
     throw new Error("Argument contains a newline and cannot be passed through cmd.exe safely");
   }
   if (/^[A-Za-z0-9_+=:;,.~\\/@-]+$/.test(str)) return str;
-  return `"` + str.replace(/"/g, '""').replace(/%/g, "%%") + `"`;
+
+  let out = '"';
+  let backslashes = 0;
+  for (const ch of str) {
+    if (ch === "\\") {
+      backslashes++;
+      continue;
+    }
+    if (ch === '"') {
+      out += "\\".repeat(backslashes * 2) + '""';
+    } else if (ch === "%") {
+      out += "\\".repeat(backslashes * 2) + '"^%"';
+    } else {
+      out += "\\".repeat(backslashes) + ch;
+    }
+    backslashes = 0;
+  }
+  return out + "\\".repeat(backslashes * 2) + '"';
 }
 
 /**
@@ -118,6 +143,36 @@ export function safeSpawn(bin, args = [], options = {}) {
 
 const binaryCache = new Map();
 
+/** Extensions Kumo can launch: executables directly, batch files via cmd.exe. */
+const SPAWNABLE_EXTENSIONS = new Set([".exe", ".com", ".cmd", ".bat"]);
+
+/**
+ * Pick the spawnable candidate from `where.exe` output.
+ *
+ * npm installs every CLI as a trio — an extensionless POSIX shell script, a
+ * `.cmd`, and a `.ps1` — and `where` lists the extensionless one first.
+ * `CreateProcess` cannot run that file (ENOENT), so only names whose extension
+ * is in PATHEXT are eligible. `where` already orders results by PATH, so the
+ * first eligible line wins.
+ *
+ * @param {string[]} candidates - lines printed by `where.exe`
+ * @param {string} [pathext] - the PATHEXT value to honor
+ * @returns {string|null}
+ */
+export function pickWindowsCandidate(candidates, pathext = process.env.PATHEXT) {
+  // PATHEXT also lists script types (.JS, .VBS, .WSF, …) that run through a
+  // host program; CreateProcess and the cmd.exe path in prepareSpawn can only
+  // start these four.
+  const exts = String(pathext || ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((e) => e.trim().toLowerCase())
+    .filter((e) => SPAWNABLE_EXTENSIONS.has(e));
+  for (const candidate of candidates) {
+    if (exts.includes(path.extname(candidate).toLowerCase())) return candidate;
+  }
+  return null;
+}
+
 /**
  * Resolve a bare command name to an absolute path via `where`/`which`.
  *
@@ -136,18 +191,19 @@ export function resolveBinary(name) {
 
   let resolved = name;
   try {
-    const probe = process.platform === "win32" ? "where.exe" : "which";
-    const out = execFileSync(probe, [name], {
+    const isWin = process.platform === "win32";
+    const out = execFileSync(isWin ? "where.exe" : "which", [name], {
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf-8",
       timeout: 5000,
     });
-    const first = String(out)
+    const lines = String(out)
       .split(/\r?\n/)
       .map((l) => l.trim())
-      .filter(Boolean)[0];
-    if (first && fs.existsSync(first)) {
-      resolved = first;
+      .filter(Boolean);
+    const pick = isWin ? pickWindowsCandidate(lines) : lines[0];
+    if (pick && fs.existsSync(pick)) {
+      resolved = pick;
     }
   } catch {
     /* not on PATH; keep the bare name */
@@ -249,6 +305,31 @@ export function spawnWithLiveLog(bin, args, options, liveLogPath = null) {
 // ── Termination ──
 
 /**
+ * Ask a long-lived child (an orchestrator CLI) to stop, together with
+ * everything it spawned.
+ *
+ * On Windows `proc.kill()` terminates only the root — the `cmd.exe` shim, or
+ * the CLI itself — and orphans its MCP bridge and any running worker, so the
+ * whole tree is taken down. Elsewhere SIGTERM lets the CLI shut down cleanly;
+ * its children see their stdin close and exit.
+ *
+ * @param {import("node:child_process").ChildProcess|null|undefined} proc
+ * @param {NodeJS.Signals} [signal="SIGTERM"]
+ */
+export function stopProcessTree(proc, signal = "SIGTERM") {
+  if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
+  if (process.platform === "win32") {
+    killProcessTree(proc);
+    return;
+  }
+  try {
+    proc.kill(signal);
+  } catch {
+    /* already gone */
+  }
+}
+
+/**
  * Terminate a child and everything it spawned.
  *
  * On Windows a signal reaches only the root process — usually the `cmd.exe`
@@ -257,7 +338,9 @@ export function spawnWithLiveLog(bin, args, options, liveLogPath = null) {
  * @param {import("node:child_process").ChildProcess} proc
  */
 export function killProcessTree(proc) {
-  if (!proc || proc.killed || proc.exitCode !== null) return;
+  // Not `proc.killed`: that is set once a signal was *sent*, and on Windows a
+  // signal only reaches the shim, so the tree may still be running.
+  if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
   if (process.platform === "win32" && proc.pid) {
     try {
       execFileSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], {

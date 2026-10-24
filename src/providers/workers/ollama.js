@@ -7,6 +7,7 @@ import { resolveBinary } from "../../utils/process.js";
 import {
   runCliWorker,
   buildCompositePrompt,
+  mustUseStdinPrompt,
   DEFAULT_TIMEOUT_MS,
 } from "./cli-runner.js";
 
@@ -23,8 +24,8 @@ export function findOllamaBinary() {
 export async function executeTask(opts) {
   const {
     prompt,
-    mode = "read-only",
     files = [],
+    fileContents = [],
     workspace = process.cwd(),
     model,
     systemPrompt,
@@ -34,10 +35,15 @@ export async function executeTask(opts) {
   } = opts;
 
   const bin = findOllamaBinary();
-  const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files });
+  // `ollama run` is a plain model call: it cannot open or write files, so the
+  // bridge inlines file contents and never routes write tasks here.
+  const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files, fileContents });
 
-  void mode; // ollama run takes no write-mode flag; previewDiff stays prompt-level.
-  const args = ["run", model || "llama3.1", compositePrompt];
+  // `ollama run <model>` reads the prompt from stdin when none is given; that
+  // is the only way a multi-line prompt survives a Windows .cmd shim.
+  const useStdin = mustUseStdinPrompt(bin, compositePrompt);
+  const args = ["run", model || "llama3.1"];
+  if (!useStdin) args.push(compositePrompt);
 
   return runCliWorker({
     providerId: PROVIDER_INFO.id,
@@ -47,5 +53,6 @@ export async function executeTask(opts) {
     workspace,
     timeoutMs,
     liveLogPath,
+    stdinPrompt: useStdin ? compositePrompt : null,
   });
 }

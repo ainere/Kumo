@@ -42,6 +42,38 @@ const WORKERS = {
 export const KNOWN_WORKERS = Object.keys(WORKERS);
 
 /**
+ * What a worker can actually do, so the bridge can refuse a task instead of
+ * returning invented output.
+ *
+ * - `canWrite`: the worker can modify files in the workspace.
+ * - `readsWorkspace`: the worker can open files on its own. Workers without it
+ *   (HTTP APIs, `ollama run`) only see what the bridge inlines into the prompt.
+ *
+ * @typedef {{ canWrite: boolean, readsWorkspace: boolean }} WorkerCapabilities
+ */
+const TEXT_ONLY = { canWrite: false, readsWorkspace: false };
+const AGENT = { canWrite: true, readsWorkspace: true };
+
+const CAPABILITIES = {
+  ollama: TEXT_ONLY,
+  "openai-api": TEXT_ONLY,
+  "anthropic-api": TEXT_ONLY,
+  "gemini-api": TEXT_ONLY,
+  "compat-api": TEXT_ONLY,
+};
+
+/**
+ * Capabilities of a worker provider. Unknown ids — operator-configured generic
+ * CLIs — are assumed to be agents, which is what the generic adapter drives.
+ *
+ * @param {string} id
+ * @returns {WorkerCapabilities}
+ */
+export function workerCapabilities(id) {
+  return CAPABILITIES[String(id || "").toLowerCase().trim()] || AGENT;
+}
+
+/**
  * Resolve a worker provider adapter.
  *
  * An unknown id becomes the name of the executable `createGenericWorker` spawns,

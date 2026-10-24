@@ -1,0 +1,113 @@
+{
+  "_comment": "Codex app-server messages shaped after `codex app-server generate-json-schema` (codex-cli 0.153.4). Each entry names the schema definition it must satisfy; tests/codex-protocol.test.js checks them against a freshly generated schema when KUMO_LIVE_TESTS=1 and codex is installed.",
+  "itemStartedMcp": {
+    "schema": "ItemStartedNotification",
+    "message": {
+      "method": "item/started",
+      "params": {
+        "item": {
+          "type": "mcpToolCall",
+          "id": "call_7f3a",
+          "server": "kumo-bridge",
+          "tool": "worker_explore",
+          "arguments": { "task": "map the src/ directory" },
+          "status": "inProgress"
+        },
+        "startedAtMs": 1761300000000,
+        "threadId": "thr_1",
+        "turnId": "turn_1"
+      }
+    }
+  },
+  "itemCompletedMcp": {
+    "schema": "ItemCompletedNotification",
+    "message": {
+      "method": "item/completed",
+      "params": {
+        "item": {
+          "type": "mcpToolCall",
+          "id": "call_7f3a",
+          "server": "kumo-bridge",
+          "tool": "worker_explore",
+          "arguments": { "task": "map the src/ directory" },
+          "status": "completed"
+        },
+        "completedAtMs": 1761300004000,
+        "threadId": "thr_1",
+        "turnId": "turn_1"
+      }
+    }
+  },
+  "turnCompletedOk": {
+    "schema": "TurnCompletedNotification",
+    "message": {
+      "method": "turn/completed",
+      "params": { "threadId": "thr_1", "turn": { "id": "turn_1", "items": [], "status": "completed" } }
+    }
+  },
+  "turnCompletedFailed": {
+    "schema": "TurnCompletedNotification",
+    "message": {
+      "method": "turn/completed",
+      "params": {
+        "threadId": "thr_1",
+        "turn": { "id": "turn_1", "items": [], "status": "failed", "error": { "message": "usage limit reached" } }
+      }
+    }
+  },
+  "errorWillRetry": {
+    "schema": "ErrorNotification",
+    "message": {
+      "method": "error",
+      "params": { "error": { "message": "stream disconnected; retrying" }, "threadId": "thr_1", "turnId": "turn_1", "willRetry": true }
+    }
+  },
+  "errorFinal": {
+    "schema": "ErrorNotification",
+    "message": {
+      "method": "error",
+      "params": { "error": { "message": "model not available" }, "threadId": "thr_1", "turnId": "turn_1", "willRetry": false }
+    }
+  },
+  "mcpToolApprovalBridge": {
+    "_comment": "Recorded from codex-cli 0.153.4: Codex asks before every MCP tool call, including Kumo's own bridge.",
+    "schema": "McpServerElicitationRequestParams",
+    "message": {
+      "jsonrpc": "2.0",
+      "id": 0,
+      "method": "mcpServer/elicitation/request",
+      "params": {
+        "threadId": "thr_1",
+        "turnId": "turn_1",
+        "serverName": "kumo-bridge",
+        "mode": "form",
+        "_meta": {
+          "codex_approval_kind": "mcp_tool_call",
+          "persist": ["session", "always"],
+          "tool_description": "Read-only codebase exploration via execution worker.",
+          "tool_params": { "task": "list files" },
+          "tool_params_display": [{ "name": "task", "value": "list files", "display_name": "task" }]
+        },
+        "message": "Allow the kumo-bridge MCP server to run tool \"worker_explore\"?",
+        "requestedSchema": { "type": "object", "properties": {} }
+      }
+    }
+  },
+  "commandApprovalRequest": {
+    "schema": "CommandExecutionRequestApprovalParams",
+    "message": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "item/commandExecution/requestApproval",
+      "params": {
+        "itemId": "item_9",
+        "startedAtMs": 1761300001000,
+        "threadId": "thr_1",
+        "turnId": "turn_1",
+        "command": "npm install left-pad",
+        "cwd": "/repo",
+        "reason": "needs network access"
+      }
+    }
+  }
+}

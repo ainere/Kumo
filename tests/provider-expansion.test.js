@@ -8,6 +8,9 @@ import "./helpers/env.js";
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { setConfigValue, detectProviderForModel } from "../src/config/settings.js";
 import {
@@ -16,7 +19,7 @@ import {
 } from "../src/providers/orchestrators/registry.js";
 import { listWorkers, getWorker } from "../src/providers/workers/registry.js";
 import { chatComplete, ApiError } from "../src/providers/api/api-transport.js";
-import { dispatchWorkerTask } from "../src/bridge/server.js";
+import { dispatchWorkerTask, resolveWorkerTarget } from "../src/bridge/server.js";
 import { OpenAIApiClient } from "../src/providers/api/openai-api-client.js";
 import { AnthropicApiClient } from "../src/providers/api/anthropic-api-client.js";
 import { GeminiApiClient } from "../src/providers/api/gemini-api-client.js";
@@ -37,7 +40,15 @@ const EXPECTED_ORCH_IDS = [
   "compat-api",
 ];
 
-function withEnv(vars, fn) {
+/**
+ * Run `fn` with `vars` applied to process.env, restoring them afterwards.
+ *
+ * Async-aware: the environment is restored only after `fn`'s promise settles.
+ * The synchronous version restored it right after the callback's first
+ * synchronous step, so these tests passed only because chatComplete happened
+ * to read its key before its first `await`.
+ */
+async function withEnv(vars, fn) {
   const saved = {};
   for (const [k, v] of Object.entries(vars)) {
     saved[k] = process.env[k];
@@ -45,7 +56,7 @@ function withEnv(vars, fn) {
     else process.env[k] = v;
   }
   try {
-    return fn();
+    return await fn();
   } finally {
     for (const [k, v] of Object.entries(saved)) {
       if (v === undefined) delete process.env[k];
@@ -181,29 +192,84 @@ test("chatComplete non-2xx throws ApiError with status", async () => {
   });
 });
 
-test("dispatchWorkerTask per-call provider overrides global config", async () => {
+test("dispatchWorkerTask per-call provider overrides global config and inlines file contents", async () => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-api-ws-"));
+  fs.writeFileSync(path.join(ws, "config.js"), "export const SENTINEL = 7;\n");
+  try {
+    await withEnv({ ANTHROPIC_API_KEY: "ak-test" }, async () => {
+      const m = mockFetchOnce(async () => okJson({ content: [{ type: "text", text: "routed" }] }));
+      try {
+        const res = await dispatchWorkerTask({
+          provider: "anthropic-api",
+          prompt: "say ok",
+          permission: "read",
+          files: ["config.js"],
+          workspace: ws,
+          toolName: "worker_explore",
+          model: "x",
+          systemPrompt: "s",
+        });
+        assert.equal(res.ok, true);
+        assert.equal(res.stdout, "routed");
+        assert.ok(String(m.calls[0].url).includes("/v1/messages"));
+        // An API worker has no filesystem: it must be sent the contents, not just the path.
+        assert.match(String(m.calls[0].opts.body), /export const SENTINEL = 7;/);
+      } finally {
+        m.restore();
+      }
+    });
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("dispatchWorkerTask refuses tasks a text-only worker cannot do, without calling it", async () => {
   await withEnv({ ANTHROPIC_API_KEY: "ak-test" }, async () => {
-    const m = mockFetchOnce(async () =>
-      okJson({ content: [{ type: "text", text: "routed" }] }),
-    );
+    const m = mockFetchOnce(async () => okJson({ content: [{ type: "text", text: "invented" }] }));
     try {
-      const res = await dispatchWorkerTask({
+      const noFiles = await dispatchWorkerTask({
         provider: "anthropic-api",
-        prompt: "say ok",
-        mode: "read-only",
+        prompt: "explore the repo",
+        permission: "read",
         files: [],
         workspace: process.cwd(),
         toolName: "worker_explore",
-        model: "x",
-        systemPrompt: "s",
       });
-      assert.equal(res.ok, true);
-      assert.equal(res.stdout, "routed");
-      assert.ok(String(m.calls[0].url).includes("/v1/messages"));
+      assert.equal(noFiles.ok, false);
+      assert.equal(noFiles.refused, true);
+      assert.match(noFiles.stderr, /cannot open workspace files/);
+
+      const write = await dispatchWorkerTask({
+        provider: "anthropic-api",
+        prompt: "implement it",
+        permission: "write",
+        files: ["README.md"],
+        workspace: process.cwd(),
+        toolName: "worker_implement",
+      });
+      assert.equal(write.refused, true);
+      assert.match(write.stderr, /cannot modify files/);
+      assert.equal(m.calls.length, 0, "no request may be made for a refused task");
     } finally {
       m.restore();
     }
   });
+});
+
+test("worker model and effort come from config only for the configured provider", () => {
+  const config = { workerProvider: "antigravity", workerModel: "gemini-3.8-flash", workerEffort: "high" };
+  const onConfigured = resolveWorkerTarget({}, config);
+  assert.deepEqual(
+    { provider: onConfigured.provider, model: onConfigured.model, effort: onConfigured.effort },
+    { provider: "antigravity", model: "gemini-3.8-flash", effort: "high" }
+  );
+  // A per-call override to another CLI must not inherit a model id it cannot run.
+  const override = resolveWorkerTarget({ provider: "claude" }, config);
+  assert.equal(override.provider, "claude");
+  assert.equal(override.model, undefined);
+  assert.equal(override.effort, undefined);
+  // The `gemini` alias is the configured provider, so it keeps the model.
+  assert.equal(resolveWorkerTarget({ provider: "gemini" }, config).model, "gemini-3.8-flash");
 });
 
 test("API workers expose executeTask and map errors without network", async () => {

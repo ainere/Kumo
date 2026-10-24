@@ -16,6 +16,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverPath = path.resolve(__dirname, "../src/bridge/server.js");
 
 /**
+ * The bridge child's environment. Without an explicit `env`, the MCP SDK
+ * passes only a short allowlist of variables, so the test sandbox (KUMO_HOME,
+ * KUMO_NO_SYNC) never reached the child and it used the real ~/.kumo.
+ */
+const sandboxEnv = () => ({ ...process.env });
+
+/**
  * Write an executable stub that prints `bytes` bytes to stdout and exits 0.
  * On Windows it must be a real `.cmd`, since that is what npm-installed CLIs
  * actually are and what the spawn path has to cope with.
@@ -40,9 +47,10 @@ test("MCP bridge server starts and exposes all 5 tools with workspace parameter"
   const dummyWorkspace = path.resolve(__dirname, "../");
 
   const transport = new StdioClientTransport({
-    command: "node",
+    command: process.execPath,
     args: [serverPath, "--workspace", dummyWorkspace],
     cwd: dummyWorkspace,
+    env: sandboxEnv(),
   });
 
   const client = new Client(
@@ -112,9 +120,10 @@ test("runAgy hard-caps captured stdout at MAX_OUTPUT_BYTES", async () => {
 test("MCP bridge tools expose optional model and effort schema properties", async () => {
   const dummyWorkspace = path.resolve(__dirname, "../");
   const transport = new StdioClientTransport({
-    command: "node",
+    command: process.execPath,
     args: [serverPath, "--workspace", dummyWorkspace],
     cwd: dummyWorkspace,
+    env: sandboxEnv(),
   });
 
   const client = new Client(

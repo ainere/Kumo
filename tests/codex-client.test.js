@@ -97,6 +97,12 @@ test("CodexAppClient handles split line buffering and correlates interleaved JSO
 });
 
 test("CodexAppClient initializes and retrieves live account rate limits", async (t) => {
+  // Live: it signs in to the real account and uses the network, so it only
+  // runs on request — a test suite should not depend on who runs it.
+  if (process.env.KUMO_LIVE_TESTS !== "1") {
+    t.skip("set KUMO_LIVE_TESTS=1 to query the real Codex account");
+    return;
+  }
   if (!isCodexBinaryAvailable()) {
     t.skip("codex CLI not installed; skipping live rate-limits check");
     return;
@@ -109,10 +115,11 @@ test("CodexAppClient initializes and retrieves live account rate limits", async 
 
   try {
     const limits = await client.getRateLimits();
-    assert.ok(limits, "Expected rate limit response");
+    assert.ok(limits.raw && typeof limits.raw === "object", "Expected a rate-limit response from the server");
     assert.ok(typeof limits.usedPercent === "number", "usedPercent should be a number");
-    assert.ok(limits.planType, "planType should be defined");
-    assert.ok(limits.resetFormatted, "resetFormatted should be defined");
+    // planType is formatted from the raw plan, and "Unknown Tier" stands in
+    // for a missing one — so the raw value is what proves the server sent it.
+    assert.strictEqual(typeof limits.rawPlan, "string", "the server should report a plan type");
   } finally {
     await client.stop();
   }

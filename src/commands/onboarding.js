@@ -7,7 +7,7 @@ import { runDiagnostics } from "../utils/diagnostics.js";
 import { PRESETS, applyPreset } from "../config/settings.js";
 import { promptSelect } from "../utils/model-picker.js";
 import { c, badge, separator, getBanner } from "../utils/ui.js";
-import { VERSION } from "../cli.js";
+import { VERSION } from "../version.js";
 
 export async function runOnboarding() {
   console.log("\n" + getBanner(VERSION, "cloud"));

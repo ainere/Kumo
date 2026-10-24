@@ -13,8 +13,9 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { getCliBinary, getAgyUsage } from "../../bridge/agy-runner.js";
-import { safeSpawn, childEnvFor } from "../../utils/process.js";
-import { loadConfig, supportsEffort } from "../../config/settings.js";
+import { safeSpawn, childEnvFor, stopProcessTree } from "../../utils/process.js";
+import { supportsEffort } from "../../config/settings.js";
+import { ensureAntigravityBridgeConfig } from "../../config/sync.js";
 
 function getTaskSignature(raw) {
   if (!raw) return "";
@@ -78,6 +79,12 @@ export class AgyAppClient extends EventEmitter {
         args.push("--effort", this.activeEffort);
       }
 
+      // Antigravity takes MCP servers only from the workspace file, so the
+      // session workspace must name the bridge before agy starts.
+      if (ensureAntigravityBridgeConfig(this.workspace)) {
+        this.emit("notice", `Added kumo-bridge to ${path.join(this.workspace, ".agents", "mcp_config.json")}`);
+      }
+
       try {
         this.proc = safeSpawn(this.bin, args, {
           cwd: this.workspace,
@@ -92,19 +99,28 @@ export class AgyAppClient extends EventEmitter {
       this.proc.stderr.on("data", (chunk) => {
         const text = chunk.toString();
         this.emit("stderr", text);
-        if (/wsarecv|connection was forcibly closed|invalid model selection|streamGenerateContent/i.test(text)) {
-          this.emit("server_error", {
-            message: `Antigravity error: ${text.trim()}`,
-          });
+        // Only a fatal error ends the turn. Connection resets are often
+        // retried by agy itself; ending the turn on them let the next prompt
+        // land in a session that was still working on this one.
+        if (/invalid model selection/i.test(text)) {
+          this.emit("server_error", { message: `Antigravity error: ${text.trim()}` });
+        } else if (/wsarecv|connection was forcibly closed|streamGenerateContent/i.test(text)) {
+          this.emit("warning", { message: `Antigravity: ${text.trim()}` });
         }
       });
 
-      this.proc.on("error", (err) => {
-        this.emit("error", err);
+      const proc = this.proc;
+      proc.on("error", (err) => {
+        // A bare emit("error") with no listener throws and kills the REPL.
+        if (this.listenerCount("error") > 0) this.emit("error", err);
         reject(err);
       });
 
-      this.proc.on("close", (code) => {
+      proc.on("close", (code) => {
+        // A process replaced by startThread() must not report the new one as dead.
+        if (this.proc !== proc) return;
+        this.proc = null;
+        this.isTurnActive = false;
         this.emit("close", code);
       });
 
@@ -142,6 +158,10 @@ export class AgyAppClient extends EventEmitter {
 
   /**
    * Submit a prompt to the stream-json agent turn.
+   *
+   * Resolves as soon as the prompt is written — the turn is still running. Its
+   * end is the `result` event, reported as `turn_completed`. Returning `ok`
+   * here used to make callers treat the turn as already finished.
    */
   async startTurn(prompt, { model, effort } = {}) {
     if (!this.proc || !this.proc.stdin || this.proc.killed) {
@@ -157,22 +177,19 @@ export class AgyAppClient extends EventEmitter {
     }) + "\n";
 
     this.proc.stdin.write(msg);
-    return { ok: true };
+    return { submitted: true };
   }
 
   /**
-   * Interrupt active turn.
+   * Interrupt active turn. stream-json mode has no per-turn cancel, so the
+   * process is stopped; the next turn starts a fresh one.
    */
   async interruptTurn() {
-    if (this.proc && !this.proc.killed) {
-      try {
-        this.proc.kill("SIGINT");
-      } catch {
-        /* ignore */
-      }
-    }
+    const proc = this.proc;
+    this.proc = null;
+    stopProcessTree(proc, "SIGINT");
     this.isTurnActive = false;
-    this.emit("turn_completed");
+    this.emit("turn_completed", { ok: false, reason: "interrupted" });
   }
 
   /**
@@ -326,10 +343,11 @@ export class AgyAppClient extends EventEmitter {
     if (eventType === "result") {
       this.isTurnActive = false;
       const res = data.result || {};
-      if (res.status === "ERROR" && res.error) {
-        this.emit("server_error", { message: res.error });
-      }
-      this.emit("turn_completed");
+      const failed = res.status === "ERROR";
+      this.emit(
+        "turn_completed",
+        failed ? { ok: false, reason: res.error || "Antigravity reported an error" } : { ok: true }
+      );
       return;
     }
   }
@@ -338,12 +356,8 @@ export class AgyAppClient extends EventEmitter {
    * Terminate background process cleanly.
    */
   async stop() {
-    if (this.proc && !this.proc.killed) {
-      try {
-        this.proc.kill("SIGTERM");
-      } catch {
-        /* ignore */
-      }
-    }
+    const proc = this.proc;
+    this.proc = null;
+    stopProcessTree(proc);
   }
 }

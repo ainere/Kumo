@@ -16,32 +16,30 @@ test("PRESETS includes test preset with gpt-5.5 low and gemini-3.6-flash low for
   assert.strictEqual(PRESETS.test.config.workerEffort, "low");
 });
 
+// Each assertion sets a value that differs from both the default and the
+// previous step: setting the default and reading it back passes even when the
+// command does nothing at all.
+
 test("effortCommand updates reasoningEffort setting in config", () => {
-  effortCommand("low");
-  const config = loadConfig();
-  assert.strictEqual(config.reasoningEffort, "low");
+  assert.notStrictEqual(loadConfig().reasoningEffort, "high", "precondition: not already high");
+  effortCommand("high");
+  assert.strictEqual(loadConfig().reasoningEffort, "high");
 
   effortCommand("medium");
-  const updated = loadConfig();
-  assert.strictEqual(updated.reasoningEffort, "medium");
-
-  // Restore to low for quota preservation
-  effortCommand("low");
-  assert.strictEqual(loadConfig().reasoningEffort, "low");
+  assert.strictEqual(loadConfig().reasoningEffort, "medium");
 });
 
 test("effortCommand updates workerEffort setting in config", () => {
+  assert.notStrictEqual(loadConfig().workerEffort, "low", "precondition: not already low");
   effortCommand("worker", "low");
-  const config = loadConfig();
-  assert.strictEqual(config.workerEffort, "low");
+  assert.strictEqual(loadConfig().workerEffort, "low");
 
-  // Restore to medium
-  effortCommand("worker", "medium");
-  assert.strictEqual(loadConfig().workerEffort, "medium");
+  effortCommand("worker", "high");
+  assert.strictEqual(loadConfig().workerEffort, "high");
 });
 
-test("modelCommand shorthand updates orchestrator model", () => {
-  modelCommand("chatgpt-6-astra");
-  const config = loadConfig();
-  assert.strictEqual(config.orchestratorModel, "chatgpt-6-astra");
+test("modelCommand shorthand updates orchestrator model", async () => {
+  assert.notStrictEqual(loadConfig().orchestratorModel, "gpt-5.6-luna", "precondition: a different model");
+  await modelCommand("gpt-5.6-luna");
+  assert.strictEqual(loadConfig().orchestratorModel, "gpt-5.6-luna");
 });

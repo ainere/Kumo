@@ -73,7 +73,7 @@ Before performing substantive work, classify the task as either **root-only** or
 
 - Active models and reasoning efforts for both the Orchestrator and Worker are dynamically managed by Kumo and persisted to `~/.kumo/config.json`.
 - Switch models at any time using `kumo model <action>` or inside interactive sessions with `/model` or `/preset`.
-- Project configuration (`.codex/agents/reviewer.toml` and `.codex/config.toml`) and worker system prompts automatically synchronize whenever models or presets are switched.
+- Worker system prompts always name the active models. Project configuration (`.codex/agents/reviewer.toml` and `.codex/config.toml`) is opt-in: `kumo init` creates it, and sessions keep it in step with model and preset switches only in workspaces initialized that way.
 
 ---
 

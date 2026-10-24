@@ -1,5 +1,5 @@
 import path from "node:path";
-import { VERSION } from "../cli.js";
+import { VERSION } from "../version.js";
 import { loadConfig, isCodexModel } from "../config/settings.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
 import { checkAgyHealth, getAgyUsage } from "../bridge/agy-runner.js";

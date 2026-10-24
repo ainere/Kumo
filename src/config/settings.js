@@ -6,7 +6,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { syncAgentConfigs } from "./sync.js";
 import {
   kumoHome,
   configFile,
@@ -54,7 +53,8 @@ export function canonicalizeProvider(id) {
 export const SAFETY_MODES = ["autonomous", "diff-review", "interactive"];
 
 /** Approval policies accepted by Codex's `approval_policy` TOML key. */
-export const APPROVAL_POLICIES = ["untrusted", "on-failure", "on-request", "never"];
+// `on-failure` is no longer in Codex's AskForApproval enum (app-server schema, codex-cli 0.153).
+export const APPROVAL_POLICIES = ["untrusted", "on-request", "never"];
 
 /**
  * A base URL is safe when it is https, or plain http pointed at loopback.
@@ -84,7 +84,8 @@ export const DEFAULT_CONFIG = {
   workerModel: "gemini-3.8-flash",
   workerEffort: "medium",
   timeoutMs: 300000,
-  cliBinary: "gemini",
+  turnTimeoutMs: 1800000,
+  cliBinary: "agy",
   approvalPolicy: "on-request",
   bannerStyle: "cloud",
   safetyMode: "autonomous",
@@ -279,6 +280,9 @@ export function setConfigValue(key, value) {
     if (key === "timeoutMs" && (value < 5000 || value > 1800000)) {
       throw new Error(`Value for 'timeoutMs' must be between 5000 and 1800000`);
     }
+    if (key === "turnTimeoutMs" && (value < 60000 || value > 14400000)) {
+      throw new Error(`Value for 'turnTimeoutMs' must be between 60000 and 14400000`);
+    }
   } else if (key === "reasoningEffort") {
     const norm = String(value).toLowerCase().trim();
     if (!["low", "medium", "high", "max"].includes(norm)) {
@@ -359,7 +363,9 @@ export function setConfigValue(key, value) {
 
   current[key] = value;
   saveConfig(current);
-  syncAgentConfigs(process.cwd(), current);
+  // Deliberately no provider-config sync here: this runs from whatever
+  // directory the user happens to be in, and the home directory holds the
+  // global ~/.codex/config.toml. Sessions refresh opted-in workspaces instead.
   return current;
 }
 
@@ -374,7 +380,6 @@ export function applyPreset(presetName) {
   const current = loadConfig();
   const updated = { ...current, ...preset.config };
   saveConfig(updated);
-  syncAgentConfigs(process.cwd(), updated);
   return updated;
 }
 
@@ -383,7 +388,6 @@ export function applyPreset(presetName) {
  */
 export function resetConfig() {
   saveConfig(DEFAULT_CONFIG);
-  syncAgentConfigs(process.cwd(), DEFAULT_CONFIG);
   return { ...DEFAULT_CONFIG };
 }
 

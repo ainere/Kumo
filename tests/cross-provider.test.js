@@ -12,11 +12,13 @@ import {
   createOrchestratorClient,
   getOrchestrator,
   listOrchestrators,
+  orchestratorDelegates,
 } from "../src/providers/orchestrators/registry.js";
 import { CodexAppClient } from "../src/providers/orchestrators/codex-client.js";
 import { AgyAppClient } from "../src/providers/orchestrators/agy-client.js";
 import { ClaudeAppClient } from "../src/providers/orchestrators/claude-client.js";
-import { getWorker, listWorkers } from "../src/providers/workers/registry.js";
+import { isToolCallItem, toolNameOf, toolArgsOf } from "../src/providers/orchestrators/items.js";
+import { getWorker, listWorkers, workerCapabilities } from "../src/providers/workers/registry.js";
 
 test("detectProviderForModel maps models to the correct providers", () => {
   assert.equal(detectProviderForModel("chatgpt-6-astra"), "codex");
@@ -55,11 +57,22 @@ test("createOrchestratorClient instantiates appropriate client per provider", ()
   assert.ok(claudeClient instanceof ClaudeAppClient);
 });
 
-test("getWorker returns valid execution worker with executeTask for all supported providers", () => {
-  for (const provider of ["gemini", "antigravity", "codex", "claude"]) {
-    const worker = getWorker(provider);
-    assert.ok(worker, `Worker should exist for provider ${provider}`);
-    assert.equal(typeof worker.executeTask, "function", `Worker ${provider} must have executeTask`);
+test("worker capabilities say which workers can write files or read the workspace", () => {
+  for (const provider of ["gemini", "antigravity", "codex", "claude", "cursor", "gemini-cli"]) {
+    assert.deepEqual(workerCapabilities(provider), { canWrite: true, readsWorkspace: true }, provider);
+  }
+  // Plain model calls: no filesystem. The bridge refuses or inlines files for these.
+  for (const provider of ["ollama", "openai-api", "anthropic-api", "gemini-api", "compat-api"]) {
+    assert.deepEqual(workerCapabilities(provider), { canWrite: false, readsWorkspace: false }, provider);
+  }
+});
+
+test("only orchestrators wired to the bridge are reported as able to delegate", () => {
+  for (const provider of ["codex", "claude", "antigravity", "gemini", "agy"]) {
+    assert.equal(orchestratorDelegates(provider), true, provider);
+  }
+  for (const provider of ["ollama", "opencode", "copilot", "cursor", "gemini-cli", "openai-api", "nope"]) {
+    assert.equal(orchestratorDelegates(provider), false, provider);
   }
 });
 
@@ -85,22 +98,16 @@ test("PRESETS includes cross-provider presets like opus-astra and opus-flash", (
   assert.equal(PRESETS["opus-flash"].config.workerModel, "gemini-3.8-flash");
 });
 
-test("createOrchestratorClient and getWorker support arbitrary providers like opencode, commandcode, and custom CLI tools", () => {
-  const opencodeClient = createOrchestratorClient({ provider: "opencode", model: "custom-model-x" });
-  assert.equal(opencodeClient.activeModel, "custom-model-x");
+test("an unregistered CLI becomes a worker or orchestrator only with an explicit opt-in", () => {
+  // The id becomes the executable that is spawned, so a model-authored value
+  // must never reach the generic adapter implicitly.
+  assert.throws(() => getWorker("my-agent-cli"), /Unknown worker provider 'my-agent-cli'/);
+  assert.equal(getWorker("my-agent-cli", { allowGeneric: true }).PROVIDER_INFO.id, "my-agent-cli");
 
-  const customClient = createOrchestratorClient({ provider: "ollama", model: "deepseek-r1" });
-  assert.equal(customClient.activeModel, "deepseek-r1");
-  assert.equal(customClient.command, "ollama");
-
-  const opencodeWorker = getWorker("opencode");
-  assert.equal(typeof opencodeWorker.executeTask, "function");
-
-  const commandcodeWorker = getWorker("commandcode");
-  assert.equal(typeof commandcodeWorker.executeTask, "function");
-
-  const arbitraryWorker = getWorker("ollama");
-  assert.equal(typeof arbitraryWorker.executeTask, "function");
+  assert.throws(() => createOrchestratorClient({ provider: "my-agent-cli" }), /Unknown orchestrator provider/);
+  const custom = createOrchestratorClient({ provider: "my-agent-cli", model: "m1", allowGeneric: true });
+  assert.equal(custom.command, "my-agent-cli");
+  assert.equal(custom.activeModel, "m1");
 });
 
 test("clients do not force hardcoded models and accept custom model strings freely", () => {
@@ -149,64 +156,30 @@ test("AgyAppClient guarantees stable matching item.id across item_started and it
   assert.equal(started[0].item.id, completed[0].item.id, "start and completed ids must match");
 });
 
-test("AgyAppClient and activeTools map handle concurrent tool calls without state clobbering", () => {
+test("Antigravity tool events satisfy the item contract the REPL reads", () => {
+  // The previous version of this test rebuilt the REPL's activeTools map
+  // inside the test body, so it tested its own copy of the logic. What the
+  // REPL actually depends on is the shared item helpers; check those against
+  // the events the real client emits.
   const client = new AgyAppClient();
-  const activeTools = new Map();
+  const started = [];
+  const completed = [];
+  client.on("item_started", (p) => started.push(p.item));
+  client.on("item_completed", (p) => completed.push(p.item));
 
-  client.on("item_started", (params) => {
-    const item = params.item;
-    activeTools.set(item.id, item);
-  });
-  client.on("item_completed", (params) => {
-    activeTools.delete(params.item.id);
-  });
-
-  // Start tool 1
   client._handleStreamEvent({
     event: "step_update",
-    step_update: {
-      step_type: "tool_call",
-      tool_name: "worker_explore",
-      tool_input: { task: "task 1" },
-    },
+    step_update: { step_type: "call_mcp_tool", tool_name: "worker_implement", tool_input: { task: "add tests" } },
   });
-  // Start tool 2 concurrently
   client._handleStreamEvent({
     event: "step_update",
-    step_update: {
-      step_type: "tool_call",
-      tool_name: "worker_implement",
-      tool_input: { task: "task 2" },
-    },
+    step_update: { step_type: "call_mcp_tool", tool_name: "worker_implement", state: "DONE" },
   });
 
-  assert.equal(activeTools.size, 2, "Both concurrent tools must be active simultaneously");
-
-  // Complete tool 1
-  client._handleStreamEvent({
-    event: "step_update",
-    step_update: {
-      step_type: "tool_call",
-      tool_name: "worker_explore",
-      state: "DONE",
-    },
-  });
-
-  assert.equal(activeTools.size, 1, "Tool 2 must remain active after tool 1 completes");
-  const remaining = Array.from(activeTools.values())[0];
-  assert.equal(remaining.name, "worker_implement");
-
-  // Complete tool 2
-  client._handleStreamEvent({
-    event: "step_update",
-    step_update: {
-      step_type: "tool_call",
-      tool_name: "worker_implement",
-      state: "DONE",
-    },
-  });
-
-  assert.equal(activeTools.size, 0, "All tools should be completed");
+  assert.ok(isToolCallItem(started[0]));
+  assert.equal(toolNameOf(started[0]), "worker_implement");
+  assert.equal(toolArgsOf(started[0]).task, "add tests");
+  assert.equal(completed[0].id, started[0].id, "completion must close the call that started");
 });
 
 test("AgyAppClient correctly matches out-of-order completions for identical tool names by task signature", () => {

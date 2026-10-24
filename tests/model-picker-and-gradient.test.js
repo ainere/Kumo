@@ -6,10 +6,11 @@ import "./helpers/env.js";
 
 import { test } from "node:test";
 import assert from "node:assert";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { progressBar, BLUEISH_GRADIENT } from "../src/utils/ui.js";
-import { getAgyModels } from "../src/bridge/agy-runner.js";
+import { getAgyModels, DEFAULT_WORKER_MODELS } from "../src/bridge/agy-runner.js";
 import { getOrchestratorModels, DEFAULT_CODEX_MODELS } from "../src/utils/model-picker.js";
 test("progressBar renders with blueish gradient colors for filled blocks", () => {
   const bar = progressBar(50, 14);
@@ -33,10 +34,49 @@ test("progressBar clamps correctly from 0 to 100", () => {
 });
 
 
-test("getAgyModels resolves available models", async () => {
-  const models = await getAgyModels();
-  assert.ok(Array.isArray(models) && models.length > 0);
-  assert.ok(models.some((m) => m.id.includes("gemini")));
+/** Point AGY_BIN at a stub that runs `script`, for the duration of `fn`. */
+async function withAgyStub(script, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-agy-models-"));
+  const impl = path.join(dir, "agy.cjs");
+  fs.writeFileSync(impl, script);
+  const stub =
+    process.platform === "win32" ? path.join(dir, "agy.cmd") : path.join(dir, "agy.sh");
+  if (process.platform === "win32") {
+    fs.writeFileSync(stub, `@echo off\r\n"${process.execPath}" "${impl}" %*\r\n`);
+  } else {
+    fs.writeFileSync(stub, `#!/bin/sh\nexec "${process.execPath}" "${impl}" "$@"\n`, { mode: 0o755 });
+  }
+  const saved = process.env.AGY_BIN;
+  process.env.AGY_BIN = stub;
+  try {
+    return await fn();
+  } finally {
+    if (saved === undefined) delete process.env.AGY_BIN;
+    else process.env.AGY_BIN = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("getAgyModels parses `agy models` output, folding effort variants", async () => {
+  // The old test only asserted "a non-empty list containing gemini", which the
+  // hard-coded fallback satisfies whenever the CLI fails — so it stayed green
+  // on machines where the binary could not even be spawned.
+  const listing = [
+    "Fetching models...",
+    "gemini-9-flash-high\tGemini 9 Flash (High)",
+    "gemini-9-flash-low\tGemini 9 Flash (Low)",
+    "claude-test-1\tClaude Test 1",
+  ].join("\n");
+  const models = await withAgyStub(`process.stdout.write(${JSON.stringify(listing)});`, () => getAgyModels());
+  assert.deepStrictEqual(models, [
+    { id: "gemini-9-flash", name: "Gemini 9 Flash" },
+    { id: "claude-test-1", name: "Claude Test 1" },
+  ]);
+});
+
+test("getAgyModels falls back to the default list when the CLI fails", async () => {
+  const models = await withAgyStub("process.exit(1);", () => getAgyModels());
+  assert.deepStrictEqual(models, DEFAULT_WORKER_MODELS);
 });
 
 test("getOrchestratorModels falls back to DEFAULT_CODEX_MODELS when binary missing", async () => {
