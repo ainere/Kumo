@@ -17,6 +17,7 @@ import { findCodexBinary } from "./codex.js";
 import { isToolCallItem } from "./items.js";
 import { formatPlanType, formatResetTime } from "../../utils/ui.js";
 import { safeSpawn, stopProcessTree } from "../../utils/process.js";
+import { nodeCommand } from "../../core/node-command.js";
 import { VERSION } from "../../version.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -388,12 +389,16 @@ export class CodexAppClient extends EventEmitter {
     this.workerModel = opts.workerModel || null;
     this.workerEffort = opts.workerEffort || null;
 
+    const node = nodeCommand();
     const config = {
       mcp_servers: {
         [BRIDGE_SERVER_NAME]: {
-          command: process.execPath,
+          command: node.command,
           args: [BRIDGE_SCRIPT, "--workspace", workspace],
           env_vars: bridgeEnvVarNames({ ...process.env, ...this.options.env }),
+          // Inside the desktop app the command is Electron, which needs this
+          // to run the script as node. Not a secret, so passed by value.
+          ...(Object.keys(node.env).length > 0 ? { env: node.env } : {}),
         },
       },
     };

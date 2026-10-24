@@ -26,6 +26,12 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { detectProviderForModel } from "./settings.js";
 import { configFile, atomicWriteText, atomicWriteJson } from "./paths.js";
+import { nodeCommand } from "../core/node-command.js";
+
+/** A TOML inline table of string values: `{ A = "1", B = "x" }`. */
+function tomlInlineTable(values) {
+  return `{ ${Object.entries(values).map(([k, v]) => `${k} = ${JSON.stringify(String(v))}`).join(", ")} }`;
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -288,10 +294,13 @@ export function hasManagedConfigs(workspaceDir) {
 export function ensureAntigravityBridgeConfig(workspaceDir) {
   if (!workspaceDir || process.env.KUMO_NO_SYNC === "1") return false;
   const file = path.join(workspaceDir, ".agents", "mcp_config.json");
+  // The file stays in the workspace and the CLI reads it too: a real node,
+  // not the desktop app's Electron binary (see node-command.js).
+  const node = nodeCommand({ persistent: true });
   const entry = {
-    command: process.execPath,
+    command: node.command,
     args: [BRIDGE_SERVER_PATH],
-    env: { KUMO_WORKSPACE: workspaceDir },
+    env: { ...node.env, KUMO_WORKSPACE: workspaceDir },
   };
   try {
     const current = JSON.parse(readText(file) || "{}");
@@ -322,6 +331,7 @@ export function syncAgentConfigs(workspaceDir, customConfig = null, options = {}
   if (options.onlyIfManaged && !hasManagedConfigs(workspaceDir)) return report;
 
   try {
+    const persistentNode = nodeCommand({ persistent: true });
     const config = customConfig || readStoredConfig();
     const orchModel = tomlString(config.orchestratorModel || "chatgpt-6-astra");
     const orchEffort = tomlString(config.reasoningEffort || "low");
@@ -362,9 +372,9 @@ export function syncAgentConfigs(workspaceDir, customConfig = null, options = {}
         ["approval_policy", `"${approvalPolicy}"`],
         ["agents.enabled", "true"],
         ["agents.max_concurrent_threads_per_session", "4"],
-        ["mcp_servers.kumo-bridge.command", JSON.stringify(process.execPath)],
+        ["mcp_servers.kumo-bridge.command", JSON.stringify(persistentNode.command)],
         ["mcp_servers.kumo-bridge.args", `[${JSON.stringify(BRIDGE_SERVER_PATH)}]`],
-        ["mcp_servers.kumo-bridge.env", `{ KUMO_WORKSPACE = ${JSON.stringify(workspaceDir)} }`],
+        ["mcp_servers.kumo-bridge.env", tomlInlineTable({ ...persistentNode.env, KUMO_WORKSPACE: workspaceDir })],
       ]);
       report.written.push(configTomlPath);
       for (const key of skippedKeys) report.skipped.push(`${configTomlPath}:${key}`);
@@ -387,8 +397,9 @@ export function syncAgentConfigs(workspaceDir, customConfig = null, options = {}
             writeJsonMerged(path.join(geminiGlobalDir, "mcp_config.json"), {
               mcpServers: {
                 "kumo-bridge": {
-                  command: process.execPath,
+                  command: persistentNode.command,
                   args: [BRIDGE_SERVER_PATH],
+                  ...(Object.keys(persistentNode.env).length > 0 ? { env: persistentNode.env } : {}),
                   disabled: false,
                 },
               },

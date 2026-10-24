@@ -1,0 +1,8 @@
+{
+  "name": "@kumo/scene-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Types for Kumo background scenes and custom panels.",
+  "types": "./index.d.ts",
+  "license": "MIT"
+}

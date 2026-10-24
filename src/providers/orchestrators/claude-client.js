@@ -26,6 +26,7 @@ import { findClaudeBinary, CLAUDE_EFFORTS } from "../workers/claude.js";
 import { BRIDGE_SERVER_PATH } from "../../config/sync.js";
 import { kumoHome, ensureDir, atomicWriteJson } from "../../config/paths.js";
 import { formatResetTime } from "../../utils/ui.js";
+import { nodeCommand } from "../../core/node-command.js";
 
 /** Permission rule that matches every tool the bridge exposes. */
 export const BRIDGE_TOOL_RULE = "mcp__kumo-bridge";
@@ -108,12 +109,14 @@ export class ClaudeAppClient extends GenericAppClient {
     const dir = path.join(kumoHome(), "run");
     ensureDir(dir);
     const file = path.join(dir, `claude-mcp-${process.pid}-${randomUUID()}.json`);
+    const node = nodeCommand();
     atomicWriteJson(file, {
       mcpServers: {
         "kumo-bridge": {
-          command: process.execPath,
+          command: node.command,
           args: [BRIDGE_SERVER_PATH, "--workspace", this.workspace],
           env: {
+            ...node.env,
             ...(this.options.env || {}),
             KUMO_WORKSPACE: this.workspace,
             ...(process.env.KUMO_HOME ? { KUMO_HOME: process.env.KUMO_HOME } : {}),
