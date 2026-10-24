@@ -98,3 +98,34 @@ test("checkAgyHealth reuses a usage result it is given instead of spawning again
     assert.deepStrictEqual(calls(), []);
   });
 });
+
+test("the quota monitor asks agy only when a role uses Antigravity, at most once per interval", async () => {
+  const { QuotaMonitor } = await import("../src/core/quota-monitor.js");
+  let agyCalls = 0;
+  const settings = { orchestratorProvider: "codex", workerProvider: "codex" };
+  const monitor = new QuotaMonitor({
+    getClient: () => ({ getRateLimits: async () => ({ remainingPercent: 80 }) }),
+    getSettings: () => settings,
+    fetchAntigravityUsage: async () => {
+      agyCalls++;
+      return { geminiWeeklyPercent: 99 };
+    },
+    useCache: false,
+  });
+
+  const first = await monitor.refresh();
+  assert.strictEqual(first.orchestrator.remainingPercent, 80);
+  assert.strictEqual(agyCalls, 0, "no Antigravity role, no agy spawn");
+
+  settings.workerProvider = "antigravity";
+  await monitor.refresh();
+  await monitor.refresh();
+  assert.strictEqual(agyCalls, 1, "within the interval agy is not asked again");
+  assert.strictEqual(monitor.snapshot().antigravity.geminiWeeklyPercent, 99);
+
+  await monitor.refresh({ force: true });
+  assert.strictEqual(agyCalls, 2, "an explicit /status or /refresh asks anyway");
+
+  settings.workerProvider = "claude";
+  assert.strictEqual(monitor.snapshot().antigravity, null, "Antigravity figures are hidden once no role uses it");
+});

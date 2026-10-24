@@ -10,6 +10,20 @@ permissions:
   contents: read
 
 jobs:
+  # Lint and type-check once; neither depends on the OS or Node version.
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      # JSDoc types, checked in every file that opts in with `// @ts-check`
+      # (the engine in src/core does).
+      - run: npm run typecheck
+
   test:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -18,7 +32,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        node-version: [20, 22]
+        # Node 20 reached end of life in April 2026.
+        node-version: [22, 24]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
@@ -26,15 +41,15 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: npm ci --ignore-scripts
       - run: npm test
-      # The coverage threshold flags need Node >= 22.8, so the floor runs on the
-      # Node 22 legs only. It guards the bridge and provider adapters, where the
+      # Guards the bridge, the provider adapters and the engine, where the
       # delegate → apply bugs lived while every test stayed green.
-      - name: Coverage floor (bridge + providers)
-        if: matrix.node-version == 22
+      - name: Coverage floor (bridge + providers + engine)
         run: >-
           node --test --experimental-test-coverage
           --test-coverage-include="src/bridge/**"
           --test-coverage-include="src/providers/**"
-          --test-coverage-lines=70
-          --test-coverage-branches=55
-          --test-coverage-functions=60
+          --test-coverage-include="src/core/*.js"
+          --test-coverage-include="src/core/ipc/**"
+          --test-coverage-lines=75
+          --test-coverage-branches=60
+          --test-coverage-functions=65

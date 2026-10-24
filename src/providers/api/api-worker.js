@@ -9,10 +9,10 @@
  * rather than a success with an empty diff.
  */
 
-import fs from "node:fs";
 import { chatComplete, ApiError } from "./api-transport.js";
 import { loadConfig } from "../../config/settings.js";
 import { buildCompositePrompt } from "../workers/cli-runner.js";
+import { writeLiveOutput } from "../../utils/process.js";
 
 const DEFAULT_TIMEOUT_MS = 120000;
 
@@ -61,13 +61,7 @@ export async function executeApiTask({
       config: effectiveConfig,
     });
     // There is no child process to tee, so the REPL tailer only ever sees this.
-    if (liveLogPath) {
-      try {
-        fs.appendFileSync(liveLogPath, text ?? "");
-      } catch {
-        /* live log is best-effort telemetry */
-      }
-    }
+    writeLiveOutput(liveLogPath, text ?? "");
     return { ok: true, code: 0, stdout: text ?? "", stderr: "", timedOut: false };
   } catch (err) {
     if (err instanceof ApiError) {

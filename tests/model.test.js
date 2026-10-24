@@ -5,7 +5,7 @@ import "./helpers/env.js";
 
 import { test } from "node:test";
 import assert from "node:assert";
-import { loadConfig, setConfigValue, applyPreset, PRESETS } from "../src/config/settings.js";
+import { loadConfig, PRESETS } from "../src/config/settings.js";
 import { effortCommand, modelCommand } from "../src/commands/model.js";
 
 test("PRESETS includes test preset with gpt-6-luna low and gemini-3.8-flash low for tests", () => {

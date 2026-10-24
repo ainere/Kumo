@@ -53,6 +53,9 @@ export class AgyAppClient extends EventEmitter {
       "autonomous";
     this.isTurnActive = false;
     this._pendingToolCallIds = new Map();
+    // Whether the running process has taken a turn: a new thread only needs
+    // a fresh process when the current one already holds a conversation.
+    this._hadTurn = false;
   }
 
   /**
@@ -77,6 +80,12 @@ export class AgyAppClient extends EventEmitter {
 
       if (this.activeEffort && supportsEffort(this.activeModel)) {
         args.push("--effort", this.activeEffort);
+      }
+
+      // Reopen the conversation this client is on (a resumed chat, or a
+      // restart for a model switch) instead of starting an empty one.
+      if (this.conversationId) {
+        args.push("--conversation", this.conversationId);
       }
 
       // Antigravity takes MCP servers only from the workspace file, so the
@@ -149,11 +158,54 @@ export class AgyAppClient extends EventEmitter {
     if (workerModel) this.workerModel = workerModel;
     if (workerEffort) this.workerEffort = workerEffort;
 
-    if (this.proc && (modelChanged || effortChanged || workspaceChanged)) {
+    // A new thread is a new conversation. The process used to be kept when
+    // nothing else changed, so /new carried the old conversation on.
+    const hadConversation = this._hadTurn || Boolean(this.conversationId);
+    this.conversationId = null;
+    if (this.proc && (hadConversation || modelChanged || effortChanged || workspaceChanged)) {
       await this.stop();
       await this.start();
     }
-    return { ok: true, threadId: this.conversationId || "agy-session" };
+    this._hadTurn = false;
+    return { ok: true, threadId: null };
+  }
+
+  /**
+   * Reopen an earlier conversation (`agy --conversation <id>`).
+   *
+   * @param {{ threadId: string, workspace?: string, model?: string, reasoningEffort?: string }} opts
+   */
+  async resumeThread({ threadId, workspace, model, reasoningEffort }) {
+    if (workspace) this.workspace = workspace;
+    if (model) this.activeModel = model;
+    if (reasoningEffort) this.activeEffort = reasoningEffort;
+    this.conversationId = threadId;
+    if (this.proc) await this.stop();
+    await this.start();
+    this._hadTurn = true;
+    return { ok: true, threadId, resumed: true };
+  }
+
+  /**
+   * Switch model or effort and keep the conversation: agy fixes both when it
+   * starts, so the process restarts on the same conversation.
+   *
+   * @param {{ model?: string, reasoningEffort?: string }} opts
+   */
+  async applyModel({ model, reasoningEffort } = {}) {
+    const changed =
+      Boolean(model && model !== this.activeModel) || Boolean(reasoningEffort && reasoningEffort !== this.activeEffort);
+    if (model) this.activeModel = model;
+    if (reasoningEffort) this.activeEffort = reasoningEffort;
+    if (changed && this.proc) {
+      await this.stop();
+      await this.start();
+    }
+  }
+
+  /** The conversation id agy reported, which `resumeThread` accepts later. */
+  currentThreadId() {
+    return this.conversationId;
   }
 
   /**
@@ -169,6 +221,7 @@ export class AgyAppClient extends EventEmitter {
     }
 
     this.isTurnActive = true;
+    this._hadTurn = true;
     const msg = JSON.stringify({
       event: "user",
       message: {

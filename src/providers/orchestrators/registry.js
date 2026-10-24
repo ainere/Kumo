@@ -175,6 +175,8 @@ export function getOrchestrator(id = "codex", { allowGeneric = false } = {}) {
  * @param {string} [opts.effort]
  * @param {string} [opts.workspace]
  * @param {Object} [opts.env]
+ * @param {string} [opts.safetyMode] - the session's safety mode (agy fixes its permissions at start)
+ * @param {Object} [opts.config] - settings to use instead of the saved config
  * @param {boolean} [opts.allowGeneric=false]
  * @returns {object}
  */

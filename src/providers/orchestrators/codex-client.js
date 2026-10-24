@@ -337,13 +337,58 @@ export class CodexAppClient extends EventEmitter {
    * is what lets `/model worker` take effect without restarting the thread.
    */
   async startThread(opts = {}) {
+    const { model, payload } = this._threadPayload(opts);
+    if (model) await this._warnIfModelUnavailable(model);
+    const res = await this.request("thread/start", payload);
+    this.threadId = res?.thread?.id || res?.threadId;
+    return this.threadId;
+  }
+
+  /**
+   * Continue an earlier thread (`thread/resume`): Codex reloads it from disk
+   * with its history, under the same bridge and model overrides a new thread
+   * gets. Only threads that ran a turn are on disk.
+   *
+   * @param {{ threadId: string, workspace?: string, model?: string, reasoningEffort?: string }} opts
+   */
+  async resumeThread(opts) {
+    const { model, payload } = this._threadPayload(opts);
+    if (model) await this._warnIfModelUnavailable(model);
+    // The history is already in the thread; Kumo does not render it.
+    const res = await this.request("thread/resume", { ...payload, threadId: opts.threadId, excludeTurns: true });
+    this.threadId = res?.thread?.id || opts.threadId;
+    return this.threadId;
+  }
+
+  /** The current thread's id, which `resumeThread` accepts later. */
+  currentThreadId() {
+    return this.threadId;
+  }
+
+  /**
+   * A model switch needs no new thread: every turn names its model and effort
+   * (`turn/start` accepts both), so the conversation carries on. Only the
+   * availability check runs again.
+   *
+   * @param {{ model?: string }} opts
+   */
+  async applyModel({ model } = {}) {
+    if (model) await this._warnIfModelUnavailable(model);
+  }
+
+  /**
+   * The `thread/start` / `thread/resume` parameters for a workspace.
+   *
+   * @param {{ workspace?: string, model?: string, reasoningEffort?: string, workerModel?: string, workerEffort?: string }} opts
+   */
+  _threadPayload(opts = {}) {
     const workspace = path.resolve(opts.workspace || process.cwd());
-    const orchModel = opts.model || null;
-    const orchEffort = opts.reasoningEffort || null;
+    const model = opts.model || null;
+    const effort = opts.reasoningEffort || null;
     this.workerModel = opts.workerModel || null;
     this.workerEffort = opts.workerEffort || null;
 
-    const configOverrides = {
+    const config = {
       mcp_servers: {
         [BRIDGE_SERVER_NAME]: {
           command: process.execPath,
@@ -352,21 +397,12 @@ export class CodexAppClient extends EventEmitter {
         },
       },
     };
-    if (orchModel) configOverrides.model = orchModel;
-    if (orchEffort) configOverrides.model_reasoning_effort = orchEffort;
+    if (model) config.model = model;
+    if (effort) config.model_reasoning_effort = effort;
 
-    if (orchModel) await this._warnIfModelUnavailable(orchModel);
-
-    const threadPayload = {
-      cwd: workspace,
-      config: configOverrides,
-    };
-    if (orchModel) threadPayload.model = orchModel;
-
-    const res = await this.request("thread/start", threadPayload);
-
-    this.threadId = res?.thread?.id || res?.threadId;
-    return this.threadId;
+    const payload = { cwd: workspace, config };
+    if (model) payload.model = model;
+    return { workspace, model, payload };
   }
 
   /**

@@ -9,6 +9,12 @@
  *
  * The target workspace comes from `--workspace <path>`, else `KUMO_WORKSPACE`,
  * else the legacy `ORCHESTRATOR_WORKSPACE`, else the process working directory.
+ *
+ * When the orchestrator was started by a Kumo session, its environment names
+ * the session's engine endpoint (KUMO_ENGINE_ENDPOINT + KUMO_SESSION_TOKEN).
+ * The bridge then takes its settings from that session, streams each run's
+ * output tagged with its run id, and asks the session for approvals. Without
+ * one it falls back to the saved config, live-log files and approval files.
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -31,6 +37,9 @@ import {
 } from "../data/sessions.js";
 import { atomicWriteJson } from "../config/paths.js";
 import { VERSION } from "../version.js";
+import { routeLiveOutput } from "../utils/process.js";
+import { connectEngine } from "../core/ipc/engine-client.js";
+import { StringDecoder } from "node:string_decoder";
 
 // Parse CLI flags
 let workspaceDir = process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd();
@@ -63,6 +72,33 @@ for (let i = 0; i < args.length; i++) {
  */
 export const NESTED_ENV = "KUMO_INSIDE_WORKER";
 const nestedInWorker = process.env[NESTED_ENV] === "1";
+
+/**
+ * The session this bridge works for, once connected (see startServer).
+ * @type {import("../core/ipc/engine-client.js").EngineConnection | null}
+ */
+let engine = null;
+
+/** Test seam: attach (or detach, with null) an engine connection. */
+export function setEngineConnection(connection) {
+  engine = connection;
+}
+
+/**
+ * The settings for this call: the session's own when an engine is
+ * connected, else the saved config. The session's win, so a worker or
+ * safety-mode switch in one window no longer changes another window's turn.
+ */
+async function effectiveConfig() {
+  const config = loadConfig();
+  if (!engine || engine.closed) return config;
+  try {
+    const session = await engine.request("settings.get");
+    return { ...config, ...session };
+  } catch {
+    return config;
+  }
+}
 
 export const PREVIEW_TTL_MS = 15 * 60 * 1000; // 15 minutes TTL
 
@@ -528,7 +564,7 @@ export async function dispatchWorkerTask(opts) {
       "this Kumo bridge was started from inside a Kumo worker; workers cannot delegate further. Do the task directly."
     );
   }
-  const config = loadConfig();
+  const config = opts.config || (await effectiveConfig());
   const workspace = opts.workspace || workspaceDir;
   const target = resolveWorkerTarget(opts, config);
   // opts.provider is model-authored, so it may only name a known worker: the id
@@ -564,14 +600,25 @@ export async function dispatchWorkerTask(opts) {
 
   const runId = opts.runId || crypto.randomUUID();
   const liveLogPath = getLiveLogPath(workspace, runId);
-  setActiveLiveRun(workspace, {
-    runId,
-    tool: opts.toolName || "worker_task",
-    timestamp: Date.now(),
-  });
+  const tool = opts.toolName || "worker_task";
+  const connected = engine && !engine.closed ? engine : null;
+  let unroute = () => {};
+  if (connected) {
+    // The session matches this run to the orchestrator's call by tool and
+    // task, and its output streams there instead of into a file.
+    connected.notify("run.started", { runId, tool, task: opts.prompt || "" });
+    const decoder = new StringDecoder("utf8");
+    unroute = routeLiveOutput(liveLogPath, (chunk) => {
+      const text = typeof chunk === "string" ? chunk : decoder.write(chunk);
+      if (text) connected.notify("run.output", { runId, text });
+    });
+  } else {
+    setActiveLiveRun(workspace, { runId, tool, timestamp: Date.now() });
+  }
 
+  let ok = false;
   try {
-    return await worker.executeTask({
+    const result = await worker.executeTask({
       ...opts,
       workspace,
       provider: target.provider,
@@ -585,8 +632,12 @@ export async function dispatchWorkerTask(opts) {
       runId,
       liveLogPath,
     });
+    ok = Boolean(result?.ok);
+    return result;
   } finally {
-    clearActiveLiveRun(workspace, runId);
+    unroute();
+    if (connected) connected.notify("run.finished", { runId, ok });
+    else clearActiveLiveRun(workspace, runId);
   }
 }
 
@@ -707,6 +758,7 @@ const APPROVAL_POLL_MS = 500;
  * environment; without it, `interactive` degrades to `diff-review`.
  */
 function interactiveApprovalAvailable() {
+  if (engine && !engine.closed) return engine.hello?.interactive === true;
   return process.env.KUMO_INTERACTIVE_APPROVAL === "1";
 }
 
@@ -718,6 +770,21 @@ function interactiveApprovalAvailable() {
  * @returns {Promise<{approved: boolean, reason?: string}>}
  */
 async function awaitHumanApproval(request) {
+  if (engine && !engine.closed) {
+    try {
+      const decision = await engine.request(
+        "approval.request",
+        { previewId: request.previewId, tool: request.tool, previewText: request.previewText },
+        { timeoutMs: APPROVAL_TIMEOUT_MS }
+      );
+      return decision?.approved === true
+        ? { approved: true }
+        : { approved: false, reason: decision?.reason || "the operator declined the change" };
+    } catch (err) {
+      return { approved: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   const dir = getApprovalDir(workspaceDir);
   const requestFile = path.join(dir, `${request.previewId}.json`);
   const decisionFile = path.join(dir, `${request.previewId}.decision.json`);
@@ -774,7 +841,7 @@ function errorResult(text) {
  */
 async function handleWriteTool(kind, { task, files, confirm, previewId, model, effort, provider }) {
   const toolName = kind === "implement" ? "worker_implement" : "worker_test";
-  const config = loadConfig();
+  const config = await effectiveConfig();
   const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
   const gated = safetyMode === "diff-review" || safetyMode === "interactive";
 
@@ -783,6 +850,7 @@ async function handleWriteTool(kind, { task, files, confirm, previewId, model, e
       toolName,
       prompt: task,
       safetyMode,
+      config,
       files: files || [],
       workspace: workspaceDir,
       model,
@@ -1017,6 +1085,8 @@ export async function startServer() {
   // Set here, not at import: only a running bridge spawns workers, and a
   // module-level write would leak into any process that merely imports this.
   process.env[NESTED_ENV] = "1";
+  // Connect before serving: the first tool call must already know its session.
+  engine = await connectEngine({ version: VERSION });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

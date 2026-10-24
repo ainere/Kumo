@@ -6,11 +6,9 @@ import {
   detectProviderForModel,
   supportsEffort,
   PRESETS,
-  resolveModel,
 } from "../src/config/settings.js";
 import {
   createOrchestratorClient,
-  getOrchestrator,
   listOrchestrators,
   orchestratorDelegates,
 } from "../src/providers/orchestrators/registry.js";

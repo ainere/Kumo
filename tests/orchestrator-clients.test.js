@@ -308,3 +308,39 @@ test("interrupting a per-turn CLI stops its process and ends the turn", async ()
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("Antigravity reopens a conversation by id, keeps it across a model switch, and /new starts a fresh one", async () => {
+  const { AgyAppClient } = await import("../src/providers/orchestrators/agy-client.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-agy-"));
+  const log = path.join(dir, "launches.jsonl");
+  const impl = path.join(dir, "agy.cjs");
+  // Like agy in stream-json mode: stays up reading stdin.
+  fs.writeFileSync(impl, `require("fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n"); process.stdin.resume();`);
+  let bin;
+  if (process.platform === "win32") {
+    bin = path.join(dir, "agy.cmd");
+    fs.writeFileSync(bin, `@echo off\r\n"${process.execPath}" "${impl}" %*\r\n`);
+  } else {
+    bin = path.join(dir, "agy.sh");
+    fs.writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${impl}" "$@"\n`, { mode: 0o755 });
+  }
+  const launches = () => fs.readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+  const client = new AgyAppClient({ bin, workspace: dir, model: "gemini-3.8-flash", safetyMode: "autonomous" });
+  try {
+    await client.resumeThread({ threadId: "conv-42", workspace: dir });
+    assert.strictEqual(valueAfter(launches().at(-1), "--conversation"), "conv-42");
+    assert.strictEqual(client.currentThreadId(), "conv-42");
+
+    await client.applyModel({ model: "gemini-4-argon" });
+    assert.strictEqual(valueAfter(launches().at(-1), "--model"), "gemini-4-argon");
+    assert.strictEqual(valueAfter(launches().at(-1), "--conversation"), "conv-42", "a model switch keeps the conversation");
+
+    await client.startThread({ workspace: dir });
+    assert.ok(!launches().at(-1).includes("--conversation"), "a new thread is a new conversation");
+    assert.strictEqual(client.currentThreadId(), null);
+  } finally {
+    await client.stop();
+    await new Promise((r) => setTimeout(r, 100));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -19,6 +19,8 @@ export const TEST_KUMO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-test-"
 
 process.env.KUMO_HOME = TEST_KUMO_HOME;
 process.env.KUMO_NO_SYNC = "1";
+// Every engine event is checked against its schema (src/core/events.js).
+process.env.KUMO_STRICT_EVENTS = "1";
 
 process.on("exit", () => {
   try {

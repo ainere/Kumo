@@ -1,21 +1,20 @@
 /**
- * run.js — CLI command for headless, one-shot task execution.
+ * run.js — CLI command for headless, one-shot task execution, on the engine.
  */
 
 import path from "node:path";
-import { createOrchestratorClient, orchestratorDelegates } from "../providers/orchestrators/registry.js";
-import { runTurn } from "../providers/orchestrators/turn-wait.js";
 import { loadConfig } from "../config/settings.js";
+import { Session } from "../core/session.js";
+import { snapshotSettings } from "../core/settings.js";
 import { c, badge, separator } from "../utils/ui.js";
 
 /**
  * @param {string} taskPrompt
  * @param {{ dir?: string }} [opts]
- * @param {{ createClient?: typeof createOrchestratorClient, exit?: (code: number) => void }} [deps]
+ * @param {{ createClient?: (opts: any) => any, exit?: (code: number) => void }} [deps]
  *   test seams: a fake client factory, and a replacement for process.exit
  */
 export async function runCommand(taskPrompt, opts = {}, deps = {}) {
-  const createClient = deps.createClient || createOrchestratorClient;
   const exit = deps.exit || ((code) => process.exit(code));
 
   if (!taskPrompt || taskPrompt.trim() === "") {
@@ -25,80 +24,67 @@ export async function runCommand(taskPrompt, opts = {}, deps = {}) {
   }
 
   const workspace = path.resolve(opts.dir || process.cwd());
-  const config = loadConfig();
-  const providerId = config.orchestratorProvider || "codex";
+  const settings = snapshotSettings(loadConfig());
 
   console.log(`\n${c.bold}KUMO Task Execution${c.reset}`);
   console.log(separator(50));
   console.log(`  ${c.dim}Workspace:${c.reset} ${workspace}`);
-  console.log(`  ${c.dim}Provider:${c.reset}  ${providerId}`);
+  console.log(`  ${c.dim}Provider:${c.reset}  ${settings.orchestratorProvider}`);
   console.log(`  ${c.dim}Task:${c.reset}      ${taskPrompt}\n`);
-  if (!orchestratorDelegates(providerId)) {
-    console.log(
-      `  ${badge.warn} ${providerId} cannot call Kumo's worker tools; it will answer the task on its own.\n`
-    );
-  }
 
-  let client = null;
-  let ok = false;
-  let onSigint = null;
-
-  try {
-    client = createClient({
-      workspace,
-      model: config.orchestratorModel,
-      provider: providerId,
-      effort: config.reasoningEffort,
-      config,
-      env: { KUMO_WORKSPACE: workspace, ORCHESTRATOR_WORKSPACE: workspace },
-    });
-
-    client.on("delta", (chunk) => process.stdout.write(chunk));
-    client.on("stderr", (chunk) => process.stderr.write(chunk));
-    client.on("warning", (w) => console.error(`\n${badge.warn} ${w?.message || w}`));
-    client.on("notice", (text) => console.error(`${badge.info} ${text}`));
-    // Nobody is at the keyboard to approve anything; say what was refused
-    // rather than letting the request stall the turn.
-    client.on("server_request", (req) => {
-      if (req.isApproval) {
-        console.error(`\n${badge.warn} Declined (headless run): ${req.description.split("\n")[0]}`);
-      }
-      req.decline();
-    });
-
-    // start() spawns long-lived clients (Codex app-server); for the others it
-    // is a no-op. Skipping it left every Codex request failing with "not running".
-    await client.start();
-    await client.startThread({ workspace, model: config.orchestratorModel, reasoningEffort: config.reasoningEffort });
-
-    const turn = runTurn(
-      client,
-      () => client.startTurn(taskPrompt, { model: config.orchestratorModel, effort: config.reasoningEffort }),
-      { timeoutMs: config.turnTimeoutMs }
-    );
-    onSigint = () => {
-      console.error(`\n${badge.warn} Interrupting…`);
-      turn.interrupt();
-    };
-    process.once("SIGINT", onSigint);
-
-    const outcome = await turn.done;
-    ok = outcome.ok;
-    if (!ok) {
-      console.error(`\n${badge.fail} Turn ended without completion: ${outcome.reason}`);
+  // A one-shot run is not a chat: nothing is recorded, and nobody is at the
+  // keyboard, so approval requests are declined with a note.
+  const session = new Session({
+    workspace,
+    settings,
+    persist: false,
+    interactive: false,
+    quotas: false,
+    ...(deps.createClient ? { createClient: deps.createClient } : {}),
+  });
+  let endsWithNewline = true;
+  session.on("event", (e) => {
+    switch (e.type) {
+      case "turn.delta":
+        process.stdout.write(e.text);
+        endsWithNewline = e.text.endsWith("\n");
+        break;
+      case "tool.started":
+        console.error(`${c.dim}[worker] ${e.name}${e.task ? `: ${e.task.slice(0, 80)}` : ""}${c.reset}`);
+        break;
+      case "session.warning":
+        console.error(`\n${badge.warn} ${e.message}`);
+        break;
+      case "session.notice":
+        console.error(`${badge.info} ${e.message}`);
+        break;
+      case "session.error":
+        console.error(`\n${badge.fail} ${e.message}`);
+        break;
+      default:
+        break;
     }
+  });
+
+  const onSigint = () => {
+    console.error(`\n${badge.warn} Interrupting…`);
+    session.interrupt();
+  };
+  process.once("SIGINT", onSigint);
+
+  let ok = false;
+  try {
+    await session.start();
+    const outcome = await session.send(taskPrompt);
+    ok = outcome.ok;
+    if (!endsWithNewline) process.stdout.write("\n");
+    if (!ok) console.error(`\n${badge.fail} Turn ended without completion: ${outcome.reason}`);
   } catch (err) {
     console.error(`\n${badge.fail} Task execution failed: ${err.message}`);
     ok = false;
   } finally {
-    if (onSigint) process.off("SIGINT", onSigint);
-    if (client) {
-      try {
-        await client.stop();
-      } catch {
-        /* teardown failure must not mask the task outcome */
-      }
-    }
+    process.off("SIGINT", onSigint);
+    await session.stop().catch(() => {});
   }
 
   exit(ok ? 0 : 1);

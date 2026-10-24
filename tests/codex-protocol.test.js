@@ -335,3 +335,24 @@ test(
     }
   }
 );
+
+test("resuming a thread reloads it under the same bridge, and a model switch needs no new thread", async () => {
+  const { client, written, feed } = clientWithFakeStdin();
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-resume-"));
+  try {
+    const resumed = client.resumeThread({ threadId: "thr_old", workspace: ws, model: "gpt-6.1-sol" });
+    await answer(written, feed, "model/list", { data: [{ id: "gpt-6.1-sol" }] });
+    const request = await answer(written, feed, "thread/resume", { thread: { id: "thr_old" } });
+    assert.strictEqual(await resumed, "thr_old");
+    assert.strictEqual(request.params.threadId, "thr_old");
+    assert.strictEqual(request.params.excludeTurns, true, "the history stays in Codex; Kumo does not render it");
+    assert.deepStrictEqual(request.params.config.mcp_servers["kumo-bridge"].args.slice(1), ["--workspace", ws]);
+    assert.strictEqual(client.currentThreadId(), "thr_old");
+
+    // turn/start names the model, so switching keeps the conversation.
+    await client.applyModel({ model: "gpt-6-luna" });
+    assert.ok(!written.some((m) => m.method === "thread/start"), "no new thread for a model switch");
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+});
