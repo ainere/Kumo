@@ -19,13 +19,21 @@ The **Model Context Protocol (MCP)** provides an open, standardized RPC protocol
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│ Root Orchestrator (any of 13 providers)                │
-│ - Model: Dynamic (e.g. ChatGPT 6 Astra, GPT-5.5)       │
-│ - Config: .codex/config.toml (Auto-synced by Kumo)     │
-└───────────────────────────┬────────────────────────────┘
-                            │ stdio JSON-RPC
-                            ▼
-┌────────────────────────────────────────────────────────┐
+│ Engine Session (src/core/session.js)                   │
+│ - One per chat; owns its own settings                  │
+│ - Events → CLI today, desktop app later                │
+└──────────┬─────────────────────────────▲───────────────┘
+           │ starts, passing endpoint +  │ named pipe / unix socket:
+           │ session token in the env    │ settings.get, run.output,
+           ▼                             │ approval.request
+┌────────────────────────────────────────┼───────────────┐
+│ Root Orchestrator (codex / claude / antigravity)       │
+│ - Model: Dynamic (e.g. GPT-6 Astra, Claude Opus 5.5)   │
+│ - Bridge passed per thread / per turn, not via files   │
+└───────────────────────────┬────────────┼───────────────┘
+                            │ stdio MCP  │
+                            ▼            │
+┌────────────────────────────────────────┴───────────────┐
 │ MCP Bridge Server (src/bridge/server.js)               │
 │ - Uses @modelcontextprotocol/sdk                       │
 │ - Exposes 5 specialized worker_* MCP tools             │
@@ -35,20 +43,30 @@ The **Model Context Protocol (MCP)** provides an open, standardized RPC protocol
                             ▼
 ┌────────────────────────────────────────────────────────┐
 │ Execution Worker (any of 13 providers)                 │
-│ - Model: Dynamic (e.g. Gemini 3.8 Flash, Claude Opus)  │
+│ - Model: Dynamic (e.g. Gemini 3.8 Flash, Haiku 5.5)    │
 │ - Mode: read-only | workspace-write (CLI workers)       │
 │ - Subscription CLI login, or direct-API env key        │
 └────────────────────────────────────────────────────────┘
 ```
+The bridge reaches the session that started its orchestrator through the
+endpoint and token in its environment (Codex forwards them by name with
+`env_vars`, Claude Code through the per-session MCP config, Antigravity by
+inheritance). It takes the worker, model, effort and safety mode from that
+session on every call, streams each worker run's output tagged with its run
+(the session matches runs to the orchestrator's tool calls by tool and task),
+and asks the session for approvals. A bridge with no engine — started by a
+plain `codex` with a `kumo init` config — falls back to the saved config,
+live-log files and approval files.
+
 ### 1. Subscription-First Authentication (Direct API Optional)
-- Subscription CLIs need no API keys in files or network headers: orchestrator relies on `codex login`, worker on `agy auth login` (or Google account credentials).
+- Subscription CLIs need no API keys in files or network headers: each runs on its own login (`codex login`, Claude Code's login, `agy`'s Google account). Claude Code is never handed `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`, so it stays on the subscription.
 - Optional direct-API providers (`openai-api`, `anthropic-api`, `gemini-api`, `compat-api`) take keys from env vars only (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `COMPAT_API_KEY` optional + `COMPAT_BASE_URL`). Kumo never persists your keys. Only the API keys relevant to the selected provider are forwarded to the provider CLIs Kumo launches; other secret-looking environment variables are stripped from the child environment.
 - The subprocess inherits the user's OS user session and profile environment.
 
 ### 2. Execution Permissions & Safety Modes
 - **Read-Only Tools (`worker_explore`, `worker_research`, `worker_review`)**:
-  - No permission, sandbox, or approval flags are passed to the CLI subprocess.
-  - Read-only behavior is enforced solely by prompt wording and is strictly **advisory**, not a process-level or OS sandbox. Workers are instructed not to edit files, but the underlying CLI process runs with standard filesystem access.
+  - Where the CLI can enforce it, the worker is launched read-only: `codex exec --sandbox read-only`; Claude Code with `--permission-mode dontAsk` and `Edit,Write,NotebookEdit` denied; headless `agy` without permission flags (it then refuses tools that need a prompt).
+  - For other CLIs read-only behavior rests on the prompt wording and is **advisory**, not an OS sandbox.
 - **Write-Enabled Tools (`worker_implement`, `worker_test`)**:
   - The bridge decides each worker call's permission: read-only tools and diff previews run read-only; autonomous writes and confirmed re-runs get write access. With write access, Kumo passes `-y --approval-mode yolo` to the Gemini CLI, `--dangerously-skip-permissions --mode accept-edits` to `agy`, and `--sandbox workspace-write` to `codex exec` (`--sandbox read-only` otherwise).
   - When `trustWorkspace` is enabled (default `true`), `--skip-trust` is passed and `GEMINI_CLI_TRUST_WORKSPACE=true` is set in the child environment.
