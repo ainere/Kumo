@@ -14,8 +14,8 @@ import { resolveBinary } from "../../utils/process.js";
 export const PROVIDER_INFO = {
   id: "codex",
   name: "OpenAI Codex CLI",
-  defaultModel: "chatgpt-6-astra",
-  supportedReasoning: ["low", "medium", "high", "max"],
+  defaultModel: "gpt-6-astra",
+  supportedReasoning: ["low", "medium", "high", "xhigh", "max"],
 };
 
 /**

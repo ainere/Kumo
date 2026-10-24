@@ -201,7 +201,9 @@ export class AgyAppClient extends EventEmitter {
       if (!usage) return null;
 
       const isClaudeOrGpt = Boolean(this.activeModel && /claude|gpt/i.test(this.activeModel));
-      const usedPercent = isClaudeOrGpt
+      // agy reports what is left ("Weekly Limit Remaining 99%"); this used to
+      // be read as the used share, so a full quota showed as exhausted.
+      const remainingPercent = isClaudeOrGpt
         ? (usage.claudeGptWeeklyPercent ?? usage.geminiWeeklyPercent ?? 0)
         : (usage.geminiWeeklyPercent ?? usage.claudeGptWeeklyPercent ?? 0);
       const resetTime = isClaudeOrGpt
@@ -209,8 +211,8 @@ export class AgyAppClient extends EventEmitter {
         : (usage.geminiWeeklyResetFormatted || "weekly");
 
       return {
-        usedPercent,
-        remainingPercent: Math.max(0, 100 - usedPercent),
+        usedPercent: Math.max(0, 100 - remainingPercent),
+        remainingPercent,
         planType: "Google AI Pro",
         resetFormatted: resetTime,
         creditsAvailable: 0,

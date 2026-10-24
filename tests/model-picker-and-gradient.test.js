@@ -98,15 +98,17 @@ test("getOrchestratorModels falls back to DEFAULT_CODEX_MODELS when binary missi
 test("resolveModel resolves friendly aliases like luna and opus", async () => {
   const { resolveModel } = await import("../src/config/settings.js");
 
-  assert.strictEqual(resolveModel("luna"), "gpt-5.6-luna");
-  assert.strictEqual(resolveModel("astra"), "chatgpt-6-astra");
-  assert.strictEqual(resolveModel("sol"), "chatgpt-5.6-sol");
+  assert.strictEqual(resolveModel("luna"), "gpt-6-luna");
+  assert.strictEqual(resolveModel("astra"), "gpt-6-astra");
+  assert.strictEqual(resolveModel("sol"), "gpt-6.1-sol");
   assert.strictEqual(resolveModel("terra"), "gpt-5.6-terra");
   assert.strictEqual(resolveModel("custom-model"), "custom-model");
 
-  assert.strictEqual(resolveModel("opus"), "claude-opus-4-6-thinking");
-  assert.strictEqual(resolveModel("sonnet"), "claude-sonnet-4-6");
+  assert.strictEqual(resolveModel("opus"), "claude-opus-5-5");
+  assert.strictEqual(resolveModel("sonnet"), "claude-sonnet-5-5");
+  assert.strictEqual(resolveModel("haiku"), "claude-haiku-5-5");
+  assert.strictEqual(resolveModel("fable"), "claude-fable-5-1");
   assert.strictEqual(resolveModel("flash"), "gemini-3.8-flash");
-  assert.strictEqual(resolveModel("pro"), "gemini-3.1-pro");
+  assert.strictEqual(resolveModel("argon"), "gemini-4-argon");
   assert.strictEqual(resolveModel("custom-worker"), "custom-worker");
 });

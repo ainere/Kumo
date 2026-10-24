@@ -21,30 +21,35 @@ import { isToolCallItem, toolNameOf, toolArgsOf } from "../src/providers/orchest
 import { getWorker, listWorkers, workerCapabilities } from "../src/providers/workers/registry.js";
 
 test("detectProviderForModel maps models to the correct providers", () => {
-  assert.equal(detectProviderForModel("chatgpt-6-astra"), "codex");
+  assert.equal(detectProviderForModel("gpt-6-astra"), "codex");
   assert.equal(detectProviderForModel("gpt-5.5"), "codex");
   assert.equal(detectProviderForModel("gemini-3.8-flash"), "antigravity");
-  assert.equal(detectProviderForModel("claude-opus-4-6-thinking"), "antigravity");
-  assert.equal(detectProviderForModel("claude-opus-4-6-thinking", "claude"), "claude");
+  assert.equal(detectProviderForModel("gpt-oss-120b"), "antigravity", "gpt-oss is not a Codex model");
+  // Claude models default to Claude Code; an explicit provider still wins.
+  assert.equal(detectProviderForModel("claude-opus-5-5"), "claude");
+  assert.equal(detectProviderForModel("claude-opus-5-5", "antigravity"), "antigravity");
 });
 
 test("supportsEffort correctly flags models that do or do not accept --effort", () => {
-  assert.equal(supportsEffort("chatgpt-6-astra"), true);
+  assert.equal(supportsEffort("gpt-6-astra"), true);
   assert.equal(supportsEffort("gemini-3.8-flash"), true);
   assert.equal(supportsEffort("gpt-oss-120b"), true);
   // Claude models do not accept --effort flag
-  assert.equal(supportsEffort("claude-opus-4-6-thinking"), false);
-  assert.equal(supportsEffort("claude-sonnet-4-6"), false);
+  assert.equal(supportsEffort("claude-opus-5-5"), false);
+  assert.equal(supportsEffort("claude-sonnet-5-5"), false);
   // Pre-suffixed models do not accept another effort flag
-  assert.equal(supportsEffort("chatgpt-6-astra-low"), false);
-  assert.equal(supportsEffort("chatgpt-6-astra-high"), false);
+  assert.equal(supportsEffort("gemini-3.8-flash-low"), false);
+  assert.equal(supportsEffort("claude-opus-5-5-high"), false);
 });
 
 test("createOrchestratorClient instantiates appropriate client per provider", () => {
-  const codexClient = createOrchestratorClient({ model: "chatgpt-6-astra" });
+  const codexClient = createOrchestratorClient({ model: "gpt-6-astra" });
   assert.ok(codexClient instanceof CodexAppClient);
 
-  const agyClient = createOrchestratorClient({ model: "claude-opus-4-6-thinking" });
+  const claudeByModel = createOrchestratorClient({ model: "claude-opus-5-5" });
+  assert.ok(claudeByModel instanceof ClaudeAppClient, "a bare Claude model runs on Claude Code");
+
+  const agyClient = createOrchestratorClient({ provider: "antigravity", model: "claude-opus-5-5" });
   assert.ok(agyClient instanceof AgyAppClient);
 
   const agyExplicitClient = createOrchestratorClient({
@@ -90,11 +95,12 @@ test("listOrchestrators and listWorkers return canonical lists", () => {
 
 test("PRESETS includes cross-provider presets like opus-astra and opus-flash", () => {
   assert.ok(PRESETS["opus-astra"]);
-  assert.equal(PRESETS["opus-astra"].config.orchestratorModel, "claude-opus-4-6-thinking");
-  assert.equal(PRESETS["opus-astra"].config.workerModel, "chatgpt-6-astra");
+  assert.equal(PRESETS["opus-astra"].config.orchestratorProvider, "antigravity");
+  assert.equal(PRESETS["opus-astra"].config.orchestratorModel, "claude-opus-5-5");
+  assert.equal(PRESETS["opus-astra"].config.workerModel, "gpt-6-astra");
 
   assert.ok(PRESETS["opus-flash"]);
-  assert.equal(PRESETS["opus-flash"].config.orchestratorModel, "claude-opus-4-6-thinking");
+  assert.equal(PRESETS["opus-flash"].config.orchestratorModel, "claude-opus-5-5");
   assert.equal(PRESETS["opus-flash"].config.workerModel, "gemini-3.8-flash");
 });
 

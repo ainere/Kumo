@@ -74,25 +74,8 @@ export async function statusCommand(opts = {}) {
 
   const orchModelFull = config.reasoningEffort ? `${config.orchestratorModel}-${config.reasoningEffort}` : config.orchestratorModel;
   const workerModelFull = config.workerEffort ? `${config.workerModel}-${config.workerEffort}` : config.workerModel;
-  const orchSub = isOrchApi
-    ? `Direct API (${config.orchestratorProvider})`
-    : isOrchCodex
-    ? (codexLimits?.planType || (config.orchestratorProvider === "codex" ? "ChatGPT Plus" : "Codex"))
-    : (/claude|anthropic/i.test(config.orchestratorModel)
-      ? "Anthropic via Antigravity"
-      : /gpt|openai/i.test(config.orchestratorModel)
-      ? "OpenAI via Antigravity"
-      : "Google AI Pro");
-
-  const workerSub = isWorkerApi
-    ? `Direct API (${config.workerProvider})`
-    : isWorkerCodex
-    ? (codexLimits?.planType || (config.workerProvider === "codex" ? "ChatGPT Plus" : "Codex"))
-    : (/claude|anthropic/i.test(config.workerModel)
-      ? "Anthropic via Antigravity"
-      : /gpt|openai/i.test(config.workerModel)
-      ? "OpenAI via Antigravity"
-      : "Google AI Pro");
+  const orchSub = planLabel(config.orchestratorProvider, config.orchestratorModel, isOrchCodex ? codexLimits : null);
+  const workerSub = planLabel(config.workerProvider, config.workerModel, isWorkerCodex ? codexLimits : null);
 
   console.log(`  ${g1}${"Workspace:".padEnd(24)}${c.reset}${workspace}${staleNote}`);
   console.log(
@@ -152,11 +135,9 @@ export async function statusCommand(opts = {}) {
   let workerHealth = null;
   let agyUsage = null;
   if ((!isWorkerCodex && !isWorkerApi) || (!isOrchCodex && !isOrchApi)) {
-    const [health, freshAgy] = await Promise.all([
-      checkAgyHealth().catch((e) => ({ authenticated: false, error: e.message })),
-      getAgyUsage().catch(() => null),
-    ]);
-    workerHealth = health;
+    // One usage query serves both: it is the quota and the login check.
+    const freshAgy = await getAgyUsage().catch(() => null);
+    workerHealth = await checkAgyHealth({ usage: freshAgy }).catch((e) => ({ authenticated: false, error: e.message }));
     if (freshAgy) agyUsage = freshAgy;
   }
 

@@ -12,8 +12,8 @@ import {
   detectProviderForModel,
 } from "../config/settings.js";
 import { c, badge, separator } from "../utils/ui.js";
-import { openInteractiveModelPicker, DEFAULT_CODEX_MODELS, SUBSCRIPTION_PROVIDERS, DIRECT_API_PROVIDERS } from "../utils/model-picker.js";
-import { DEFAULT_WORKER_MODELS } from "../bridge/agy-runner.js";
+import { openInteractiveModelPicker, SUBSCRIPTION_PROVIDERS, DIRECT_API_PROVIDERS } from "../utils/model-picker.js";
+import { MODEL_CATALOG, planLabel, EFFORT_LEVELS } from "../config/models.js";
 
 export function effortCommand(target, value) {
   const config = loadConfig();
@@ -22,12 +22,12 @@ export function effortCommand(target, value) {
   if (target === "worker") {
     if (!value || value === "show" || value === "get") {
       console.log(`\n  ${c.gray}Current worker reasoning effort:${c.reset} ${c.brightBlue}${config.workerEffort || "medium"}${c.reset}`);
-      console.log(`  ${c.gray}Available options:${c.reset} low, medium, high`);
-      console.log(`  ${c.gray}Usage:${c.reset} kumo effort worker <low|medium|high>\n`);
+      console.log(`  ${c.gray}Available options:${c.reset} ${EFFORT_LEVELS.join(", ")}`);
+      console.log(`  ${c.gray}Usage:${c.reset} kumo effort worker <${EFFORT_LEVELS.join("|")}>\n`);
       return;
     }
     const effortLevel = value.toLowerCase();
-    const validEfforts = ["low", "medium", "high"];
+    const validEfforts = EFFORT_LEVELS;
     if (!validEfforts.includes(effortLevel)) {
       console.error(`${badge.fail} Invalid worker reasoning effort '${value}'. Supported levels: ${validEfforts.join(", ")}`);
       process.exit(1);
@@ -40,8 +40,8 @@ export function effortCommand(target, value) {
   // Handle kumo effort orchestrator <level>, symmetric with the worker form.
   if (target === "orchestrator" && (!value || value === "show" || value === "get")) {
     console.log(`\n  ${c.gray}Current orchestrator reasoning effort:${c.reset} ${c.brightCyan}${config.reasoningEffort || "low"}${c.reset}`);
-    console.log(`  ${c.gray}Available options:${c.reset} low, medium, high, max`);
-    console.log(`  ${c.gray}Usage:${c.reset} kumo effort orchestrator <low|medium|high|max>\n`);
+    console.log(`  ${c.gray}Available options:${c.reset} ${EFFORT_LEVELS.join(", ")}`);
+    console.log(`  ${c.gray}Usage:${c.reset} kumo effort orchestrator <${EFFORT_LEVELS.join("|")}>\n`);
     return;
   }
 
@@ -50,13 +50,13 @@ export function effortCommand(target, value) {
   if (!level || level === "show" || level === "status" || level === "get") {
     console.log(`\n  ${c.gray}Current orchestrator reasoning effort:${c.reset} ${c.brightCyan}${config.reasoningEffort || "low"}${c.reset}`);
     console.log(`  ${c.gray}Current worker reasoning effort:${c.reset}       ${c.brightBlue}${config.workerEffort || "medium"}${c.reset}`);
-    console.log(`  ${c.gray}Usage:${c.reset} kumo effort <low|medium|high|max>`);
-    console.log(`         kumo effort worker <low|medium|high>\n`);
+    console.log(`  ${c.gray}Usage:${c.reset} kumo effort <${EFFORT_LEVELS.join("|")}>`);
+    console.log(`         kumo effort worker <${EFFORT_LEVELS.join("|")}>\n`);
     return;
   }
 
   const effortLevel = level.toLowerCase();
-  const validEfforts = ["low", "medium", "high", "max"];
+  const validEfforts = EFFORT_LEVELS;
   if (!validEfforts.includes(effortLevel)) {
     console.error(`${badge.fail} Invalid reasoning effort '${level}'. Supported levels: ${validEfforts.join(", ")}`);
     process.exit(1);
@@ -127,8 +127,8 @@ export async function modelCommand(action, target, value, extra) {
     }
     const model = resolveModel(raw);
     const provider = detectProviderForModel(model, customProvider);
-    if (effort && !["low", "medium", "high", "max"].includes(String(effort).toLowerCase())) {
-      console.error(`${badge.fail} Invalid orchestrator effort '${effort}'. Allowed: low, medium, high, max`);
+    if (effort && !EFFORT_LEVELS.includes(String(effort).toLowerCase())) {
+      console.error(`${badge.fail} Invalid orchestrator effort '${effort}'. Allowed: ${EFFORT_LEVELS.join(", ")}`);
       process.exit(1);
     }
     setConfigValue("orchestratorModel", model);
@@ -153,8 +153,8 @@ export async function modelCommand(action, target, value, extra) {
     }
     const model = resolveModel(raw);
     const provider = detectProviderForModel(model, customProvider);
-    if (effort && !["low", "medium", "high"].includes(String(effort).toLowerCase())) {
-      console.error(`${badge.fail} Invalid worker effort '${effort}'. Allowed: low, medium, high`);
+    if (effort && !EFFORT_LEVELS.includes(String(effort).toLowerCase())) {
+      console.error(`${badge.fail} Invalid worker effort '${effort}'. Allowed: ${EFFORT_LEVELS.join(", ")}`);
       process.exit(1);
     }
     setConfigValue("workerModel", model);
@@ -178,8 +178,8 @@ export async function modelCommand(action, target, value, extra) {
     setConfigValue("orchestratorProvider", orchProvider);
     setConfigValue("workerModel", worker);
     setConfigValue("workerProvider", workerProvider);
-    if (effort && !["low", "medium", "high", "max"].includes(String(effort).toLowerCase())) {
-      console.error(`${badge.fail} Invalid orchestrator effort '${effort}'. Allowed: low, medium, high, max`);
+    if (effort && !EFFORT_LEVELS.includes(String(effort).toLowerCase())) {
+      console.error(`${badge.fail} Invalid orchestrator effort '${effort}'. Allowed: ${EFFORT_LEVELS.join(", ")}`);
       process.exit(1);
     }
     if (effort) {
@@ -202,10 +202,6 @@ export async function modelCommand(action, target, value, extra) {
       return;
     }
     const model = resolveModel(action);
-    if (/^gemini-/i.test(model)) {
-      console.error(`${badge.fail} '${model}' is a worker-only model. Use: kumo model worker ${model}`);
-      process.exit(1);
-    }
     const provider = detectProviderForModel(model);
     setConfigValue("orchestratorModel", model);
     setConfigValue("orchestratorProvider", provider);
@@ -230,8 +226,8 @@ function printModelList(config) {
   console.log(separator(60));
   const orchModelFull = config.reasoningEffort ? `${config.orchestratorModel}-${config.reasoningEffort}` : config.orchestratorModel;
   const workerModelFull = config.workerEffort ? `${config.workerModel}-${config.workerEffort}` : config.workerModel;
-  console.log(`  ${c.gray}Orchestrator:${c.reset}      ${c.brightCyan}${orchModelFull}${c.reset} (${config.orchestratorProvider === 'codex' ? 'ChatGPT Plus' : config.orchestratorProvider})`);
-  console.log(`  ${c.gray}Worker:${c.reset}            ${c.brightBlue}${workerModelFull}${c.reset} (${config.workerProvider === 'gemini' ? 'Google AI Pro' : config.workerProvider})`);
+  console.log(`  ${c.gray}Orchestrator:${c.reset}      ${c.brightCyan}${orchModelFull}${c.reset} (${config.orchestratorProvider}, ${planLabel(config.orchestratorProvider, config.orchestratorModel)})`);
+  console.log(`  ${c.gray}Worker:${c.reset}            ${c.brightBlue}${workerModelFull}${c.reset} (${config.workerProvider}, ${planLabel(config.workerProvider, config.workerModel)})`);
   console.log(`  ${c.gray}CLI Binary:${c.reset}        ${config.cliBinary || 'agy'}`);
 
   console.log(`\n${c.bold}Available Presets:${c.reset}`);
@@ -247,18 +243,22 @@ function printModelList(config) {
   }
 
   console.log(`\n${c.bold}Subscription CLIs:${c.reset} ${c.gray}(${SUBSCRIPTION_PROVIDERS.join(", ")})${c.reset}`);
-  console.log(`\n${c.bold}Available Orchestrator Models (Codex):${c.reset}`);
-  for (const m of DEFAULT_CODEX_MODELS) {
-    const isCurrent = config.orchestratorModel === m.id;
-    const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
-    console.log(`  ${marker}${c.brightCyan}${m.id.padEnd(20)}${c.reset} ${m.name} ${c.gray}— ${m.desc}${c.reset}`);
-  }
-
-  console.log(`\n${c.bold}Available Worker Models (Antigravity):${c.reset}`);
-  for (const m of DEFAULT_WORKER_MODELS) {
-    const isCurrent = config.workerModel === m.id;
-    const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
-    console.log(`  ${marker}${c.brightBlue}${m.id.padEnd(25)}${c.reset} ${m.name}${c.reset}`);
+  // Any model works in either role; the lists are grouped by the CLI that runs them.
+  const groups = [
+    ["codex", "Codex (ChatGPT subscription)"],
+    ["claude", "Claude Code (Claude subscription)"],
+    ["antigravity", "Antigravity (Google AI Pro)"],
+  ];
+  for (const [provider, title] of groups) {
+    console.log(`\n${c.bold}${title}:${c.reset} ${c.gray}provider ${provider}${c.reset}`);
+    for (const m of MODEL_CATALOG[provider]) {
+      const isCurrent =
+        (config.orchestratorProvider === provider && config.orchestratorModel === m.id) ||
+        (config.workerProvider === provider && config.workerModel === m.id);
+      const marker = isCurrent ? `${c.brightGreen}* ${c.reset}` : "  ";
+      const alias = m.alias ? ` ${c.gray}(${m.alias})${c.reset}` : "";
+      console.log(`  ${marker}${c.brightCyan}${m.id.padEnd(20)}${c.reset} ${m.name}${alias}${m.desc ? ` ${c.gray}— ${m.desc}${c.reset}` : ""}`);
+    }
   }
 
   console.log(`\n${c.bold}Direct API:${c.reset} ${c.gray}(${DIRECT_API_PROVIDERS.join(", ")} — env keys, never stored)${c.reset}`);
@@ -271,7 +271,7 @@ function printModelList(config) {
   console.log(`  ${c.gray}kumo model <model>${c.reset}                                    Set orchestrator model`);
   console.log(`  ${c.gray}kumo model orchestrator <model> [effort] [provider]${c.reset}  Set orchestrator model, effort, and explicit provider`);
   console.log(`  ${c.gray}kumo model worker <model> [effort] [provider]${c.reset}        Set worker model, effort, and explicit provider`);
-  console.log(`  ${c.gray}kumo effort <low|medium|high|max>${c.reset}                      Set orchestrator reasoning effort`);
-  console.log(`  ${c.gray}kumo effort worker <low|medium|high>${c.reset}                   Set worker reasoning effort`);
+  console.log(`  ${c.gray}kumo effort <${EFFORT_LEVELS.join("|")}>${c.reset}                      Set orchestrator reasoning effort`);
+  console.log(`  ${c.gray}kumo effort worker <${EFFORT_LEVELS.join("|")}>${c.reset}                   Set worker reasoning effort`);
   console.log(`  ${c.gray}kumo model use <preset>${c.reset}                                Apply preset (e.g. kumo model use test)\n`);
 }

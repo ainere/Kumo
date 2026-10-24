@@ -28,7 +28,7 @@ export function createCli() {
     // `kumo run "…" -d <path>` silently ran in the current directory.
     .enablePositionalOptions();
 
-  // Default interactive command (launches new window and closes old CMD by default)
+  // Default interactive command (opens Kumo in a new terminal window unless --here)
   program
     .option("-d, --dir <path>", "Target workspace directory (defaults to current working directory)")
     .option("--here", "Force running in current terminal (do not spawn new window)")

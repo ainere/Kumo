@@ -19,6 +19,23 @@ import { ClaudeAppClient, BRIDGE_TOOL_RULE } from "../src/providers/orchestrator
 import { GenericAppClient } from "../src/providers/orchestrators/generic-client.js";
 import { BRIDGE_SERVER_PATH } from "../src/config/sync.js";
 import { OpenAIApiClient } from "../src/providers/api/openai-api-client.js";
+import { fileURLToPath } from "node:url";
+
+/** A real `claude -p --output-format stream-json` turn (Claude Code 2.1.307) that calls worker_explore once. */
+const CLAUDE_STREAM = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "claude-stream.jsonl");
+// Like the real CLI, the stub reports the session id it was given.
+const FIXTURE_SESSION = "3fb8861e-7d8e-4f1b-8e35-cbd341b26a92";
+const echoSession = `const a = process.argv.slice(2); const at = a.findIndex((x) => x === "--session-id" || x === "--resume"); const sid = at >= 0 ? a[at + 1] : ${JSON.stringify(FIXTURE_SESSION)};
+`;
+const printClaudeStream = echoSession + `process.stdout.write(fs.readFileSync(${JSON.stringify(CLAUDE_STREAM)}, "utf-8").split(${JSON.stringify(FIXTURE_SESSION)}).join(sid));`;
+
+/** The fixture with its events changed by `patch`, as a stub tail. */
+function printPatchedClaudeStream(patch) {
+  const lines = fs.readFileSync(CLAUDE_STREAM, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+  patch(lines);
+  const text = lines.map((l) => JSON.stringify(l)).join("\n") + "\n";
+  return `process.stdout.write(${JSON.stringify(text)});`;
+}
 
 /**
  * Write a stub CLI that logs `{ args, stdin }` per call to `log`, then runs `tail`.
@@ -55,7 +72,12 @@ const valueAfter = (args, flag) => args[args.indexOf(flag) + 1];
 test("the Claude orchestrator gets the bridge, may call it, and keeps one conversation", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-claude-"));
   const log = path.join(dir, "calls.jsonl");
-  const client = new ClaudeAppClient({ bin: writeStub(dir, log), workspace: dir, model: "claude-opus-4-6" });
+  const client = new ClaudeAppClient({
+    bin: writeStub(dir, log, printClaudeStream),
+    workspace: dir,
+    model: "claude-opus-5-5",
+    effort: "high",
+  });
   try {
     await client.start();
     await client.startThread({ workspace: dir });
@@ -74,7 +96,10 @@ test("the Claude orchestrator gets the bridge, may call it, and keeps one conver
     const sessionId = valueAfter(first.args, "--session-id");
     assert.match(sessionId, /^[0-9a-f-]{36}$/);
     assert.strictEqual(valueAfter(second.args, "--resume"), sessionId, "the second turn continues the first");
-    assert.strictEqual(valueAfter(second.args, "--model"), "claude-opus-4-6");
+    assert.strictEqual(valueAfter(second.args, "--model"), "claude-opus-5-5");
+    assert.strictEqual(valueAfter(second.args, "--effort"), "high");
+    assert.strictEqual(valueAfter(first.args, "--output-format"), "stream-json");
+    assert.ok(first.args.includes("--strict-mcp-config"), "only the bridge is started, not the user's other servers");
 
     await client.stop();
     assert.strictEqual(fs.existsSync(mcpConfigFile), false, "the per-session MCP config is cleaned up");
@@ -87,7 +112,7 @@ test("the Claude orchestrator gets the bridge, may call it, and keeps one conver
 test("a new thread starts a new Claude conversation", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-claude-"));
   const log = path.join(dir, "calls.jsonl");
-  const client = new ClaudeAppClient({ bin: writeStub(dir, log), workspace: dir });
+  const client = new ClaudeAppClient({ bin: writeStub(dir, log, printClaudeStream), workspace: dir });
   try {
     await client.startThread({ workspace: dir });
     await runTurn(client, () => client.startTurn("a")).done;
@@ -96,6 +121,115 @@ test("a new thread starts a new Claude conversation", async () => {
     const [a, b] = readCalls(log);
     assert.ok(b.args.includes("--session-id"), "after /new the conversation must not be resumed");
     assert.notStrictEqual(valueAfter(a.args, "--session-id"), valueAfter(b.args, "--session-id"));
+  } finally {
+    await client.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Claude's stream yields its answer, the worker call, and the account's rate limits", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-claude-"));
+  const log = path.join(dir, "calls.jsonl");
+  const client = new ClaudeAppClient({ bin: writeStub(dir, log, printClaudeStream), workspace: dir });
+  const deltas = [];
+  const started = [];
+  const completed = [];
+  client.on("delta", (t) => deltas.push(t));
+  client.on("item_started", (p) => started.push(p.item));
+  client.on("item_completed", (p) => completed.push(p.item));
+  try {
+    await client.startThread({ workspace: dir });
+    assert.deepStrictEqual(await runTurn(client, () => client.startTurn("where is add?")).done, { ok: true });
+
+    assert.strictEqual(deltas.join(""), "`add` is defined at `src\\math.js:1` as `export function add(a, b)`.");
+    assert.ok(deltas.length > 1, "the answer streams in pieces, not as one block at the end");
+
+    const worker = started.filter((i) => i.type === "mcpToolCall");
+    assert.strictEqual(worker.length, 1);
+    assert.strictEqual(worker[0].server, "kumo-bridge");
+    assert.strictEqual(worker[0].tool, "worker_explore");
+    assert.match(worker[0].arguments.task, /function `add`/);
+    assert.ok(started.some((i) => i.type === "toolUse" && i.name === "ToolSearch"), "built-in tools are not worker calls");
+    assert.deepStrictEqual(
+      completed.filter((i) => i.type === "mcpToolCall").map((i) => [i.id, i.status]),
+      [[worker[0].id, "completed"]]
+    );
+
+    // five_hour is 14% used, seven_day 15%: the tighter window is reported.
+    const limits = await client.getRateLimits();
+    assert.strictEqual(limits.remainingPercent, 85);
+    assert.strictEqual(limits.windowMinutes, 10080);
+    assert.match(client.currentThreadId(), /^[0-9a-f-]{36}$/, "a finished turn leaves a conversation to resume");
+  } finally {
+    await client.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Claude error result fails the turn with Claude's own reason", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-claude-"));
+  const log = path.join(dir, "calls.jsonl");
+  const tail = printPatchedClaudeStream((lines) => {
+    lines.splice(1, lines.length - 2);
+    Object.assign(lines.at(-1), { subtype: "error_during_execution", is_error: true, result: "Usage limit reached" });
+  });
+  const client = new ClaudeAppClient({ bin: writeStub(dir, log, tail), workspace: dir });
+  try {
+    await client.startThread({ workspace: dir });
+    const outcome = await runTurn(client, () => client.startTurn("hi")).done;
+    assert.deepStrictEqual(outcome, { ok: false, reason: "Usage limit reached" });
+    assert.strictEqual(client.currentThreadId(), null, "a failed first turn leaves nothing to resume");
+  } finally {
+    await client.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Claude Code runs on the subscription login: API keys are withheld, and a key in use is reported", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-claude-"));
+  const log = path.join(dir, "calls.jsonl");
+  const envLog = path.join(dir, "env.txt");
+  const tail =
+    `fs.writeFileSync(${JSON.stringify(envLog)}, [process.env.ANTHROPIC_API_KEY, process.env.ANTHROPIC_AUTH_TOKEN].map(Boolean).join(","));\n` +
+    printPatchedClaudeStream((lines) => {
+      lines[0].apiKeySource = "apiKeyHelper";
+      lines[0].mcp_servers = [{ name: "kumo-bridge", status: "failed" }];
+    });
+  const saved = { key: process.env.ANTHROPIC_API_KEY, token: process.env.ANTHROPIC_AUTH_TOKEN };
+  process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+  process.env.ANTHROPIC_AUTH_TOKEN = "tok-test";
+  const client = new ClaudeAppClient({ bin: writeStub(dir, log, tail), workspace: dir });
+  const warnings = [];
+  client.on("warning", (w) => warnings.push(w.message));
+  try {
+    await client.startThread({ workspace: dir });
+    await runTurn(client, () => client.startTurn("hi")).done;
+    assert.strictEqual(fs.readFileSync(envLog, "utf-8"), "false,false");
+    assert.ok(warnings.some((m) => /using an API key \(apiKeyHelper\)/.test(m)), warnings.join("\n"));
+    assert.ok(warnings.some((m) => /kumo-bridge failed/.test(m)), warnings.join("\n"));
+  } finally {
+    for (const [name, value] of [
+      ["ANTHROPIC_API_KEY", saved.key],
+      ["ANTHROPIC_AUTH_TOKEN", saved.token],
+    ]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    await client.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resuming a Claude conversation continues it on the next turn", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-claude-"));
+  const log = path.join(dir, "calls.jsonl");
+  const client = new ClaudeAppClient({ bin: writeStub(dir, log, printClaudeStream), workspace: dir });
+  try {
+    await client.resumeThread({ threadId: "3fb8861e-7d8e-4f1b-8e35-cbd341b26a92", workspace: dir });
+    await runTurn(client, () => client.startTurn("and sub?")).done;
+    const [call] = readCalls(log);
+    assert.strictEqual(valueAfter(call.args, "--resume"), "3fb8861e-7d8e-4f1b-8e35-cbd341b26a92");
+    assert.ok(!call.args.includes("--session-id"));
   } finally {
     await client.stop();
     fs.rmSync(dir, { recursive: true, force: true });

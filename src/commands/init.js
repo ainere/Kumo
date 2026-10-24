@@ -10,7 +10,7 @@ import { syncAgentConfigs } from "../config/sync.js";
 
 function getAgentsTemplate(vaultPath) {
   const config = loadConfig();
-  const orchModel = config.orchestratorModel || "chatgpt-6-astra";
+  const orchModel = config.orchestratorModel || "gpt-6-astra";
   const orchProvider = config.orchestratorProvider || "codex";
   const workerModel = config.workerModel || "gemini-3.8-flash";
   const workerProvider = config.workerProvider || "antigravity";

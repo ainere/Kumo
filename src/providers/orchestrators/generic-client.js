@@ -9,6 +9,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import { StringDecoder } from "node:string_decoder";
 import { safeSpawn, resolveBinary, stopProcessTree } from "../../utils/process.js";
 
 /** How much trailing stderr is kept to explain a failed turn. */
@@ -65,6 +66,40 @@ export class GenericAppClient extends EventEmitter {
    */
   afterTurn(_ok) {}
 
+  /**
+   * Hook for each chunk of a turn's stdout. The default streams it verbatim
+   * as the answer; CLIs with a structured output format parse it instead.
+   *
+   * @param {string} text
+   */
+  onStdout(text) {
+    this.emit("delta", text);
+  }
+
+  /**
+   * Hook deciding how a turn ended once its process exits. The default reads
+   * the exit code; a CLI that reports its own result can override it.
+   *
+   * @param {number|null} code
+   * @param {string} stderrTail
+   * @returns {{ ok: boolean, reason?: string }}
+   */
+  turnResult(code, stderrTail) {
+    if (code === 0) return { ok: true };
+    const detail = stderrTail.trim();
+    return { ok: false, reason: `${this.command} exited with code ${code}${detail ? `: ${detail}` : ""}` };
+  }
+
+  /**
+   * Environment for a turn's process.
+   *
+   * @param {Record<string, string>} extra
+   * @returns {Record<string, string|undefined>}
+   */
+  childEnv(extra = {}) {
+    return { ...process.env, ...this.options.env, ...extra };
+  }
+
   async startTurn(prompt, { model, effort } = {}) {
     const turn = this.buildTurn(prompt, {
       model: model || this.activeModel,
@@ -87,11 +122,7 @@ export class GenericAppClient extends EventEmitter {
         proc = safeSpawn(resolveBinary(this.bin), args, {
           cwd: this.workspace,
           stdio: [stdin === null ? "ignore" : "pipe", "pipe", "pipe"],
-          env: {
-            ...process.env,
-            ...this.options.env,
-            ...env,
-          },
+          env: this.childEnv(env),
         });
       } catch (err) {
         this.isTurnActive = false;
@@ -108,8 +139,13 @@ export class GenericAppClient extends EventEmitter {
       }
 
       let stderrTail = "";
+      // A decoder per stream: a multi-byte character split across two chunks
+      // would otherwise turn into two replacement characters.
+      const stdoutDecoder = new StringDecoder("utf8");
       proc.stdout?.on("data", (chunk) => {
-        this.emit("delta", chunk.toString());
+        if (proc !== this.proc) return; // interrupted or replaced
+        const text = stdoutDecoder.write(chunk);
+        if (text) this.onStdout(text);
       });
       proc.stderr?.on("data", (chunk) => {
         const text = chunk.toString();
@@ -118,16 +154,18 @@ export class GenericAppClient extends EventEmitter {
       });
 
       proc.on("close", (code) => {
-        if (this.proc === proc) this.proc = null;
+        // An interrupted turn has already been reported as such.
+        const current = this.proc === proc;
+        if (current) {
+          const rest = stdoutDecoder.end();
+          if (rest) this.onStdout(rest);
+          this.proc = null;
+        }
         this.isTurnActive = false;
-        const ok = code === 0;
-        this.afterTurn(ok);
-        const detail = stderrTail.trim();
-        this.emit(
-          "turn_completed",
-          ok ? { ok } : { ok, reason: `${this.command} exited with code ${code}${detail ? `: ${detail}` : ""}` }
-        );
-        resolve({ ok });
+        const result = this.turnResult(code, stderrTail);
+        this.afterTurn(result.ok);
+        if (current) this.emit("turn_completed", result);
+        resolve({ ok: result.ok });
       });
 
       proc.on("error", (err) => {

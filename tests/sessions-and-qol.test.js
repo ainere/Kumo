@@ -197,8 +197,8 @@ test("clearHistory removes persistent history file", () => {
 
 test("isCodexModel distinguishes Codex vs Antigravity models correctly", () => {
   // Codex models
-  assert.strictEqual(isCodexModel("chatgpt-6-astra"), true);
-  assert.strictEqual(isCodexModel("chatgpt-5.6-sol"), true);
+  assert.strictEqual(isCodexModel("gpt-6-astra"), true);
+  assert.strictEqual(isCodexModel("gpt-5.6-sol"), true);
   assert.strictEqual(isCodexModel("gpt-5.5"), true);
   assert.strictEqual(isCodexModel("gpt-5.6-terra"), true);
   assert.strictEqual(isCodexModel("anything", "codex"), true);
@@ -206,7 +206,7 @@ test("isCodexModel distinguishes Codex vs Antigravity models correctly", () => {
   // Antigravity models
   assert.strictEqual(isCodexModel("gemini-3.8-flash"), false);
   assert.strictEqual(isCodexModel("gemini-3.7-flash"), false);
-  assert.strictEqual(isCodexModel("claude-opus-4-6-thinking"), false);
+  assert.strictEqual(isCodexModel("claude-opus-5-5"), false);
   assert.strictEqual(isCodexModel("gpt-oss-120b"), false);
   assert.strictEqual(isCodexModel("solana-x"), false);
   assert.strictEqual(isCodexModel("lunarvim"), false);
@@ -215,11 +215,11 @@ test("isCodexModel distinguishes Codex vs Antigravity models correctly", () => {
 });
 
 test("resolveModel resolves both Codex and Antigravity aliases", () => {
-  assert.strictEqual(resolveModel("astra"), "chatgpt-6-astra");
-  assert.strictEqual(resolveModel("sol"), "chatgpt-5.6-sol");
-  assert.strictEqual(resolveModel("gpt-5"), "gpt-5.5");
+  assert.strictEqual(resolveModel("astra"), "gpt-6-astra");
+  assert.strictEqual(resolveModel("sol"), "gpt-6.1-sol");
+  assert.strictEqual(resolveModel("6.1-sol"), "gpt-6.1-sol");
   assert.strictEqual(resolveModel("flash"), "gemini-3.8-flash");
-  assert.strictEqual(resolveModel("opus"), "claude-opus-4-6-thinking");
+  assert.strictEqual(resolveModel("opus"), "claude-opus-5-5");
   assert.strictEqual(resolveModel("oss"), "gpt-oss-120b");
 });
 

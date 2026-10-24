@@ -22,6 +22,7 @@ import { z } from "zod";
 import { getWorker, workerCapabilities, KNOWN_WORKERS } from "../providers/workers/registry.js";
 import { getSystemPrompt } from "./prompts.js";
 import { loadConfig, detectProviderForModel, canonicalizeProvider } from "../config/settings.js";
+import { EFFORT_LEVELS } from "../config/models.js";
 import {
   getLiveLogPath,
   setActiveLiveRun,
@@ -929,7 +930,7 @@ async function handleReview(args) {
 const taskField = z.string().min(1).max(8000).refine((v) => !/^\s*$/.test(v), "task must be non-empty");
 const filesField = z.array(z.string().min(1).max(500).refine((f) => !/[\r\n\0]/.test(f), "newline-free")).max(20).optional();
 const modelField = z.string().max(120).refine((v) => !v.startsWith("-") && !v.includes("\0"), "invalid model").optional();
-const effortField = z.enum(["low", "medium", "high", "max"]).optional();
+const effortField = z.enum(EFFORT_LEVELS).optional();
 // Enumerated from the worker registry: an unknown id would become the name of
 // the executable the generic worker spawns.
 const providerField = z.enum(KNOWN_WORKERS).optional();

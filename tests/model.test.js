@@ -8,11 +8,11 @@ import assert from "node:assert";
 import { loadConfig, setConfigValue, applyPreset, PRESETS } from "../src/config/settings.js";
 import { effortCommand, modelCommand } from "../src/commands/model.js";
 
-test("PRESETS includes test preset with gpt-5.5 low and gemini-3.6-flash low for tests", () => {
+test("PRESETS includes test preset with gpt-6-luna low and gemini-3.8-flash low for tests", () => {
   assert.ok(PRESETS.test, "Expected 'test' preset to exist");
-  assert.strictEqual(PRESETS.test.config.orchestratorModel, "gpt-5.5");
+  assert.strictEqual(PRESETS.test.config.orchestratorModel, "gpt-6-luna");
   assert.strictEqual(PRESETS.test.config.reasoningEffort, "low");
-  assert.strictEqual(PRESETS.test.config.workerModel, "gemini-3.6-flash");
+  assert.strictEqual(PRESETS.test.config.workerModel, "gemini-3.8-flash");
   assert.strictEqual(PRESETS.test.config.workerEffort, "low");
 });
 

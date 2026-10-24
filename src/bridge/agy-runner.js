@@ -11,6 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, supportsEffort } from "../config/settings.js";
+import { MODEL_CATALOG } from "../config/models.js";
 import { formatIsoResetTime } from "../utils/ui.js";
 import {
   safeSpawn,
@@ -374,6 +375,70 @@ export async function runAgy(opts) {
 }
 
 /**
+ * Parse `agy -p /usage` output. Each line is tab-separated:
+ * `<group>\t<metric>\t<percent>%\t<reset ISO>`, and every percentage is what
+ * is *remaining* (agy 1.2: "Weekly Limit Remaining 99%").
+ *
+ * Besides the family-wide rows ("Gemini Models", "Claude and GPT models"),
+ * agy lists per-model limits ("Gemini 4 Argon … Weekly Limit"). Those used to
+ * overwrite the family figure because they come later; a family row now wins
+ * and a per-model row only fills a slot no family row provided.
+ *
+ * @param {string} stdout
+ * @returns {Object|null} null when no line could be parsed
+ */
+export function parseAgyUsage(stdout) {
+  const usage = {
+    geminiWeeklyPercent: null,
+    geminiWeeklyResetFormatted: null,
+    geminiWeeklyResetIso: null,
+    gemini5HourPercent: null,
+    gemini5HourResetFormatted: null,
+    gemini5HourResetIso: null,
+    claudeGptWeeklyPercent: null,
+    claudeGptWeeklyResetFormatted: null,
+    claudeGptWeeklyResetIso: null,
+    claudeGpt5HourPercent: null,
+    claudeGpt5HourResetFormatted: null,
+    claudeGpt5HourResetIso: null,
+    rawItems: [],
+  };
+
+  for (const line of String(stdout || "").trim().split(/\r?\n/)) {
+    const parts = line.split("\t").map((s) => s.trim());
+    if (parts.length < 3) continue;
+    const percent = parseInt(parts[2].replace("%", ""), 10);
+    if (!Number.isFinite(percent)) continue;
+    usage.rawItems.push({ group: parts[0], metric: parts[1], percent, resetIso: parts[3] || null });
+  }
+  if (usage.rawItems.length === 0) return null;
+
+  const isFamilyRow = (item) => /\bmodels\b/i.test(item.group);
+  const ordered = [...usage.rawItems.filter(isFamilyRow), ...usage.rawItems.filter((i) => !isFamilyRow(i))];
+  const set = (prefix, item) => {
+    if (usage[`${prefix}Percent`] !== null) return;
+    usage[`${prefix}Percent`] = item.percent;
+    usage[`${prefix}ResetFormatted`] = formatIsoResetTime(item.resetIso);
+    usage[`${prefix}ResetIso`] = item.resetIso;
+  };
+
+  for (const item of ordered) {
+    const group = item.group.toLowerCase();
+    const metric = item.metric.toLowerCase();
+    const weekly = metric.includes("weekly");
+    const fiveHour = /five hour|5-hour|5 hour/.test(metric);
+    if (group.includes("gemini")) {
+      if (weekly) set("geminiWeekly", item);
+      else if (fiveHour) set("gemini5Hour", item);
+    } else if (group.includes("claude") || group.includes("gpt")) {
+      if (weekly) set("claudeGptWeekly", item);
+      else set("claudeGpt5Hour", item);
+    }
+  }
+  return usage;
+}
+
+/**
  * Query live Antigravity / Gemini usage limits via `agy -p /usage`.
  *
  * @returns {Promise<Object | null>}
@@ -401,64 +466,7 @@ export async function getAgyUsage() {
       if (code !== 0 || !stdout.trim()) {
         return resolve(null);
       }
-
-      const lines = stdout.trim().split("\n");
-      const usage = {
-        geminiWeeklyPercent: null,
-        geminiWeeklyResetFormatted: null,
-        geminiWeeklyResetIso: null,
-        gemini5HourPercent: null,
-        gemini5HourResetFormatted: null,
-        gemini5HourResetIso: null,
-        claudeGptWeeklyPercent: null,
-        claudeGptWeeklyResetFormatted: null,
-        claudeGptWeeklyResetIso: null,
-        claudeGpt5HourPercent: null,
-        claudeGpt5HourResetFormatted: null,
-        claudeGpt5HourResetIso: null,
-        rawItems: [],
-      };
-
-      for (const line of lines) {
-        const parts = line.split("\t").map((s) => s.trim());
-        if (parts.length >= 3) {
-          const group = parts[0];
-          const metric = parts[1];
-          const percentStr = parts[2].replace("%", "");
-          const percent = parseInt(percentStr, 10);
-          const resetIso = parts[3] || null;
-
-          usage.rawItems.push({ group, metric, percent, resetIso });
-
-          if (group.toLowerCase().includes("gemini")) {
-            if (metric.toLowerCase().includes("weekly")) {
-              usage.geminiWeeklyPercent = percent;
-              usage.geminiWeeklyResetFormatted = formatIsoResetTime(resetIso);
-              usage.geminiWeeklyResetIso = resetIso;
-            } else if (
-              metric.toLowerCase().includes("five hour") ||
-              metric.toLowerCase().includes("5-hour") ||
-              metric.toLowerCase().includes("5 hour")
-            ) {
-              usage.gemini5HourPercent = percent;
-              usage.gemini5HourResetFormatted = formatIsoResetTime(resetIso);
-              usage.gemini5HourResetIso = resetIso;
-            }
-          } else if (group.toLowerCase().includes("claude") || group.toLowerCase().includes("gpt")) {
-            if (metric.toLowerCase().includes("weekly")) {
-              usage.claudeGptWeeklyPercent = percent;
-              usage.claudeGptWeeklyResetFormatted = formatIsoResetTime(resetIso);
-              usage.claudeGptWeeklyResetIso = resetIso;
-            } else {
-              usage.claudeGpt5HourPercent = percent;
-              usage.claudeGpt5HourResetFormatted = formatIsoResetTime(resetIso);
-              usage.claudeGpt5HourResetIso = resetIso;
-            }
-          }
-        }
-      }
-
-      resolve(usage);
+      resolve(parseAgyUsage(stdout));
     });
 
     proc.on("error", () => {
@@ -469,46 +477,34 @@ export async function getAgyUsage() {
 }
 
 /**
- * Health check — verify Antigravity CLI is installed and can be invoked.
- * @returns {Promise<{installed: boolean, authenticated: boolean, binary: string, error?: string}>}
+ * Health check — is the Antigravity CLI installed and logged in?
+ *
+ * `agy -p /usage` answers from the account without running a model, so the
+ * check costs no quota; it used to send a real prompt ("Reply with PONG"),
+ * which spent quota on every `kumo status`. Usage data only comes back for a
+ * logged-in account, so getting it is the authentication signal.
+ *
+ * @param {{ usage?: Object|null }} [opts] - an already fetched usage result, to skip a second spawn
+ * @returns {Promise<{installed: boolean, authenticated: boolean, binary: string, usage: Object|null, error?: string}>}
  */
-export async function checkAgyHealth() {
+export async function checkAgyHealth(opts = {}) {
   const bin = getCliBinary();
-  try {
-    const result = await runAgy({
-      prompt: "Reply with 'PONG' and nothing else.",
-      model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
-      effort: "low",
-      mode: "read-only",
-      timeoutMs: 15_000,
-    });
-
-    return {
-      installed: true,
-      authenticated: result.ok,
-      binary: bin,
-      error: result.ok ? undefined : (result.stderr || result.stdout),
-    };
-  } catch (err) {
-    return {
-      installed: false,
-      authenticated: false,
-      binary: bin,
-      error: err instanceof Error ? err.message : String(err),
-    };
+  const resolved = resolveBinary(bin);
+  if (!path.isAbsolute(resolved) || !fs.existsSync(resolved)) {
+    return { installed: false, authenticated: false, binary: bin, usage: null, error: `'${bin}' was not found` };
   }
+  const usage = opts.usage !== undefined ? opts.usage : await getAgyUsage();
+  return {
+    installed: true,
+    authenticated: Boolean(usage),
+    binary: resolved,
+    usage: usage || null,
+    error: usage ? undefined : "the usage query returned nothing; run agy once to log in",
+  };
 }
 
 /** Default fallback worker models */
-export const DEFAULT_WORKER_MODELS = [
-  { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash" },
-  { id: "gemini-3.7-flash", name: "Gemini 3.7 Flash" },
-  { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash" },
-  { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro" },
-  { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-  { id: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 Thinking" },
-  { id: "gpt-oss-120b", name: "GPT-OSS 120B" },
-];
+export const DEFAULT_WORKER_MODELS = MODEL_CATALOG.antigravity.map(({ id, name }) => ({ id, name }));
 
 /**
  * Discover available worker models via `agy models`.
