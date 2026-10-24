@@ -178,4 +178,6 @@ CI runs both on every push. The codebase layout is in [development](guides/devel
 
 ## License
 
-[GNU General Public License v3.0](LICENSE)
+Copyright (C) 2026 Elkan La Madrid
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
