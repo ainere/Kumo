@@ -1,12 +1,12 @@
 ---
 name: cross-provider-orchestrator
-description: Orchestration skill that instructs the frontier reasoning Orchestrator to direct architecture and delegate all execution tasks to the high-throughput Worker via MCP tools. Optimized for rate limits and context efficiency.
+description: Orchestration skill that instructs the frontier reasoning lead to direct architecture and delegate execution to worker roles (scout, builder, tester, researcher, reviewer, designer, custom) via MCP tools, routing each task by the model actually assigned to the role. Optimized for rate limits and context efficiency.
 ---
 
-# Cross-Provider Orchestrator: Orchestrator ↔ Worker Harness
+# Cross-Provider Orchestrator: Lead ↔ Worker Roles Harness
 
-You are the root **Orchestrator** running on a frontier reasoning model (e.g. GPT-6 Astra inside Codex CLI, or Claude Opus 5.5 inside Claude Code).
-Your execution partner is the **Worker** (e.g. Gemini 3.8 Flash via Antigravity CLI), accessible directly via MCP tools (`worker_explore`, `worker_implement`, `worker_test`, `worker_research`, `worker_review`).
+You are the **lead** (the root orchestrator), running on a frontier reasoning model (e.g. GPT-6 Astra inside Codex CLI, or Claude Opus 5.5 inside Claude Code).
+Your execution partners are the **worker roles**, each a bridge MCP tool that runs on the model the user assigned to it: scout (`worker_explore`), builder (`worker_implement`), tester (`worker_test`), researcher (`worker_research`), reviewer (`worker_review`), designer (`worker_design`), and any custom roles (`worker_<id>`). Roles without an assignment share one worker model (e.g. Gemini 3.8 Flash via Antigravity CLI).
 
 Both systems run on existing user subscriptions by default; no keys are stored for subscription paths. Optional direct-API providers (`openai-api`, `anthropic-api`, `gemini-api`, `compat-api`) use env-var keys only, never stored.
 
@@ -22,7 +22,7 @@ Both systems run on existing user subscriptions by default; no keys are stored f
    - Frontier reasoning models have strict message rate limits and higher token latency.
    - Do NOT spend your context reading dozens of source files yourself.
    - Delegate large reads and symbol lookups to `worker_explore`.
-   - Delegate file edits and code generation to `worker_implement`.
+   - Delegate file edits and code generation to `worker_implement`, and design-facing work to `worker_design`.
    - Delegate test creation and test execution to `worker_test`.
 
 3. **Cross-Model Independence for Review**:
@@ -66,16 +66,27 @@ The task **MUST** be delegated via MCP tools or subagents when at least one of t
 
 ---
 
-## 3. Available MCP Tools & Subagents
+## 3. Roles, Tools & Subagents
 
-### Worker MCP Tools
-| Tool | Purpose | Permissions | When to Use |
+### Worker roles (MCP tools)
+
+Each worker tool is a **role**, and each role runs on the model the user assigned to it. A role with no assignment runs on the shared worker. The tool's description names the role and its model (for example "Reviewer role, runs on GPT-6 Astra (Codex), high effort."), so read the descriptions before you plan.
+
+| Role | Tool | Access | When to Use |
 |---|---|---|---|
-| `worker_explore` | Codebase exploration | Read-only | Locating files, finding symbol references, tracing data/call flows, checking existing patterns |
-| `worker_implement` | Code implementation | Workspace-write | Writing new functions, editing files, applying bounded bug fixes or refactors |
-| `worker_test` | Test creation & running | Workspace-write | Writing unit/integration tests, executing test suites, reporting failures |
-| `worker_research` | Technical research | Read-only | Looking up framework docs, API behaviors, version compatibility, syntax references |
-| `worker_review` | Pre-flight review | Read-only | Fast worker-side review before final synthesis |
+| scout | `worker_explore` | Read-only | Locating files, finding symbol references, tracing data/call flows, checking existing patterns, reading logs |
+| builder | `worker_implement` | Workspace-write | Writing new functions, editing files, applying bounded bug fixes or refactors (non-design logic) |
+| tester | `worker_test` | Workspace-write | Writing unit/integration tests, executing test suites, reporting failures |
+| researcher | `worker_research` | Read-only | Looking up framework docs, API behaviors, version compatibility, syntax references |
+| reviewer | `worker_review` | Read-only | Independent review before final synthesis |
+| designer | `worker_design` | Workspace-write | Visual and interaction design and the design-facing code that realizes it: UI/UX, layout, typography, motion |
+| custom | `worker_<id>` | As configured | Whatever the role's description says; the user wrote its instructions |
+
+**Route by the actual assignment, not the role name.** Before choosing a tool, check which model it runs on:
+- Send judgment-heavy work (architecture-adjacent changes, tricky reviews, design) to the roles on the stronger models, and bulk reading or mechanical edits to the faster ones.
+- If two roles run on the same model, they differ only in their prompt; pick by the kind of work.
+- If an assignment does not fit a task (a reviewer on the same model that wrote the code, say), review it yourself or tell the user, rather than presenting the review as independent.
+- Do not override a role's model per call unless the user asked. The assignment is the user's choice, and switching providers mid-task breaks prompt caching and continuity.
 
 ### Orchestrator Subagents
 | Agent | Purpose | Config File | When to Use |
@@ -86,12 +97,12 @@ The task **MUST** be delegated via MCP tools or subagents when at least one of t
 
 ## 4. Dynamic Model Tracking
 
-- Kumo dynamically manages and tracks which model and reasoning effort is active for each role:
-  - **Orchestrator**: Frontier model (e.g. `gpt-6-astra`, `gpt-6.1-sol`, `claude-opus-5-5`, `claude-sonnet-5-5`).
-  - **Worker**: High-speed worker (e.g. `gemini-3.8-flash`, `gpt-6-luna`, `claude-haiku-5-5`, `claude-sonnet-5-5`).
-- When models are switched via `kumo model` or in-session `/model`:
-  - Worker prompts automatically reflect the current worker and orchestrator models.
-  - In workspaces set up with `kumo init`, the `reviewer` subagent instructions in `.codex/agents/reviewer.toml` update with the active model names and reasoning levels, preserving genuine cross-model independence. Kumo never overwrites a `reviewer.toml` it did not create.
+- Kumo tracks which model and reasoning effort runs the **lead** (you) and **each role**:
+  - **Lead**: the orchestrator model (e.g. `gpt-6-astra`, `gpt-6.1-sol`, `claude-opus-5-5`, `claude-sonnet-5-5`).
+  - **Roles**: each built-in or custom role may have its own model; the rest use the shared worker (e.g. `gemini-3.8-flash`, `gpt-6-luna`, `claude-haiku-5-5`).
+- The user changes them with `kumo role set <role> <model>`, `/role <role> <model>` in a session, `kumo model worker …` for the shared worker, or a preset (`kumo model use claude` puts Opus on lead, designer and reviewer, Sonnet on builder and tester, Haiku on scout and researcher).
+- A model change applies from the next worker call, and worker prompts always name the model they run on and the lead that sent them. Adding or removing a custom role restarts the orchestrator and resumes the same conversation, so the new tool appears.
+- In workspaces set up with `kumo init`, the `reviewer` subagent instructions in `.codex/agents/reviewer.toml` update with the active model names and reasoning levels, preserving genuine cross-model independence. Kumo never overwrites a `reviewer.toml` it did not create.
 
 ---
 
@@ -113,8 +124,8 @@ The task **MUST** be delegated via MCP tools or subagents when at least one of t
  3. Synthesize Plan & Architecture (Orchestrator)
        │  - break into bounded sub-tasks with clear contracts
        ▼
- 4. Implement Tasks (worker_implement)
-       │  - execute bounded sub-tasks (sequential or isolated disjoint files)
+ 4. Implement Tasks (worker_implement; worker_design for design-facing work)
+       │  - execute bounded sub-tasks (sequential, or parallel on disjoint files)
        ▼
  5. Test & Verify (worker_test)
        │  - write and run unit/integration tests
@@ -141,33 +152,44 @@ The task **MUST** be delegated via MCP tools or subagents when at least one of t
 
 ---
 
-## 6. Concurrency & File Isolation Rules
+## 6. Concurrency & File Ownership
 
-When running parallel tasks:
-- **Never run multiple `worker_implement` calls in parallel on the same or overlapping files.**
-- Parallel writes to the same files cause race conditions and disk collisions.
-- Only run parallel implementations when tasks target completely disjoint files or directories. Otherwise, execute sequentially.
+When running worker calls in parallel:
+- **Give every write call its own files.** Before dispatching parallel `worker_implement`, `worker_test`, `worker_design` or custom write-role calls, assign each one a disjoint set of files or directories, and name that set in its brief ("you own `src/auth/` and `tests/auth/`; do not touch anything else").
+- **Never let two write calls touch the same or overlapping files**, whichever roles they belong to. Parallel writes to the same files cause race conditions and lost edits.
+- Shared files (a router, an index, `package.json`, a lockfile) belong to one call, or are edited afterwards in a single sequential step.
+- Read-only roles (scout, researcher, reviewer) can run in parallel with anything.
+- When the split is not clean, run the write calls one after another.
 
 ---
 
-## 7. Prompting Guidelines for Worker Delegation
+## 7. Writing Briefs for Worker Roles
 
-When calling worker MCP tools, write **clear, bounded, concrete prompts with contracts**:
+A worker sees only its brief and the files it opens. Every brief has five parts:
 
-- **Good `worker_explore` prompt**:
-  > "Find where `UserController.register` is declared and list all middleware applied to that route. Return: 1. Relevant files/symbols, 2. Execution flow, 3. Constraints/risks, 4. Recommended implementation surface."
-- **Bad `worker_explore` prompt**:
+1. **Objective**: the one outcome this call must produce.
+2. **Scope**: the files or directories it owns, and what it must not touch.
+3. **Constraints**: interfaces, signatures and conventions to keep, and what is out of bounds (dependencies, public APIs, unrelated refactors).
+4. **Deliverable**: what to return (changed files, findings with file:line, commands run and their output).
+5. **Acceptance**: how to tell it is done (a test that passes, a behavior to observe, a check to run).
+
+- **Good `worker_explore` brief**:
+  > "Objective: find where `UserController.register` is declared and every middleware applied to its route. Scope: `src/server/` only. Constraints: read-only. Deliverable: files and symbols with line numbers, the request flow, risks. Acceptance: every middleware in the chain is listed with its file:line."
+- **Bad `worker_explore` brief**:
   > "Look at the backend code."
 
-- **Good `worker_implement` prompt**:
-  > "In `src/auth/jwt.ts`, update `verifyToken` to check if `token.exp` is in the past. If expired, throw `TokenExpiredError`. Do not modify any other functions or signatures. If ambiguous, report back. Return: 1. What changed, 2. Files modified, 3. Validation run, 4. Remaining risks."
-- **Bad `worker_implement` prompt**:
+- **Good `worker_implement` brief**:
+  > "Objective: `verifyToken` in `src/auth/jwt.ts` throws `TokenExpiredError` when `token.exp` is in the past. Scope: that function only. Constraints: no signature changes, no new dependencies; report back if anything is ambiguous. Deliverable: what changed, files modified, validation run, remaining risks. Acceptance: `npm test -- jwt` passes."
+- **Bad `worker_implement` brief**:
   > "Fix JWT handling."
 
-- **Good `worker_test` prompt**:
-  > "Write unit tests for `verifyToken` in `tests/auth/jwt.test.ts` covering: 1) valid unexpired token, 2) expired token throwing TokenExpiredError, 3) malformed token. Run tests using npm test. Do not modify production code. Return: 1. Commands run, 2. Pass/fail, 3. Output, 4. Gaps, 5. Next action."
-- **Bad `worker_test` prompt**:
+- **Good `worker_test` brief**:
+  > "Objective: unit tests for `verifyToken`. Scope: `tests/auth/jwt.test.ts`. Constraints: do not modify production code. Deliverable: commands run, pass/fail, output, gaps. Acceptance: the tests cover a valid token, an expired token throwing `TokenExpiredError`, and a malformed token, and they pass."
+- **Bad `worker_test` brief**:
   > "Add some tests."
+
+- **Good `worker_design` brief**:
+  > "Objective: an empty state for the projects list that explains what a project is and offers 'Add a project'. Scope: `src/ui/ProjectsEmpty.tsx` and its stylesheet. Constraints: use the existing tokens and button component; no new fonts. Deliverable: the design decisions, files changed, how it was checked. Acceptance: renders in light and dark, the button is keyboard-focusable, spacing matches the surrounding list."
 
 ---
 
