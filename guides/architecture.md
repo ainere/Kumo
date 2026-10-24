@@ -15,39 +15,8 @@ However, each provider's CLI only interfaces directly with its own models. Conve
 
 ## The Solution: Stdio MCP Subprocess Bridge
 
-The **Model Context Protocol (MCP)** provides an open, standardized RPC protocol over standard I/O (`stdio`).
+The **Model Context Protocol (MCP)** provides an open, standardized RPC protocol over standard I/O (`stdio`). Each chat runs an Engine `Session` (`src/core/session.js`) for the CLI or desktop app; the session starts the root orchestrator (`codex`, `claude`, or `antigravity`), which connects over `stdio` MCP to Kumo's bridge server (`src/bridge/server.js`) exposing one `worker_*` tool per role and spawning or calling the configured worker models.
 
-```
-┌────────────────────────────────────────────────────────┐
-│ Engine Session (src/core/session.js)                   │
-│ - One per chat; owns its own settings                  │
-│ - Events → CLI today, desktop app later                │
-└──────────┬─────────────────────────────▲───────────────┘
-           │ starts, passing endpoint +  │ named pipe / unix socket:
-           │ session token in the env    │ settings.get, run.output,
-           ▼                             │ approval.request
-┌────────────────────────────────────────┼───────────────┐
-│ Root Orchestrator (codex / claude / antigravity)       │
-│ - Model: Dynamic (e.g. GPT-6 Astra, Claude Opus 5.5)   │
-│ - Bridge passed per thread / per turn, not via files   │
-└───────────────────────────┬────────────┼───────────────┘
-                            │ stdio MCP  │
-                            ▼            │
-┌────────────────────────────────────────┴───────────────┐
-│ MCP Bridge Server (src/bridge/server.js)               │
-│ - Uses @modelcontextprotocol/sdk                       │
-│ - One worker_* MCP tool per role (scout, builder, …)   │
-│ - Optional per-call `provider` override                │
-└───────────────────────────┬────────────────────────────┘
-                            │ Subprocess spawn or direct-API fetch
-                            ▼
-┌────────────────────────────────────────────────────────┐
-│ Worker roles (any of 13 providers, one model per role) │
-│ - Model: per role, else the shared worker's            │
-│ - Mode: read-only | workspace-write (CLI workers)       │
-│ - Subscription CLI login, or direct-API env key        │
-└────────────────────────────────────────────────────────┘
-```
 The bridge reaches the session that started its orchestrator through the
 endpoint and token in its environment (Codex forwards them by name with
 `env_vars`, Claude Code through the per-session MCP config, Antigravity by

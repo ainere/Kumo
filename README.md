@@ -9,7 +9,7 @@
 <img alt="Node 22+" src="https://img.shields.io/badge/node-22%2B-5fd4f4?labelColor=0b1220">
 <img alt="Windows, Linux, macOS" src="https://img.shields.io/badge/platform-Windows%20%C2%B7%20Linux%20%C2%B7%20macOS-7aa2f7?labelColor=0b1220">
 <img alt="13 providers" src="https://img.shields.io/badge/providers-13-bb9af7?labelColor=0b1220">
-<img alt="MIT license" src="https://img.shields.io/badge/license-MIT-9ece6a?labelColor=0b1220">
+<a href="LICENSE"><img alt="GPLv3 license" src="https://img.shields.io/badge/license-GPLv3-9ece6a?labelColor=0b1220"></a>
 </p>
 
 <p>
@@ -109,25 +109,6 @@ Other presets pair Codex with Gemini (`default`, `pro`, `speed`), Claude with Ge
 3. **Workers do the heavy lifting** on their own models, reading, editing and running tests, while their output streams back live.
 4. **The lead checks the work** and reports back. Writes go through the safety mode you chose.
 
-```text
-        kumo CLI (REPL, kumo run)          desktop app
-                      └──────────┬──────────┘
-                                 │ typed commands and events
-                  ┌──────────────▼──────────────┐
-                  │   Engine (src/core)          │
-                  │   sessions, settings, turns, │
-                  │   approvals, chats, quotas   │
-                  └──────────────┬──────────────┘
-                                 │ named pipe ◄── kumo-bridge
-        ┌────────────────────────┴────────────────────────┐
-        ▼                                                  ▼
-┌───────────────────────────┐              ┌───────────────────────────┐
-│   Lead (orchestrator)     │ ◄───[MCP]───►│   Worker roles, each on   │
-│   plans, delegates,       │              │   its own model           │
-│   reviews                 │              │   scout · builder · tester│
-└───────────────────────────┘              └───────────────────────────┘
-```
-
 ## Roles
 
 | Role | Tool | Access | Does |
@@ -197,4 +178,4 @@ CI runs both on every push. The codebase layout is in [development](guides/devel
 
 ## License
 
-MIT
+[GNU General Public License v3.0](LICENSE)
