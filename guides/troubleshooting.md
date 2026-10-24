@@ -76,8 +76,8 @@ gemini --skip-trust
 
 ## 5. Verifying MCP Server Health Manually
 
-You can test the MCP server in isolation anytime by running:
+You can check the MCP server in isolation anytime by running:
 ```bash
-node --test tests/bridge.test.js tests/provider-expansion.test.js
+kumo doctor
 ```
-This connects a lightweight client via stdio to verify that all tools register and communication functions without error, and exercises the direct-API wire formats with mocked fetch (no network).
+Besides each provider CLI and its login, it starts the bridge, connects a lightweight MCP client over stdio and confirms the worker tools register. It runs no model, so it costs no quota.
