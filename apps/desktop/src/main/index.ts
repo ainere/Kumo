@@ -17,7 +17,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 const engineRoot = process.env.KUMO_ENGINE_ROOT || resolve(here, "../../../../src");
 
 const GROUND = { dark: "#05070D", light: "#F5F6F8" } as const;
-const SYMBOLS = { dark: "#E6ECF5", light: "#0E1626" } as const;
 
 let win: BrowserWindow | null = null;
 let engine: UtilityProcess | null = null;
@@ -27,9 +26,9 @@ registerSceneScheme();
 
 const effectiveMode = (): "dark" | "light" => (nativeTheme.shouldUseDarkColors ? "dark" : "light");
 
-function overlay() {
-  const mode = effectiveMode();
-  return { color: "#00000000", symbolColor: SYMBOLS[mode], height: 44 };
+function sendWindowState(): void {
+  if (!win) return;
+  win.webContents.send("kumo:window-state", { maximized: win.isMaximized(), focused: win.isFocused() });
 }
 
 function startEngine(): void {
@@ -66,10 +65,11 @@ function createWindow(): void {
     show: false,
     title: "kumo",
     backgroundColor: GROUND[effectiveMode()],
-    // Frameless with the native caption buttons drawn over our glass title bar,
-    // so snap layouts keep working.
+    // Frameless: the window buttons are the app's own, inside the glass title
+    // bar and colored by the theme. macOS keeps its traffic lights, moved
+    // into the same place.
     titleBarStyle: "hidden",
-    titleBarOverlay: overlay(),
+    ...(process.platform === "darwin" ? { trafficLightPosition: { x: 26, y: 27 } } : {}),
     webPreferences: {
       preload: join(here, "../preload/index.cjs"),
       sandbox: true,
@@ -80,6 +80,10 @@ function createWindow(): void {
   });
 
   win.once("ready-to-show", () => win?.show());
+  win.on("maximize", sendWindowState);
+  win.on("unmaximize", sendWindowState);
+  win.on("focus", sendWindowState);
+  win.on("blur", sendWindowState);
   win.webContents.on("did-finish-load", connectRenderer);
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) void shell.openExternal(url);
@@ -101,12 +105,19 @@ function createWindow(): void {
   else void win.loadFile(join(here, "../renderer/index.html"));
 }
 
-type AppRequest = { action: "pickFolder" } | { action: "setTheme"; mode: "system" | "light" | "dark" };
+type WindowOp = "minimize" | "toggleMaximize" | "close" | "state";
+type AppRequest =
+  | { action: "pickFolder" }
+  | { action: "setTheme"; mode: "system" | "light" | "dark" }
+  | { action: "window"; op: WindowOp };
+
+const WINDOW_OPS: readonly string[] = ["minimize", "toggleMaximize", "close", "state"];
 
 function isAppRequest(value: unknown): value is AppRequest {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   if (v.action === "pickFolder") return true;
+  if (v.action === "window") return typeof v.op === "string" && WINDOW_OPS.includes(v.op);
   return v.action === "setTheme" && (v.mode === "system" || v.mode === "light" || v.mode === "dark");
 }
 
@@ -120,16 +131,21 @@ ipcMain.handle("kumo:app", async (event, request: unknown) => {
     const result = await dialog.showOpenDialog(win, { properties: ["openDirectory"], title: "Open a project folder" });
     return result.canceled ? null : result.filePaths[0] ?? null;
   }
+  if (request.action === "window") {
+    if (request.op === "minimize") win.minimize();
+    else if (request.op === "toggleMaximize") {
+      if (win.isMaximized()) win.unmaximize();
+      else win.maximize();
+    } else if (request.op === "close") win.close();
+    return { maximized: win.isMaximized(), focused: win.isFocused() };
+  }
   nativeTheme.themeSource = request.mode;
   win.setBackgroundColor(GROUND[effectiveMode()]);
-  win.setTitleBarOverlay(overlay());
   return effectiveMode();
 });
 
 nativeTheme.on("updated", () => {
-  if (!win) return;
-  win.setBackgroundColor(GROUND[effectiveMode()]);
-  win.setTitleBarOverlay(overlay());
+  win?.setBackgroundColor(GROUND[effectiveMode()]);
 });
 
 app.whenReady().then(() => {

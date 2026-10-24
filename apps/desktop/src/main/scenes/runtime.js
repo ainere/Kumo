@@ -206,6 +206,10 @@
 
   // Every scene script has run by now: they're classic scripts after this one.
   document.addEventListener("DOMContentLoaded", function () {
-    post({ type: "ready", scenes: Array.from(registry.keys()) });
+    var scenes = [];
+    registry.forEach(function (def) {
+      scenes.push({ id: def.id, name: typeof def.name === "string" && def.name ? def.name : def.id });
+    });
+    post({ type: "ready", scenes: scenes });
   });
 })();

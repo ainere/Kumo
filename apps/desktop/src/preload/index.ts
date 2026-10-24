@@ -59,6 +59,12 @@ ipcRenderer.on("kumo:engine-restarted", () => {
   for (const listener of restartListeners) listener();
 });
 
+type WindowState = { maximized: boolean; focused: boolean };
+const windowListeners = new Set<(state: WindowState) => void>();
+ipcRenderer.on("kumo:window-state", (_event, state: WindowState) => {
+  for (const listener of windowListeners) listener(state);
+});
+
 contextBridge.exposeInMainWorld("kumo", {
   invoke(command: string, args?: unknown): Promise<unknown> {
     const request = { id: nextId++, command: String(command), args: args ?? {} };
@@ -79,5 +85,12 @@ contextBridge.exposeInMainWorld("kumo", {
     pickFolder: (): Promise<string | null> => ipcRenderer.invoke("kumo:app", { action: "pickFolder" }),
     setTheme: (mode: "system" | "light" | "dark"): Promise<"dark" | "light"> =>
       ipcRenderer.invoke("kumo:app", { action: "setTheme", mode }),
+    platform: process.platform,
+    window: (op: "minimize" | "toggleMaximize" | "close" | "state"): Promise<WindowState> =>
+      ipcRenderer.invoke("kumo:app", { action: "window", op }),
+    onWindowState(listener: (state: WindowState) => void): () => void {
+      windowListeners.add(listener);
+      return () => windowListeners.delete(listener);
+    },
   },
 });

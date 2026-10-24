@@ -9,6 +9,7 @@ import type {
   Chat,
   KumoEvent,
   Message,
+  MessagePart,
   Prefs,
   Project,
   Quotas,
@@ -32,6 +33,8 @@ export interface State {
   toasts: Toast[];
   busy: boolean;
   quotas: Quotas;
+  /** Scenes the scene frame reported: built-ins, then the user's own. */
+  scenes: Array<{ id: string; name: string }>;
 }
 
 const MAX_TOOL_OUTPUT = 120_000;
@@ -49,6 +52,7 @@ let state: State = {
   toasts: [],
   busy: false,
   quotas: { orchestrator: null, antigravity: null },
+  scenes: [],
 };
 
 const listeners = new Set<() => void>();
@@ -86,11 +90,26 @@ export function dismissToast(id: number): void {
   setState((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
 }
 
+const message = (id: string, kind: Message["kind"], text: string, turnId: string | null = null): Message => ({
+  id,
+  kind,
+  text,
+  parts: text ? [{ kind: "text", text }] : [],
+  turnId,
+  streaming: false,
+  thinking: false,
+  failed: null,
+});
+
 const messagesFromLog = (log: Turn[]): Message[] =>
-  log.flatMap((turn, i) => [
-    { id: `u${i}`, kind: "user", text: turn.prompt, turnId: null, streaming: false, thinking: false, failed: null, tools: [] },
-    { id: `l${i}`, kind: "lead", text: turn.responseSummary || "", turnId: null, streaming: false, thinking: false, failed: null, tools: [] },
-  ]);
+  log.flatMap((turn, i) => [message(`u${i}`, "user", turn.prompt), message(`l${i}`, "lead", turn.responseSummary || "")]);
+
+/** Text after a worker call starts a new paragraph, even if the model didn't end the last one. */
+function appendText(parts: MessagePart[], text: string): MessagePart[] {
+  const last = parts.at(-1);
+  if (last?.kind === "text") return [...parts.slice(0, -1), { kind: "text", text: last.text + text }];
+  return [...parts, { kind: "text", text: text.replace(/^\s+/, "") }];
+}
 
 /** Load the current chat's transcript and the chat list. */
 export async function refreshChat(): Promise<void> {
@@ -203,13 +222,13 @@ export function handleEvent(event: KumoEvent): void {
         busy: true,
         messages: [
           ...s.messages,
-          { id: `${event.turnId}-u`, kind: "user", text: event.prompt, turnId: event.turnId, streaming: false, thinking: false, failed: null, tools: [] },
-          { id: `${event.turnId}-l`, kind: "lead", text: "", turnId: event.turnId, streaming: true, thinking: true, failed: null, tools: [] },
+          message(`${event.turnId}-u`, "user", event.prompt, event.turnId),
+          { ...message(`${event.turnId}-l`, "lead", "", event.turnId), streaming: true, thinking: true },
         ],
       }));
       break;
     case "turn.delta":
-      updateLead(event.turnId, (m) => ({ ...m, text: m.text + event.text, thinking: false }));
+      updateLead(event.turnId, (m) => ({ ...m, text: m.text + event.text, parts: appendText(m.parts, event.text), thinking: false }));
       break;
     case "turn.reasoning":
       updateLead(event.turnId, (m) => ({ ...m, thinking: m.text === "" }));
@@ -242,7 +261,11 @@ export function handleEvent(event: KumoEvent): void {
         },
         toolOrder: [...s.toolOrder.filter((id) => id !== event.toolId), event.toolId],
         messages: event.turnId
-          ? s.messages.map((m) => (m.kind === "lead" && m.turnId === event.turnId ? { ...m, tools: [...m.tools, event.toolId] } : m))
+          ? s.messages.map((m) =>
+              m.kind === "lead" && m.turnId === event.turnId
+                ? { ...m, parts: [...m.parts, { kind: "tool", toolId: event.toolId }] }
+                : m
+            )
           : s.messages,
       }));
       break;

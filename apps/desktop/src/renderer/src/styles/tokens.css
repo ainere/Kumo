@@ -16,6 +16,13 @@
   --bad: #f7768e;
   --warn: #f2b866;
   --halo: transparent;
+  --menu-opacity: 0.92;
+  /* Window buttons in the Night sky hues: rose, lavender, the cyan accent. */
+  --win-close: #f7768e;
+  --win-min: #bb9af7;
+  --win-max: #5fd4f4;
+  --win-idle: rgb(160 190 240 / 0.2);
+  --win-glyph: rgb(5 7 13 / 0.72);
   color-scheme: dark;
 }
 
@@ -35,6 +42,12 @@
   --bad: #c62828;
   --warn: #8a5a12;
   --halo: radial-gradient(closest-side, rgb(245 246 248 / 0.92), rgb(245 246 248 / 0));
+  --menu-opacity: 0.94;
+  --win-close: #e5677f;
+  --win-min: #9a7be6;
+  --win-max: #35a6d8;
+  --win-idle: rgb(14 30 60 / 0.16);
+  --win-glyph: rgb(255 255 255 / 0.92);
   color-scheme: light;
 }
 

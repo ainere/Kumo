@@ -54,12 +54,11 @@ const LeadMessage = memo(function LeadMessage({ message }: { message: Message })
         <span>{lead}</span>
         {message.thinking && <span className="thinking">thinking…</span>}
       </div>
-      {message.text && <Markdown text={message.text} />}
-      {message.tools.map((id) => (
-        <ToolCard key={id} toolId={id} />
-      ))}
+      {message.parts.map((part, i) =>
+        part.kind === "tool" ? <ToolCard key={part.toolId} toolId={part.toolId} /> : <Markdown key={i} text={part.text} />
+      )}
       {message.failed && <div className="msg-failed">{message.failed}</div>}
-      {!message.streaming && !message.text && !message.failed && message.tools.length === 0 && (
+      {!message.streaming && !message.text && !message.failed && message.parts.length === 0 && (
         <div className="muted small">No answer recorded for this turn.</div>
       )}
     </article>

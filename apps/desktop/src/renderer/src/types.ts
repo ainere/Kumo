@@ -58,15 +58,19 @@ export interface ToolView {
   output: string;
 }
 
+/** A lead answer in the order it happened: text, worker calls, more text. */
+export type MessagePart = { kind: "text"; text: string } | { kind: "tool"; toolId: string };
+
 export interface Message {
   id: string;
   kind: "user" | "lead";
+  /** The whole text, without the tool calls. */
   text: string;
+  parts: MessagePart[];
   turnId: string | null;
   streaming: boolean;
   thinking: boolean;
   failed: string | null;
-  tools: string[];
 }
 
 export interface Approval {
