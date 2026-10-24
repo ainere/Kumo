@@ -68,7 +68,7 @@ let state: State = {
   approvals: [],
   toasts: [],
   busy: false,
-  quotas: { orchestrator: null, antigravity: null },
+  quotas: { orchestrator: null, antigravity: null, providers: {} },
   scenes: [],
 };
 
@@ -301,7 +301,7 @@ export function handleEvent(event: KumoEvent): void {
       setState((s) => ({ approvals: s.approvals.filter((a) => a.approvalId !== event.approvalId) }));
       break;
     case "quota.updated":
-      setState({ quotas: { orchestrator: event.orchestrator, antigravity: event.antigravity } });
+      setState({ quotas: { orchestrator: event.orchestrator, antigravity: event.antigravity, providers: event.providers ?? {} } });
       break;
     case "settings.changed":
       setState((s) => (s.session ? { session: { ...s.session, settings: event.settings } } : {}));

@@ -510,6 +510,44 @@ export function resolveRoleTarget(config, roleId, call = {}, worker = sharedWork
 }
 
 /**
+ * Every provider/model a session can run on: the orchestrator, the shared
+ * worker, and each built-in and custom role (a role without an assignment
+ * resolves to the shared worker). Quota displays use it to show every
+ * subscription the crew draws on, not just the lead's and the worker's.
+ *
+ * @param {Record<string, any>} config - the effective settings
+ * @returns {Array<{ role: string, provider: string, model: string|undefined }>}
+ */
+export function activeTargets(config) {
+  /** @type {Array<{ role: string, provider: string, model: string|undefined }>} */
+  const out = [];
+  if (config?.orchestratorProvider || config?.orchestratorModel) {
+    out.push({
+      role: "orchestrator",
+      provider: canonicalizeProvider(config.orchestratorProvider || detectProviderForModel(config.orchestratorModel)),
+      model: config.orchestratorModel || undefined,
+    });
+  }
+  const worker = sharedWorker(config || {});
+  if (worker.provider) out.push({ role: "worker", provider: worker.provider, model: worker.model });
+  for (const role of listRoles(config)) {
+    const target = resolveRoleTarget(config || {}, role.id, {}, worker);
+    if (target.assigned) out.push({ role: role.id, provider: canonicalizeProvider(target.provider), model: target.model });
+  }
+  return out;
+}
+
+/**
+ * The distinct providers {@link activeTargets} names, in order.
+ *
+ * @param {Record<string, any>} config
+ * @returns {string[]}
+ */
+export function activeProviders(config) {
+  return [...new Set(activeTargets(config).map((t) => t.provider).filter(Boolean))];
+}
+
+/**
  * What changes the bridge's tool list: which custom roles exist and whether
  * each reads or writes (write tools take `confirm` and `previewId`). A model
  * change does not — the bridge resolves models on every call.

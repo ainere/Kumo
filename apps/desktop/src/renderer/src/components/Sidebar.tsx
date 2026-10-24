@@ -1,45 +1,117 @@
 import { Fragment } from "react";
 import { basename, providerLabel, sameDir } from "../lib";
 import { openChat, openWorkspace, pickAndOpenFolder, toast, useStore } from "../store";
-import type { Quotas } from "../types";
+import type { Quotas, SessionSettings } from "../types";
 import { IconFolder } from "./icons";
 
 type Meter = { label: string; left: number; detail: string | null };
 
+const BUILTIN_ROLE_KEYS = ["scout", "builder", "tester", "researcher", "reviewer", "designer"] as const;
+
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === "string" && v && v !== "N/A" ? v : null);
 const clamp = (v: number) => Math.max(0, Math.min(100, Math.round(v)));
+const normProvider = (p: string | null | undefined): string => {
+  const v = (p ?? "").trim().toLowerCase();
+  return v === "agy" ? "antigravity" : v;
+};
+const isClaudeOrGpt = (model: string | null | undefined): boolean =>
+  /claude|gpt|anthropic/i.test(String(model ?? ""));
 
-/** Orchestrator limits report the share used; Antigravity reports what's left. */
-function meters(quotas: Quotas, provider: string | undefined): Meter[] {
+function activeTargets(settings: SessionSettings | undefined): Array<{ provider: string; model: string }> {
+  if (!settings) return [];
+  const out: Array<{ provider: string; model: string }> = [];
+  const leadProvider = normProvider(settings.orchestratorProvider);
+  if (leadProvider) out.push({ provider: leadProvider, model: settings.orchestratorModel || "" });
+  const workerProvider = normProvider(settings.workerProvider);
+  if (workerProvider) out.push({ provider: workerProvider, model: settings.workerModel || "" });
+  for (const key of BUILTIN_ROLE_KEYS) {
+    const role = settings.roles?.[key];
+    if (role?.model) out.push({ provider: normProvider(role.provider || workerProvider), model: role.model });
+  }
+  for (const custom of settings.roles?.custom ?? []) {
+    const p = normProvider(custom.provider || workerProvider);
+    const m = custom.model || (p === workerProvider ? settings.workerModel : "") || "";
+    if (p) out.push({ provider: p, model: m });
+  }
+  return out;
+}
+
+function windowSuffix(windowMinutes: unknown): string {
+  const mins = num(windowMinutes);
+  if (mins === null || mins <= 360) return "5h";
+  if (mins <= 11520) return "weekly";
+  return "monthly";
+}
+
+/** Orchestrator/provider limits report the share used; Antigravity reports what's left. */
+export function meters(quotas: Quotas, settings: SessionSettings | undefined): Meter[] {
   const out: Meter[] = [];
-  const o = quotas.orchestrator;
-  const used = num(o?.usedPercent);
-  if (o && used !== null) {
-    out.push({ label: providerLabel(provider) || "Lead", left: clamp(100 - used), detail: str(o.resetFormatted) });
-    const secondary = o.secondary as Record<string, unknown> | null | undefined;
+  const targets = activeTargets(settings);
+  const leadProvider = normProvider(settings?.orchestratorProvider);
+
+  const directProviders: string[] = [];
+  const addProvider = (p: string) => {
+    if (p && p !== "antigravity" && !directProviders.includes(p)) directProviders.push(p);
+  };
+  if (leadProvider) addProvider(leadProvider);
+  for (const t of targets) addProvider(t.provider);
+  if (directProviders.length === 0 && quotas.orchestrator) directProviders.push("lead");
+
+  for (const p of directProviders) {
+    const limits =
+      quotas.providers?.[p] ??
+      (p === leadProvider || p === "lead" ? quotas.orchestrator : null);
+    const used = num(limits?.usedPercent);
+    if (!limits || used === null) continue;
+    const name = (p === "lead" ? "" : providerLabel(p)) || "Lead";
+    const primarySuffix = windowSuffix(limits.windowMinutes);
+    out.push({
+      label: `${name} ${primarySuffix}`,
+      left: clamp(100 - used),
+      detail: str(limits.resetFormatted),
+    });
+    const secondary = limits.secondary as Record<string, unknown> | null | undefined;
     const usedLater = num(secondary?.usedPercent);
     if (secondary && usedLater !== null) {
-      out.push({ label: `${providerLabel(provider)} weekly`, left: clamp(100 - usedLater), detail: str(secondary.resetFormatted) });
+      const secondarySuffix = secondary.windowMinutes ? windowSuffix(secondary.windowMinutes) : "weekly";
+      out.push({
+        label: `${name} ${secondarySuffix}`,
+        left: clamp(100 - usedLater),
+        detail: str(secondary.resetFormatted),
+      });
     }
   }
+
   const a = quotas.antigravity;
-  const gemini = num(a?.geminiWeeklyPercent);
-  if (a && gemini !== null) out.push({ label: "Gemini weekly", left: clamp(gemini), detail: str(a.geminiWeeklyResetFormatted) });
-  const claudeGpt = num(a?.claudeGptWeeklyPercent);
-  if (a && claudeGpt !== null) {
-    out.push({ label: "Claude/GPT weekly", left: clamp(claudeGpt), detail: str(a.claudeGptWeeklyResetFormatted) });
+  const agyTargets = targets.filter((t) => t.provider === "antigravity");
+  const usesAgy = agyTargets.length > 0 || (!settings && Boolean(a));
+  if (a && usesAgy) {
+    const usesGeminiFamily = agyTargets.length === 0 || agyTargets.some((t) => !isClaudeOrGpt(t.model));
+    const gemini = num(a.geminiWeeklyPercent);
+    if (usesGeminiFamily && gemini !== null) {
+      out.push({ label: "Gemini weekly", left: clamp(gemini), detail: str(a.geminiWeeklyResetFormatted) });
+    }
+    const argon = num(a.geminiArgonWeeklyPercent);
+    if (argon !== null) {
+      out.push({ label: "Gemini 4 Argon", left: clamp(argon), detail: str(a.geminiArgonWeeklyResetFormatted) });
+    }
+    const usesAgyClaudeGpt = agyTargets.some((t) => isClaudeOrGpt(t.model));
+    const claudeGpt = num(a.claudeGptWeeklyPercent);
+    if (usesAgyClaudeGpt && claudeGpt !== null) {
+      out.push({ label: "Claude/GPT weekly", left: clamp(claudeGpt), detail: str(a.claudeGptWeeklyResetFormatted) });
+    }
   }
   return out;
 }
 
 function Meters() {
   const quotas = useStore((s) => s.quotas);
-  const provider = useStore((s) => s.session?.settings.orchestratorProvider);
-  const rows = meters(quotas, provider);
+  const settings = useStore((s) => s.session?.settings);
+  const rows = meters(quotas, settings);
   if (rows.length === 0) return <div className="meter small">Usage shows here after the first turn.</div>;
   return (
-    <>
+    <div className="meters" data-part="meters">
       {rows.map((row) => (
         <div className="meter" key={row.label}>
           <div className="meter-row">
@@ -52,7 +124,7 @@ function Meters() {
           {row.detail && <div className="meter-detail">resets {row.detail}</div>}
         </div>
       ))}
-    </>
+    </div>
   );
 }
 

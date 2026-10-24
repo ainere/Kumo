@@ -329,28 +329,37 @@ export class ClaudeAppClient extends GenericAppClient {
   }
 
   /**
-   * The subscription's usage from the last turn's `rate_limit_event`: the
-   * window closest to its limit, in the shape the quota display reads.
-   * Null until a turn has run.
+   * The subscription's usage from the last turn's `rate_limit_event`, in the
+   * shape Codex reports: the 5-hour window as the primary limit and the
+   * weekly (`seven_day`) one as `secondary`. Without a 5-hour window the
+   * weekly one is primary. Null until a turn has run.
    */
   async getRateLimits() {
     const windows = this.rateLimit?.unifiedWindows;
     if (!windows) return null;
-    const candidates = [
-      ["five_hour", 300],
-      ["seven_day", 10080],
-    ]
-      .filter(([key]) => windows[key] && typeof windows[key].utilization === "number")
-      .map(([key, minutes]) => ({ ...windows[key], windowMinutes: minutes }));
-    if (candidates.length === 0) return null;
-    const tightest = candidates.reduce((a, b) => (b.utilization > a.utilization ? b : a));
-    const usedPercent = Math.round(Math.min(1, Math.max(0, tightest.utilization)) * 100);
+    /**
+     * @param {string} key
+     * @param {number} windowMinutes
+     */
+    const read = (key, windowMinutes) => {
+      const w = windows[key];
+      if (!w || typeof w.utilization !== "number") return null;
+      const usedPercent = Math.round(Math.min(1, Math.max(0, w.utilization)) * 100);
+      return {
+        usedPercent,
+        remainingPercent: 100 - usedPercent,
+        resetsAt: w.resetsAt,
+        resetFormatted: formatResetTime(w.resetsAt),
+        windowMinutes,
+      };
+    };
+    const fiveHour = read("five_hour", 300);
+    const weekly = read("seven_day", 10080);
+    const primary = fiveHour || weekly;
+    if (!primary) return null;
     return {
-      usedPercent,
-      remainingPercent: 100 - usedPercent,
-      resetsAt: tightest.resetsAt,
-      resetFormatted: formatResetTime(tightest.resetsAt),
-      windowMinutes: tightest.windowMinutes,
+      ...primary,
+      secondary: fiveHour && weekly ? weekly : null,
       planType: "Claude subscription",
       creditsAvailable: 0,
     };

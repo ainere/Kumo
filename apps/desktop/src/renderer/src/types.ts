@@ -5,7 +5,7 @@ import type { Prefs } from "../../../../../src/core/prefs.js";
 export type { KumoEvent, SessionSettings, Prefs };
 
 export type Limits = Record<string, unknown> | null;
-export type Quotas = { orchestrator: Limits; antigravity: Limits };
+export type Quotas = { orchestrator: Limits; antigravity: Limits; providers?: Record<string, Limits> };
 
 export interface SessionSnapshot {
   id: string;

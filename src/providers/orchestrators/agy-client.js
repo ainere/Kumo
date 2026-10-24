@@ -29,7 +29,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { getCliBinary, getAgyUsage } from "../../bridge/agy-runner.js";
+import { getCliBinary, getAgyUsage, isArgonModel } from "../../bridge/agy-runner.js";
 import { safeSpawn, childEnvFor, stopProcessTree } from "../../utils/process.js";
 import { supportsEffort } from "../../config/settings.js";
 import { ensureAntigravityBridgeConfig } from "../../config/sync.js";
@@ -271,14 +271,21 @@ export class AgyAppClient extends EventEmitter {
       if (!usage) return null;
 
       const isClaudeOrGpt = Boolean(this.activeModel && /claude|gpt/i.test(this.activeModel));
+      // Gemini 4 Argon draws on its own weekly limit; the family figure only
+      // stands in when agy did not report one.
+      const argon = !isClaudeOrGpt && isArgonModel(this.activeModel);
       // agy reports what is left ("Weekly Limit Remaining 99%"); this used to
       // be read as the used share, so a full quota showed as exhausted.
       const remainingPercent = isClaudeOrGpt
         ? (usage.claudeGptWeeklyPercent ?? usage.geminiWeeklyPercent ?? 0)
-        : (usage.geminiWeeklyPercent ?? usage.claudeGptWeeklyPercent ?? 0);
+        : argon
+          ? (usage.geminiArgonWeeklyPercent ?? usage.geminiWeeklyPercent ?? usage.claudeGptWeeklyPercent ?? 0)
+          : (usage.geminiWeeklyPercent ?? usage.claudeGptWeeklyPercent ?? 0);
       const resetTime = isClaudeOrGpt
         ? (usage.claudeGptWeeklyResetFormatted || "weekly")
-        : (usage.geminiWeeklyResetFormatted || "weekly");
+        : argon && usage.geminiArgonWeeklyPercent != null
+          ? (usage.geminiArgonWeeklyResetFormatted || "weekly")
+          : (usage.geminiWeeklyResetFormatted || "weekly");
 
       return {
         usedPercent: Math.max(0, 100 - remainingPercent),

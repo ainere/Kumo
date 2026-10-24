@@ -20,9 +20,9 @@
 <a href="#documentation">Docs</a>
 </p>
 
-<img src="docs/media/kumo-desktop-demo.webp" alt="The Kumo desktop app: the lead plans, a scout and a researcher work in parallel, the builder's change waits for approval, and a reviewer signs off, all over a live cloud scene behind glass panels." width="100%">
+<img src="docs/media/kumo-desktop-demo.webp" alt="The Kumo desktop app: a Claude Opus 5.5 lead plans, a Gemini Flash vision worker and a Gemini 4 Argon researcher run in parallel, a GPT-6.1 Sol builder stages a diff for approval, and a GPT-6 Astra reviewer signs off, with live multi-provider usage meters and a cloud scene behind glass panels." width="100%">
 
-<sub>The desktop app running a scripted session: the lead plans, a scout and a researcher read in parallel, the builder's change waits for your approval, and a reviewer signs off. <a href="docs/media/kumo-desktop-demo.mp4">Watch it as MP4</a>.</sub>
+<sub>A cross-provider crew in the desktop app: Claude Opus 5.5 leads, Gemini 3.8 Flash (vision) and Gemini 4 Argon (research) run in parallel, GPT-6.1 Sol builds and pauses on a diff approval gate, and GPT-6 Astra signs off. <a href="docs/media/kumo-desktop-demo.mp4">Watch it as MP4</a>.</sub>
 
 </div>
 

@@ -97,14 +97,15 @@ code, pre, kbd { font-family: var(--font-mono); }
 .side-item.chat { padding-left: 22px; color: var(--muted); }
 .side-item.chat[aria-current="true"] { color: var(--text); }
 .side-item.action { display: flex; align-items: center; gap: 8px; color: var(--muted); margin-top: 6px; }
-.side-scroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
-.hr { height: 1px; background: var(--border); margin: 8px 6px; flex: 0 0 1px; }
-.meter { padding: 4px 10px; font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 5px; }
-.meter-row { display: flex; justify-content: space-between; }
-.meter-row span:last-child { font-family: var(--font-mono); }
+.side-scroll { flex: 1; min-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.hr { height: 1px; background: var(--border); margin: 6px 6px; flex: 0 0 1px; }
+.meters { flex: 0 1 auto; min-height: 0; max-height: 58%; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.meter { padding: 3px 10px; font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
+.meter-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; line-height: 1.25; }
+.meter-row span:last-child { font-family: var(--font-mono); white-space: nowrap; }
 .meter-track { height: 4px; border-radius: 4px; background: var(--track); overflow: hidden; }
 .meter-fill { height: 4px; border-radius: 4px; background: var(--accent); }
-.meter-detail { font-size: 11px; color: var(--faint); }
+.meter-detail { font-size: 10.5px; line-height: 1.2; color: var(--faint); }
 
 /* Conversation */
 .transcript { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; padding: 8px 4px; }

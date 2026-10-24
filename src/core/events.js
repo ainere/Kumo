@@ -165,6 +165,9 @@ export const EventSchemas = {
     type: z.literal("quota.updated"),
     orchestrator: limits,
     antigravity: limits,
+    // Every active provider's account limits (e.g. claude, codex), whether the
+    // lead or only a role runs on it; Antigravity's stay in `antigravity`.
+    providers: z.record(z.string(), limits).optional(),
   }),
 };
 

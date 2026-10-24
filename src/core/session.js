@@ -855,6 +855,9 @@ export class Session extends EventEmitter {
       if (this.client) await this._connect({ threadId: this._clientThreadId() });
     }
     this._emit("settings.changed", { settings: { ...this.settings }, changed });
+    if (!changed.includes("orchestratorProvider") && (changed.includes("workerProvider") || changed.includes("roles"))) {
+      this.quotas.providerChanged();
+    }
     return changed;
   }
 

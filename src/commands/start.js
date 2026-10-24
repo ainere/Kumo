@@ -40,6 +40,7 @@ import { runOnboarding } from "./onboarding.js";
 import { roleSetPatch, formatRoles } from "./role.js";
 import { BUILTIN_ROLE_IDS, roleAssignment, describeTarget } from "../config/roles.js";
 import { listProjects } from "../data/sessions.js";
+import { isArgonModel } from "../bridge/agy-runner.js";
 import { configFile } from "../config/paths.js";
 import { VERSION } from "../version.js";
 
@@ -92,15 +93,23 @@ function getSmartExamples(ws) {
 
 /**
  * Antigravity's figures for a model: Claude/GPT models share one pool, Gemini
- * and open-weights models another.
+ * and open-weights models another. Gemini 4 Argon has its own limit; the
+ * Gemini family figure only stands in when agy reported none for it.
  */
 function antigravityLines(usage, model) {
   if (!usage) return [];
   const claudeOrGpt = /claude|gpt|anthropic/i.test(model || "");
-  const pick = (weekly) =>
-    claudeOrGpt
-      ? [weekly ? usage.claudeGptWeeklyPercent : usage.claudeGpt5HourPercent, weekly ? usage.claudeGptWeeklyResetFormatted : usage.claudeGpt5HourResetFormatted]
-      : [weekly ? usage.geminiWeeklyPercent : usage.gemini5HourPercent, weekly ? usage.geminiWeeklyResetFormatted : usage.gemini5HourResetFormatted];
+  const argon = !claudeOrGpt && isArgonModel(model);
+  const pick = (weekly) => {
+    if (claudeOrGpt) {
+      return [weekly ? usage.claudeGptWeeklyPercent : usage.claudeGpt5HourPercent, weekly ? usage.claudeGptWeeklyResetFormatted : usage.claudeGpt5HourResetFormatted];
+    }
+    const argonPercent = weekly ? usage.geminiArgonWeeklyPercent : usage.geminiArgon5HourPercent;
+    if (argon && argonPercent !== null && argonPercent !== undefined) {
+      return [argonPercent, weekly ? usage.geminiArgonWeeklyResetFormatted : usage.geminiArgon5HourResetFormatted];
+    }
+    return [weekly ? usage.geminiWeeklyPercent : usage.gemini5HourPercent, weekly ? usage.geminiWeeklyResetFormatted : usage.gemini5HourResetFormatted];
+  };
   const lines = [];
   for (const [label, weekly] of [["Weekly", true], ["5-Hour", false]]) {
     const [percent, reset] = pick(weekly);
@@ -118,10 +127,17 @@ function quotaLinesFor(role, settings, quotas) {
   const model = role === "orchestrator" ? settings.orchestratorModel : settings.workerModel;
   if (provider === "antigravity") return antigravityLines(quotas.antigravity, model);
   // The orchestrator client reports its provider's account limits; a worker
-  // on the same provider draws on the same account.
-  if (provider === settings.orchestratorProvider && quotas.orchestrator?.remainingPercent !== undefined) {
-    const limits = quotas.orchestrator;
-    return [{ label: getQuotaPeriod(limits), percent: limits.remainingPercent, reset: limits.resetFormatted }];
+  // on the same provider draws on the same account. Other providers' limits
+  // come from the quota cache (`quotas.providers`).
+  const limits =
+    quotas.providers?.[provider] ?? (provider === settings.orchestratorProvider ? quotas.orchestrator : null);
+  if (limits?.remainingPercent !== undefined) {
+    const lines = [{ label: getQuotaPeriod(limits), percent: limits.remainingPercent, reset: limits.resetFormatted }];
+    const weekly = limits.secondary;
+    if (weekly && typeof weekly.usedPercent === "number") {
+      lines.push({ label: "Weekly", percent: Math.max(0, 100 - weekly.usedPercent), reset: weekly.resetFormatted || "weekly" });
+    }
+    return lines;
   }
   return [];
 }

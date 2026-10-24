@@ -99,7 +99,7 @@ function existingBinary(bin) {
  * @returns {string}
  */
 export function getCliBinary() {
-  if (process.env.AGY_BIN && fs.existsSync(process.env.AGY_BIN)) return process.env.AGY_BIN;
+  if (process.env.AGY_BIN) return existingBinary(process.env.AGY_BIN) || process.env.AGY_BIN;
   if (process.env.GEMINI_BIN && fs.existsSync(process.env.GEMINI_BIN)) return process.env.GEMINI_BIN;
   if (detectedBin) return detectedBin;
 
@@ -387,6 +387,21 @@ export async function runAgy(opts) {
 }
 
 /**
+ * Whether a model id names Gemini 4 Argon, which has its own Antigravity limit.
+ *
+ * @param {string|null|undefined} model
+ * @returns {boolean}
+ */
+export function isArgonModel(model) {
+  return /\bargon\b/i.test(String(model || "").replace(/[-_.]/g, " "));
+}
+
+/** @param {{ group: string, metric: string }} item */
+function isArgonUsageRow(item) {
+  return /\bargon\b/i.test(item.group) || /\bargon\b/i.test(item.metric);
+}
+
+/**
  * Parse `agy -p /usage` output. Each line is tab-separated:
  * `<group>\t<metric>\t<percent>%\t<reset ISO>`, and every percentage is what
  * is *remaining* (agy 1.2: "Weekly Limit Remaining 99%").
@@ -395,6 +410,9 @@ export async function runAgy(opts) {
  * agy lists per-model limits ("Gemini 4 Argon … Weekly Limit"). Those used to
  * overwrite the family figure because they come later; a family row now wins
  * and a per-model row only fills a slot no family row provided.
+ *
+ * Gemini 4 Argon rows are also kept apart in `geminiArgonWeekly*` /
+ * `geminiArgon5Hour*`, because Argon draws on a limit of its own.
  *
  * @param {string} stdout
  * @returns {Object|null} null when no line could be parsed
@@ -407,6 +425,12 @@ export function parseAgyUsage(stdout) {
     gemini5HourPercent: null,
     gemini5HourResetFormatted: null,
     gemini5HourResetIso: null,
+    geminiArgonWeeklyPercent: null,
+    geminiArgonWeeklyResetFormatted: null,
+    geminiArgonWeeklyResetIso: null,
+    geminiArgon5HourPercent: null,
+    geminiArgon5HourResetFormatted: null,
+    geminiArgon5HourResetIso: null,
     claudeGptWeeklyPercent: null,
     claudeGptWeeklyResetFormatted: null,
     claudeGptWeeklyResetIso: null,
@@ -439,6 +463,12 @@ export function parseAgyUsage(stdout) {
     const metric = item.metric.toLowerCase();
     const weekly = metric.includes("weekly");
     const fiveHour = /five hour|5-hour|5 hour/.test(metric);
+    // Gemini 4 Argon has a limit of its own; it also stands in for the
+    // Gemini family figure below when agy reports no family row.
+    if (isArgonUsageRow(item)) {
+      if (weekly) set("geminiArgonWeekly", item);
+      else if (fiveHour) set("geminiArgon5Hour", item);
+    }
     if (group.includes("gemini")) {
       if (weekly) set("geminiWeekly", item);
       else if (fiveHour) set("gemini5Hour", item);
@@ -457,6 +487,7 @@ export function parseAgyUsage(stdout) {
  */
 export async function getAgyUsage() {
   const bin = getCliBinary();
+  if (!existingBinary(bin) && !fs.existsSync(bin)) return null;
 
   return new Promise((resolve) => {
     let stdout = "";

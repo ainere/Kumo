@@ -21,9 +21,10 @@ import { VERSION } from "../version.js";
 import { loadConfig, isCodexModel } from "../config/settings.js";
 import { planLabel } from "../config/models.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
-import { checkAgyHealth, getAgyUsage } from "../bridge/agy-runner.js";
+import { checkAgyHealth, getAgyUsage, isArgonModel } from "../bridge/agy-runner.js";
 import { findClaudeBinary } from "../providers/workers/claude.js";
 import { getCachedQuotas, saveCachedQuotas } from "../utils/quota-cache.js";
+import { activeTargets } from "../config/roles.js";
 import { getApiKey, getKeyEnvVarName, resolveBaseUrl } from "../providers/api/api-transport.js";
 import {
   getBanner,
@@ -53,6 +54,9 @@ export async function statusCommand(opts = {}) {
 
   const isOrchCodex = isCodexModel(config.orchestratorModel, config.orchestratorProvider);
   const isWorkerCodex = isCodexModel(config.workerModel, config.workerProvider);
+  // Every provider the crew draws on: the lead, the shared worker and each role.
+  const targets = activeTargets(config);
+  const roleUses = (provider) => targets.some((t) => t.provider === provider);
 
   // Direct-API roles bypass subscription quota fetches (presence + base URL only, never secrets).
   const isApiProviderId = (p) => typeof p === "string" && p.toLowerCase().trim().endsWith("-api");
@@ -114,8 +118,8 @@ export async function statusCommand(opts = {}) {
     console.log(separator(64));
   }
 
-  // 1. Query Codex live rate limits if either subscription role uses Codex (API roles skip).
-  if ((isOrchCodex && !isOrchApi) || (isWorkerCodex && !isWorkerApi)) {
+  // 1. Query Codex live rate limits if any subscription role uses Codex (API roles skip).
+  if ((isOrchCodex && !isOrchApi) || (isWorkerCodex && !isWorkerApi) || roleUses("codex")) {
     const client = new CodexAppClient();
     try {
       await client.start();
@@ -133,6 +137,14 @@ export async function statusCommand(opts = {}) {
     }
   }
 
+  /** The weekly window Codex and Claude report next to their 5-hour one. */
+  const renderWeekly = (limits) => {
+    const weekly = limits?.secondary;
+    if (!weekly || typeof weekly.usedPercent !== "number") return;
+    const left = Math.max(0, 100 - weekly.usedPercent);
+    console.log(`    ${"Weekly Remaining:".padEnd(24)}${progressBar(left, 14)}${weekly.resetFormatted ? ` (resets ${weekly.resetFormatted})` : ""}`);
+  };
+
   // Render Orchestrator Limits (subscription Codex only; API roles already rendered above).
   if (!isOrchApi && isOrchCodex && codexLimits) {
     const orchPeriod = codexLimits.windowMinutes
@@ -141,6 +153,7 @@ export async function statusCommand(opts = {}) {
     console.log(`  ${c.bold}Orchestrator (${orchSub}):${c.reset}`);
     console.log(`    ${`${orchPeriod} Remaining:`.padEnd(24)}${progressBar(codexLimits.remainingPercent, 14)}`);
     console.log(`    ${"Reset Time:".padEnd(24)}${c.brightYellow}${codexLimits.resetFormatted}${c.reset}`);
+    renderWeekly(codexLimits);
 
     if (codexLimits.creditsAvailable > 0) {
       console.log(`    ${"Reset Credits:".padEnd(24)}${c.brightGreen}${codexLimits.creditsAvailable} reset available${c.reset}`);
@@ -150,8 +163,8 @@ export async function statusCommand(opts = {}) {
     console.log(separator(64));
   }
 
-  // 2. Antigravity usage and health, only for roles that run on Antigravity.
-  const usesAgy = config.orchestratorProvider === "antigravity" || config.workerProvider === "antigravity";
+  // 2. Antigravity usage and health, only when some role runs on Antigravity.
+  const usesAgy = roleUses("antigravity");
   let agyHealth = null;
   let agyUsage = null;
   if (usesAgy) {
@@ -167,12 +180,20 @@ export async function statusCommand(opts = {}) {
   // last report. Asking for fresh ones would mean running a model turn.
   const claudeLimits = cached.orchestrators?.claude || null;
 
-  /** @param {object} usage @param {string} model */
+  /**
+   * Antigravity's figures for a model. Gemini models also show Gemini 4
+   * Argon's own limit next to the family one; an Argon model lists it first.
+   *
+   * @param {object} usage
+   * @param {string} model
+   */
   const renderAgyUsage = (usage, model) => {
     const claudeOrGpt = /claude|gpt|anthropic/i.test(model || "");
+    const gemini = [["Weekly", usage.geminiWeeklyPercent, usage.geminiWeeklyResetFormatted], ["5-Hour", usage.gemini5HourPercent, usage.gemini5HourResetFormatted]];
+    const argon = [["Argon Weekly", usage.geminiArgonWeeklyPercent, usage.geminiArgonWeeklyResetFormatted], ["Argon 5-Hour", usage.geminiArgon5HourPercent, usage.geminiArgon5HourResetFormatted]];
     const rows = claudeOrGpt
       ? [["Weekly", usage.claudeGptWeeklyPercent, usage.claudeGptWeeklyResetFormatted], ["5-Hour", usage.claudeGpt5HourPercent, usage.claudeGpt5HourResetFormatted]]
-      : [["Weekly", usage.geminiWeeklyPercent, usage.geminiWeeklyResetFormatted], ["5-Hour", usage.gemini5HourPercent, usage.gemini5HourResetFormatted]];
+      : isArgonModel(model) ? [...argon, ...gemini] : [...gemini, ...argon];
     for (const [label, percent, reset] of rows) {
       if (percent === null || percent === undefined) continue;
       console.log(`    ${`${label} Remaining:`.padEnd(24)}${progressBar(percent, 14)} (${reset || label.toLowerCase()})`);
@@ -188,6 +209,7 @@ export async function statusCommand(opts = {}) {
     if (claudeLimits?.remainingPercent !== undefined) {
       const period = claudeLimits.windowMinutes <= 360 ? "5-Hour" : "Weekly";
       console.log(`    ${`${period} Remaining:`.padEnd(24)}${progressBar(claudeLimits.remainingPercent, 14)} (resets ${claudeLimits.resetFormatted})`);
+      renderWeekly(claudeLimits);
       console.log(`    ${c.gray}From the last Claude turn${staleNote}.${c.reset}`);
     } else {
       console.log(`    ${c.gray}Usage is reported after the first Claude turn.${c.reset}`);
@@ -217,6 +239,7 @@ export async function statusCommand(opts = {}) {
         : ((codexLimits.resetsAt - Date.now() / 1000) / 86400 > 8 ? "Monthly" : "Weekly");
       console.log(`    ${`${workerPeriod} Remaining:`.padEnd(24)}${progressBar(codexLimits.remainingPercent, 14)}`);
       console.log(`    ${"Reset Time:".padEnd(24)}${c.brightYellow}${codexLimits.resetFormatted}${c.reset}`);
+      renderWeekly(codexLimits);
     }
   } else if (config.workerProvider === "claude") {
     console.log(`  ${c.bold}Worker Provider (${workerSub}):${c.reset}`);
@@ -234,6 +257,38 @@ export async function statusCommand(opts = {}) {
   } else {
     console.log(`  ${c.bold}Worker Provider (${workerSub}):${c.reset}`);
     console.log(`    ${c.gray}This provider reports no quota to Kumo.${c.reset}`);
+  }
+
+  // Providers only roles run on (e.g. a builder on Codex, a researcher on
+  // Gemini 4 Argon): their accounts' limits too, once per provider.
+  const roleOnly = targets.filter(
+    (t) => t.role !== "orchestrator" && t.role !== "worker" && t.provider !== config.orchestratorProvider && t.provider !== config.workerProvider
+  );
+  const roleNames = (provider) => roleOnly.filter((t) => t.provider === provider).map((t) => `${t.role}: ${t.model || "default"}`).join(", ");
+  if (["codex", "claude", "antigravity"].some((p) => roleNames(p))) console.log(separator(64));
+  if (roleNames("codex")) {
+    console.log(`  ${c.bold}Codex roles (${roleNames("codex")}):${c.reset}`);
+    if (codexLimits) {
+      const period = codexLimits.windowMinutes && codexLimits.windowMinutes > 360 ? "Weekly" : "5-Hour";
+      console.log(`    ${`${period} Remaining:`.padEnd(24)}${progressBar(codexLimits.remainingPercent, 14)} (resets ${codexLimits.resetFormatted})`);
+      renderWeekly(codexLimits);
+    } else {
+      console.log(`    ${c.gray}Codex limits are unavailable.${c.reset}`);
+    }
+  }
+  if (roleNames("claude")) {
+    console.log(`  ${c.bold}Claude roles (${roleNames("claude")}):${c.reset}`);
+    renderClaude();
+  }
+  if (roleNames("antigravity")) {
+    console.log(`  ${c.bold}Antigravity roles (${roleNames("antigravity")}):${c.reset}`);
+    if (agyUsage) {
+      const models = [...new Set(roleOnly.filter((t) => t.provider === "antigravity").map((t) => t.model || ""))];
+      // An Argon role leads with Argon's limit; Gemini rows list it second.
+      renderAgyUsage(agyUsage, models.find((m) => isArgonModel(m)) || models[0]);
+    } else {
+      console.log(`    ${c.gray}Antigravity usage is unavailable (${agyHealth?.installed === false ? "agy not found" : "check login"}).${c.reset}`);
+    }
   }
 
   console.log(separator(64) + "\n");

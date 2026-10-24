@@ -26,14 +26,25 @@
  * takes seconds; that runs only when a role actually uses Antigravity, and at
  * most every five minutes. It used to run every 30 seconds and after every
  * turn whether Antigravity was configured or not.
+ *
+ * Every provider the crew draws on is covered, not just the lead's and the
+ * shared worker's: a role assigned to Codex or Claude shows that account's
+ * last cached limits, and any Antigravity role turns on Antigravity's usage.
  */
 
 import { EventEmitter } from "node:events";
 import { getAgyUsage } from "../bridge/agy-runner.js";
+import { activeProviders } from "../config/roles.js";
 import { getCachedQuotas, saveProviderQuotas } from "../utils/quota-cache.js";
 
 /** @typedef {Record<string, unknown> | null} Limits */
-/** @typedef {{ orchestrator: Limits, antigravity: Limits }} QuotaSnapshot */
+/**
+ * `providers` holds the account limits of every active provider other than
+ * Antigravity (whose usage is `antigravity`): the orchestrator's live ones and
+ * the last cached ones for providers that only roles run on.
+ *
+ * @typedef {{ orchestrator: Limits, antigravity: Limits, providers: Record<string, Limits> }} QuotaSnapshot
+ */
 
 export const ORCHESTRATOR_REFRESH_MS = 60 * 1000;
 export const ANTIGRAVITY_REFRESH_MS = 5 * 60 * 1000;
@@ -42,7 +53,7 @@ export class QuotaMonitor extends EventEmitter {
   /**
    * @param {{
    *   getClient: () => any,
-   *   getSettings: () => { orchestratorProvider: string, workerProvider: string },
+   *   getSettings: () => { orchestratorProvider: string, workerProvider: string, [key: string]: any },
    *   fetchAntigravityUsage?: () => Promise<Limits>,
    *   orchestratorRefreshMs?: number,
    *   antigravityRefreshMs?: number,
@@ -61,6 +72,8 @@ export class QuotaMonitor extends EventEmitter {
     this.orchestrator = null;
     /** @type {Limits} */
     this.antigravity = null;
+    /** @type {Record<string, Limits>} last known limits per provider (cache, then live) */
+    this.known = {};
     this._antigravityAt = 0;
     /** @type {NodeJS.Timeout|null} */
     this._timer = null;
@@ -70,19 +83,32 @@ export class QuotaMonitor extends EventEmitter {
   _loadCache() {
     const cached = getCachedQuotas();
     const provider = this.getSettings().orchestratorProvider;
-    this.orchestrator = /** @type {Limits} */ (cached.orchestrators?.[provider] ?? null);
+    this.known = { ...(/** @type {Record<string, Limits>} */ (cached.orchestrators || {})) };
+    this.orchestrator = this.known[provider] ?? null;
     this.antigravity = this.usesAntigravity() ? /** @type {Limits} */ (cached.agy ?? null) : null;
   }
 
-  /** Whether either role runs on Antigravity. */
+  /** Providers in use by the orchestrator, the shared worker or any role. */
+  activeProviders() {
+    return activeProviders(this.getSettings());
+  }
+
+  /** Whether any role (the lead, the shared worker, a built-in or custom role) runs on Antigravity. */
   usesAntigravity() {
-    const s = this.getSettings();
-    return s.orchestratorProvider === "antigravity" || s.workerProvider === "antigravity";
+    return this.activeProviders().includes("antigravity");
   }
 
   /** @returns {QuotaSnapshot} */
   snapshot() {
-    return { orchestrator: this.orchestrator, antigravity: this.usesAntigravity() ? this.antigravity : null };
+    const settings = this.getSettings();
+    /** @type {Record<string, Limits>} */
+    const providers = {};
+    for (const provider of this.activeProviders()) {
+      if (provider === "antigravity") continue;
+      const limits = provider === settings.orchestratorProvider ? this.orchestrator ?? this.known[provider] : this.known[provider];
+      if (limits) providers[provider] = limits;
+    }
+    return { orchestrator: this.orchestrator, antigravity: this.usesAntigravity() ? this.antigravity : null, providers };
   }
 
   /**
@@ -94,11 +120,25 @@ export class QuotaMonitor extends EventEmitter {
    */
   async refresh({ force = false } = {}) {
     let changed = false;
+    // Providers only roles run on report nothing live here; pick up what
+    // another session or `kumo status` cached for them since.
+    if (this.useCache) {
+      const cached = /** @type {Record<string, Limits>} */ (getCachedQuotas().orchestrators || {});
+      const orchestratorProvider = this.getSettings().orchestratorProvider;
+      for (const [provider, limits] of Object.entries(cached)) {
+        if (provider === orchestratorProvider || !limits) continue;
+        if (JSON.stringify(this.known[provider]) !== JSON.stringify(limits)) {
+          this.known[provider] = limits;
+          changed = true;
+        }
+      }
+    }
     const client = this.getClient();
     if (client && typeof client.getRateLimits === "function") {
       const limits = await client.getRateLimits().catch(() => null);
       if (limits) {
         this.orchestrator = limits;
+        this.known[this.getSettings().orchestratorProvider] = limits;
         changed = true;
       }
     }
@@ -130,10 +170,16 @@ export class QuotaMonitor extends EventEmitter {
     this._timer = null;
   }
 
-  /** The orchestrator provider changed: its cached limits belong to the old one. */
+  /** Active providers changed: reload cached limits for the new set and align the lead's. */
   providerChanged() {
-    if (this.useCache) this._loadCache();
-    else this.orchestrator = null;
+    if (this.useCache) {
+      const cached = getCachedQuotas();
+      this.known = { ...(/** @type {Record<string, Limits>} */ (cached.orchestrators || {})), ...this.known };
+      this.orchestrator = this.known[this.getSettings().orchestratorProvider] ?? null;
+      this.antigravity = this.usesAntigravity() ? (this.antigravity ?? /** @type {Limits} */ (cached.agy ?? null)) : null;
+    } else {
+      this.orchestrator = this.known[this.getSettings().orchestratorProvider] ?? null;
+    }
     this.emit("updated", this.snapshot());
   }
 }
