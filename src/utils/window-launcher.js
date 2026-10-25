@@ -46,14 +46,15 @@ function posixQuote(s) {
 
 /**
  * The PowerShell script run in the new Windows terminal. `args` are tokens
- * already validated against SAFE_ARG_RE.
+ * already validated against SAFE_ARG_RE, and each is single-quoted so none is
+ * parsed as PowerShell syntax (`@name` would otherwise splat).
  *
  * @param {string} workspace
  * @param {string[]} args
  * @returns {string}
  */
 export function buildWindowsLaunchScript(workspace, args) {
-  const winCmd = ["kumo", "--here", ...args].join(" ");
+  const winCmd = ["kumo", "--here", ...args.map(powershellQuote)].join(" ");
   return `$host.UI.RawUI.WindowTitle = 'KUMO — 雲'; Set-Location -LiteralPath ${powershellQuote(workspace)}; ${winCmd}`;
 }
 
@@ -236,7 +237,7 @@ export async function launchInNewWindow(optsOrWorkspace = {}, maybeArgs = undefi
       });
       child.once("spawn", () => {
         child.unref();
-        process.exit(0);
+        setTimeout(() => process.exit(0), 100);
         resolve(true);
       });
     };
