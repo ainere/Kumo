@@ -130,6 +130,8 @@ export const DEFAULT_CONFIG = {
   workerEffort: "medium",
   timeoutMs: 300000,
   turnTimeoutMs: 1800000,
+  // How often a running session probes every signed-in CLI for usage limits.
+  quotaPollMs: 10000,
   cliBinary: "agy",
   approvalPolicy: "on-request",
   bannerStyle: "cloud",
@@ -432,6 +434,9 @@ export function normalizeConfigValue(key, value) {
     }
     if (key === "turnTimeoutMs" && (value < 60000 || value > 14400000)) {
       throw new Error(`Value for 'turnTimeoutMs' must be between 60000 and 14400000`);
+    }
+    if (key === "quotaPollMs" && (value < 10000 || value > 3600000)) {
+      throw new Error(`Value for 'quotaPollMs' must be between 10000 and 3600000`);
     }
   } else if (key === "reasoningEffort" || key === "workerEffort") {
     const norm = String(value).toLowerCase().trim();

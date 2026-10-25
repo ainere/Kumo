@@ -213,7 +213,7 @@ export function sessionSnapshot(s) {
     chatId: s.chatId,
     settings: { ...s.settings },
     busy: s.busy,
-    quotas: s.quotas.snapshot(),
+    quotas: s.quotas.snapshotAll(),
   };
 }
 

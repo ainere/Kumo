@@ -22,21 +22,23 @@
  *
  * The orchestrator's limits come from its client: a JSON-RPC call on Codex's
  * running app-server, or the rate-limit event Claude Code reports with every
- * turn — both free. Antigravity's come from spawning `agy -p /usage`, which
- * takes seconds; that runs only when a role actually uses Antigravity, and at
- * most every five minutes. It used to run every 30 seconds and after every
- * turn whether Antigravity was configured or not.
+ * turn. A running session also polls every signed-in CLI (start(), every
+ * `pollMs`): Codex through an app-server of its own, Claude through Claude
+ * Code's local `/usage`, and Antigravity through `agy -p /usage` when a role
+ * uses it. A poll still running when the next one is due is shared, not
+ * doubled. `refresh()` (after a turn) reads only the lead, and Antigravity at
+ * most every `antigravityRefreshMs`.
  *
- * Every provider the crew draws on is covered, not just the lead's and the
- * shared worker's: a role assigned to Codex or Claude shows that account's
- * last cached limits, and any Antigravity role turns on Antigravity's usage.
+ * Every event carries every account's figures (snapshotAll): Settings ›
+ * Accounts shows them all, and the sidebar keeps the providers the crew
+ * draws on. The CLI header reads snapshot(), the crew's alone.
  */
 
 import { EventEmitter } from "node:events";
 import { getAgyUsage } from "../bridge/agy-runner.js";
 import { activeProviders } from "../config/roles.js";
 import { getCachedQuotas, saveProviderQuotas } from "../utils/quota-cache.js";
-import { accountStatus, cachedAccountStatus, onSignedOut } from "./accounts.js";
+import { accountStatus, cachedAccountStatus, getClaudeUsage, onSignedOut } from "./accounts.js";
 
 /** @typedef {Record<string, unknown> | null} Limits */
 /**
@@ -56,6 +58,11 @@ import { accountStatus, cachedAccountStatus, onSignedOut } from "./accounts.js";
 
 export const ORCHESTRATOR_REFRESH_MS = 60 * 1000;
 export const ANTIGRAVITY_REFRESH_MS = 5 * 60 * 1000;
+/**
+ * How often start() probes every signed-in CLI (Antigravity `/usage`, Codex
+ * limits, the lead's limits). Sessions pass the `quotaPollMs` config instead.
+ */
+export const POLL_MS = 10 * 1000;
 /** However slow its parts are, a full probe is answered by then, and what it still runs is stopped. */
 export const PROBE_TIMEOUT_MS = 20 * 1000;
 
@@ -65,9 +72,11 @@ export class QuotaMonitor extends EventEmitter {
    *   getClient: () => any,
    *   getSettings: () => { orchestratorProvider: string, workerProvider: string, [key: string]: any },
    *   fetchAntigravityUsage?: () => Promise<Limits>,
+   *   fetchClaudeUsage?: () => Promise<Limits>,
    *   orchestratorRefreshMs?: number,
    *   antigravityRefreshMs?: number,
    *   probeTimeoutMs?: number,
+   *   pollMs?: number,
    *   useCache?: boolean,
    * }} opts
    */
@@ -76,9 +85,11 @@ export class QuotaMonitor extends EventEmitter {
     this.getClient = opts.getClient;
     this.getSettings = opts.getSettings;
     this.fetchAntigravityUsage = opts.fetchAntigravityUsage || (() => getAgyUsage());
+    this.fetchClaudeUsage = opts.fetchClaudeUsage || (() => getClaudeUsage());
     this.orchestratorRefreshMs = opts.orchestratorRefreshMs ?? ORCHESTRATOR_REFRESH_MS;
     this.antigravityRefreshMs = opts.antigravityRefreshMs ?? ANTIGRAVITY_REFRESH_MS;
     this.probeTimeoutMs = opts.probeTimeoutMs ?? PROBE_TIMEOUT_MS;
+    this.pollMs = opts.pollMs ?? POLL_MS;
     this.useCache = opts.useCache !== false;
     /** @type {Limits} */
     this.orchestrator = null;
@@ -117,7 +128,7 @@ export class QuotaMonitor extends EventEmitter {
     delete this.known[provider];
     if (provider === this.getSettings().orchestratorProvider) this.orchestrator = null;
     if (provider === "antigravity") this.antigravity = null;
-    this.emit("updated", this.snapshot());
+    this.emit("updated", this.snapshotAll());
   }
 
   _loadCache() {
@@ -197,7 +208,13 @@ export class QuotaMonitor extends EventEmitter {
     const timer = setTimeout(() => abort.abort(), this.probeTimeoutMs);
     /** @type {Fresh} */
     const fresh = { limits: {}, agy: false };
-    const work = Promise.all([this._probeLead(fresh, signal), this._probeAntigravity(fresh, signal), this._probeCodex(fresh, signal)]);
+    const forgottenAtStart = { ...this._forgotten };
+    const work = Promise.all([
+      this._probeLead(fresh, signal),
+      this._probeAntigravity(fresh, signal),
+      this._probeCodex(fresh, signal),
+      this._probeClaude(fresh, signal),
+    ]);
     // A step that fails after the cap has already answered has nobody left to tell.
     work.catch(() => {});
     const expired = new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
@@ -209,6 +226,17 @@ export class QuotaMonitor extends EventEmitter {
       if (this._probeAbort === abort) this._probeAbort = null;
     }
 
+    // A provider signed out while this ran keeps nothing this probe read for it, in memory or in the cache.
+    for (const provider of Object.keys(fresh.limits)) {
+      if ((this._forgotten[provider] ?? 0) === (forgottenAtStart[provider] ?? 0)) continue;
+      delete fresh.limits[provider];
+      delete this.known[provider];
+      if (provider === this.getSettings().orchestratorProvider) this.orchestrator = null;
+    }
+    if (fresh.agy && (this._forgotten.antigravity ?? 0) !== (forgottenAtStart.antigravity ?? 0)) {
+      fresh.agy = false;
+      this.antigravity = null;
+    }
     this._persist(fresh);
     const snap = this.snapshotAll();
     this.emit("updated", snap);
@@ -283,6 +311,24 @@ export class QuotaMonitor extends EventEmitter {
     } catch {
       /* ignore if codex app-server cannot be queried */
     }
+  }
+
+  /**
+   * 4. Claude's plan usage through Claude Code's local `/usage` (no model
+   * call), whether or not Claude leads: the lead's own figures arrive only
+   * with a turn's rate-limit event.
+   *
+   * @param {Fresh} fresh
+   * @param {AbortSignal} signal
+   */
+  async _probeClaude(fresh, signal) {
+    if (!this._accountUsable(await accountStatus("claude")) || signal.aborted) return;
+    const forgotten = this._forgotten["claude"] ?? 0;
+    const limits = await this.fetchClaudeUsage().catch(() => null);
+    if (!limits || signal.aborted || (this._forgotten["claude"] ?? 0) !== forgotten) return;
+    this.known["claude"] = limits;
+    fresh.limits["claude"] = limits;
+    if (this.getSettings().orchestratorProvider === "claude") this.orchestrator = limits;
   }
 
   /**
@@ -370,16 +416,20 @@ export class QuotaMonitor extends EventEmitter {
     }
     if (changed) {
       this._persist(fresh);
-      this.emit("updated", this.snapshot());
+      this.emit("updated", this.snapshotAll());
     }
     return this.snapshot();
   }
 
-  /** Refresh periodically until stop(). */
+  /**
+   * Probe every signed-in CLI every `pollMs` (10 s by default) until stop().
+   * A probe still running when the next tick comes is shared, not doubled
+   * (see probeAll).
+   */
   start() {
     if (this._timer) return;
     this._watchSignOut();
-    this._timer = setInterval(() => void this.refresh(), this.orchestratorRefreshMs);
+    this._timer = setInterval(() => void this.probeAll().catch(() => {}), this.pollMs);
     this._timer.unref();
   }
 
@@ -402,6 +452,6 @@ export class QuotaMonitor extends EventEmitter {
     } else {
       this.orchestrator = this.known[this.getSettings().orchestratorProvider] ?? null;
     }
-    this.emit("updated", this.snapshot());
+    this.emit("updated", this.snapshotAll());
   }
 }

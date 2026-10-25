@@ -492,12 +492,28 @@ export function parseAgyUsage(stdout) {
   return usage;
 }
 
+/** The `agy -p /usage` run in progress, shared by everyone who asks meanwhile. */
+/** @type {Promise<Object | null> | null} */
+let usageRun = null;
+
 /**
- * Query live Antigravity / Gemini usage limits via `agy -p /usage`.
+ * Query live Antigravity / Gemini usage limits via `agy -p /usage`. Callers
+ * that ask while a run is going get its answer: with Antigravity as the lead,
+ * the lead's limits and the usage poll ask at the same moment.
  *
  * @returns {Promise<Object | null>}
  */
-export async function getAgyUsage() {
+export function getAgyUsage() {
+  if (!usageRun) {
+    usageRun = readAgyUsage().finally(() => {
+      usageRun = null;
+    });
+  }
+  return usageRun;
+}
+
+/** @returns {Promise<Object | null>} */
+async function readAgyUsage() {
   const bin = getCliBinary();
   if (!existingBinary(bin) && !fs.existsSync(bin)) return null;
 

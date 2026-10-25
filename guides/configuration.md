@@ -44,7 +44,7 @@ Kumo inspects the following environment variables to configure workspaces, execu
 | `KUMO_ENGINE_ROOT` | `apps/desktop/src/main/` | The engine's `src/` directory for the desktop app (defaults to the repository's) |
 | `KUMO_E2E` / `KUMO_E2E_CLIENT` | `apps/desktop/src/main/engine-host.ts` | Testing hook for the desktop app: with both set, the engine uses the scripted client module at that path instead of a provider |
 
-Timeouts are configured separately: `timeoutMs` (default 5 min) bounds each worker call, `turnTimeoutMs` (default 30 min) bounds a whole orchestrator turn. A timed-out or Ctrl+C'd turn is interrupted at the orchestrator, and the prompt returns only once it has actually stopped. The Antigravity provider prefers the `agy` binary; set `cliBinary` (or `AGY_BIN`) to override it, or choose the `gemini-cli` provider to use the Gemini CLI as a worker.
+Timeouts are configured separately: `timeoutMs` (default 5 min) bounds each worker call, `turnTimeoutMs` (default 30 min) bounds a whole orchestrator turn. A timed-out or Ctrl+C'd turn is interrupted at the orchestrator, and the prompt returns only once it has actually stopped. A running session refreshes the usage of every signed-in CLI every `quotaPollMs` (default 10 s, at least 10 s). Each refresh runs Antigravity's `/usage`, Claude Code's `/usage` (a local command: no model call, no saved session) and a short Codex app-server; to poll less often, run `kumo config set quotaPollMs 30000`. The Antigravity provider prefers the `agy` binary; set `cliBinary` (or `AGY_BIN`) to override it, or choose the `gemini-cli` provider to use the Gemini CLI as a worker.
 
 ## Knowledge & Documentation Integrity
 

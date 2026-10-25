@@ -50,7 +50,7 @@ import { findOllamaBinary } from "../providers/workers/ollama.js";
 import { findOpencodeBinary } from "../providers/workers/opencode.js";
 import { findCommandcodeBinary } from "../providers/workers/commandcode.js";
 import { getCachedQuotas, saveProviderQuotas, dropProviderQuotas } from "../utils/quota-cache.js";
-import { formatPlanType } from "../utils/ui.js";
+import { formatPlanType, formatResetTime } from "../utils/ui.js";
 import { readBoundedText } from "../providers/api/api-transport.js";
 import { launchTerminalCommand } from "../utils/window-launcher.js";
 
@@ -360,6 +360,130 @@ async function readClaude({ run }) {
     plan: claudePlan(info.subscriptionType),
     detail: method === "claude.ai" ? "Logged in with your Claude subscription." : `Logged in (${plainText(method, 30) || "unknown method"}).`,
   };
+}
+
+/** `claude -p /usage` answers from the account in about a second; past this something is wrong. */
+const CLAUDE_USAGE_TIMEOUT_MS = 10_000;
+
+/**
+ * `/usage` as a local command (no model call), without saving a session for
+ * each read or loading the user's hooks, MCP servers and CLAUDE.md
+ * (`--safe-mode`; `--bare` would also skip the sign-in).
+ */
+const CLAUDE_USAGE_ARGS = ["-p", "/usage", "--no-session-persistence", "--safe-mode"];
+
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/**
+ * Epoch milliseconds of a wall-clock time in an IANA time zone (the local
+ * zone when Intl doesn't know it).
+ *
+ * @param {number} year
+ * @param {number} month 0-11
+ * @param {number} day
+ * @param {number} hour
+ * @param {number} minute
+ * @param {string | null} timeZone
+ */
+function zonedTime(year, month, day, hour, minute, timeZone) {
+  const wall = Date.UTC(year, month, day, hour, minute);
+  if (!timeZone) return new Date(year, month, day, hour, minute).getTime();
+  let format;
+  try {
+    format = new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" });
+  } catch {
+    return new Date(year, month, day, hour, minute).getTime();
+  }
+  /** @param {number} t how far the zone's clock is ahead of UTC at t */
+  const offset = (t) => {
+    const p = Object.fromEntries(format.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+    return Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour) % 24, Number(p.minute)) - t;
+  };
+  const first = wall - offset(wall);
+  // Once more, for a time near a daylight-saving change.
+  return wall - offset(first);
+}
+
+/**
+ * When a `/usage` window resets, from "Oct 26, 3:49am (Asia/Manila)" or
+ * "3:49am (Asia/Manila)" (later today). Null when it can't be read.
+ *
+ * @param {string} text
+ * @param {number} now epoch ms
+ * @returns {number | null} epoch seconds
+ */
+function claudeResetAt(text, now) {
+  const m = /^(?:([A-Za-z]{3})[a-z]*\s+(\d{1,2}),?\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:\(([^)]+)\))?\s*$/i.exec(text.trim());
+  if (!m) return null;
+  const [, mon, day, h, min, ampm, zone] = m;
+  let hour = Number(h) % 24;
+  if (ampm) hour = (Number(h) % 12) + (ampm.toLowerCase() === "pm" ? 12 : 0);
+  const minute = Number(min ?? 0);
+  const timeZone = zone?.trim() || null;
+  const today = new Date(now);
+  if (mon) {
+    const month = MONTHS.indexOf(mon.toLowerCase());
+    if (month === -1) return null;
+    // No year is given: this year, or the next when that date has passed (December's reset read in January's terms).
+    let at = zonedTime(today.getFullYear(), month, Number(day), hour, minute, timeZone);
+    if (at < now - 24 * 3600 * 1000) at = zonedTime(today.getFullYear() + 1, month, Number(day), hour, minute, timeZone);
+    return Math.round(at / 1000);
+  }
+  let at = zonedTime(today.getFullYear(), today.getMonth(), today.getDate(), hour, minute, timeZone);
+  if (at < now) at += 24 * 3600 * 1000;
+  return Math.round(at / 1000);
+}
+
+/**
+ * Claude Code's `/usage` text as limits in the shape Codex reports (and the
+ * Claude client's `rate_limit_event` reading): the session (5-hour) window
+ * as the primary limit, the all-models week as `secondary`. Null when it
+ * shows no plan usage (an API key, or a format this doesn't know).
+ *
+ * @param {string} text
+ * @param {number} [now] epoch ms
+ * @returns {Record<string, unknown> | null}
+ */
+export function parseClaudeUsage(text, now = Date.now()) {
+  /** @type {Record<string, any> | null} */
+  let session = null;
+  /** @type {Record<string, any> | null} */
+  let week = null;
+  for (const line of String(text ?? "").split(/\r?\n/)) {
+    const m = /^\s*Current (session|week)(?:\s*\(([^)]*)\))?\s*:\s*(\d+(?:\.\d+)?)%\s*used(?:.*?\bresets\s+(.+))?$/i.exec(line);
+    if (!m) continue;
+    const [, kind, scope, used, reset] = m;
+    // The week across all models is the limit; per-model weeks (Sonnet only) are a share of it.
+    if (kind.toLowerCase() === "week" && scope && !/all/i.test(scope) && week) continue;
+    const usedPercent = Math.round(Math.min(100, Math.max(0, Number(used))));
+    const resetsAt = reset ? claudeResetAt(reset, now) : null;
+    const windowMinutes = kind.toLowerCase() === "session" ? 300 : 10080;
+    const limits = {
+      usedPercent,
+      remainingPercent: 100 - usedPercent,
+      resetsAt,
+      resetFormatted: resetsAt ? formatResetTime(resetsAt) : null,
+      windowMinutes,
+    };
+    if (kind.toLowerCase() === "session") session = limits;
+    else if (!week || (scope && /all/i.test(scope))) week = limits;
+  }
+  const primary = session || week;
+  if (!primary) return null;
+  return { ...primary, secondary: session && week ? week : null, planType: "Claude subscription", creditsAvailable: 0 };
+}
+
+/**
+ * The Claude subscription's usage, read through Claude Code's own `/usage`
+ * (Kumo never holds the account's credentials). Null when Claude Code isn't
+ * there, isn't signed in to a plan, or doesn't answer in time.
+ *
+ * @returns {Promise<Record<string, unknown> | null>}
+ */
+export async function getClaudeUsage() {
+  const res = await deps.run("claude", findClaudeBinary(), CLAUDE_USAGE_ARGS, CLAUDE_USAGE_TIMEOUT_MS);
+  if (!res.started || res.timedOut || res.code !== 0) return null;
+  return parseClaudeUsage(res.stdout);
 }
 
 /**

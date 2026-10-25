@@ -71,7 +71,7 @@ A Windows-first Electron app on the same engine as the CLI. Glass panels sit ove
 </table>
 
 - **Studio layout:** projects, chats and usage on the left, the conversation in the middle, and a Workers panel you can dock right, bottom, floating or hide.
-- **One usage bar per subscription:** the light fill is what's left of the 5-hour window and the darker fill on top is the weekly window, with both reset times under the bar.
+- **One usage bar per subscription:** the light fill is what's left of the 5-hour window and the darker fill on top is the weekly window, with both reset times under the bar. Bars refresh every 10 seconds (`quotaPollMs`), Claude's included, through Claude Code's own `/usage`.
 - **Workers by role:** the Workers panel has a tab for each role that ran (scout, builder, reviewer, …). A role with a worker still running shows a timer and animated dots, and each run expands to its live output.
 - **Settings:** one glass page for Accounts (sign in through each CLI's own login, usage per subscription, API keys read from the environment), Models, Roles (a model per role, and custom roles of your own), Appearance (any accent color, scenes, frame rate, dock and glass), General (safety mode, chimes, notices) and Doctor (health checks, one-click repairs and a report to paste into an issue). Ctrl+, opens it.
 - **First run:** a three-step setup over the live scene: sign in to your CLIs, pick the lead and the shared worker, and choose a project folder.

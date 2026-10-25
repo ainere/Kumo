@@ -386,10 +386,14 @@ export class Session extends EventEmitter {
     /** @type {Promise<void>|null} */
     this._stopping = null;
 
+    // A hand-edited `quotaPollMs` outside what `kumo config set` takes falls back to the default:
+    // past setInterval's limit Node would fire it every millisecond.
+    const pollMs = Number(loadConfig().quotaPollMs);
     this.quotas = new QuotaMonitor({
       getClient: () => this.client,
       getSettings: () => this.settings,
       useCache: opts.quotas !== false,
+      ...(Number.isFinite(pollMs) && pollMs >= 10000 && pollMs <= 3600000 ? { pollMs } : {}),
     });
     this.quotas.on("updated", (snapshot) => {
       // A refresh in flight when the session stopped must not report after `session.closed`.
