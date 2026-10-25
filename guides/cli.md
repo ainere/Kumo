@@ -23,7 +23,7 @@ Every `kumo` command and the slash commands inside a session. Back to the [READM
 | `kumo role set <role> <model> [effort] [provider]` | Assign a model to a role; `lead` sets the orchestrator, model `default` puts a role back on the shared worker |
 | `kumo role add <id> --access read\|write --prompt-file <f> [--model <m>] [--effort <e>] [--provider <p>] [--name <n>] [--description <d>]` | Add a custom role, exposed to the lead as `worker_<id>` |
 | `kumo role remove <id>` | Remove a custom role |
-| `kumo effort <level>` | Set orchestrator reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`) |
+| `kumo effort <level>` | Set orchestrator reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`; which ones a model has: [roles and models](roles-and-models.md)) |
 | `kumo effort worker <level>` | Set worker reasoning effort (same levels) |
 | `kumo reasoning [target] [value]` | Inspect or set reasoning effort for orchestrator or worker (alias for `effort`) |
 | `kumo graph [-d, --dir <path>]` | Inspect Graphify knowledge graph freshness and lifecycle status |

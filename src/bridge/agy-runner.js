@@ -28,6 +28,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, supportsEffort } from "../config/settings.js";
+import { agyEffort } from "../config/models.js";
 import { MODEL_CATALOG } from "../config/models.js";
 import { formatIsoResetTime } from "../utils/ui.js";
 import { loadProjectRegistry, hashWorkspace } from "../data/sessions.js";
@@ -273,7 +274,7 @@ export async function runAgy(opts) {
       args.push("--model", model);
     }
     if (effort && supportsEffort(model)) {
-      args.push("--effort", effort);
+      args.push("--effort", agyEffort(effort));
     }
     if (canWrite) {
       args.push("--dangerously-skip-permissions");
@@ -574,12 +575,17 @@ export async function checkAgyHealth(opts = {}) {
   };
 }
 
+/** The effort variants `agy models` lists, lowest first. */
+const AGY_EFFORT_ORDER = ["low", "medium", "high"];
+
 /** Default fallback worker models */
 export const DEFAULT_WORKER_MODELS = MODEL_CATALOG.antigravity.map(({ id, name }) => ({ id, name }));
 
 /**
- * Discover available worker models via `agy models`.
- * @returns {Promise<Array<{id: string, name: string}>>}
+ * Discover available worker models via `agy models`. agy lists a model once
+ * per effort it takes (`gemini-3.8-flash-low`, `-medium`, `-high`); each comes
+ * back once, with those efforts in `efforts` (empty when it has no variants).
+ * @returns {Promise<Array<{id: string, name: string, efforts?: string[]}>>}
  */
 export async function getAgyModels() {
   const bin = getCliBinary();
@@ -606,8 +612,10 @@ export async function getAgyModels() {
       }
 
       const lines = stdout.trim().split("\n");
+      /** @type {Array<{id: string, name: string, efforts: string[]}>} */
       const models = [];
-      const seen = new Set();
+      /** @type {Map<string, {id: string, name: string, efforts: string[]}>} */
+      const seen = new Map();
 
       for (const line of lines) {
         const parts = line.split("\t").map((s) => s.trim());
@@ -619,19 +627,18 @@ export async function getAgyModels() {
         }
 
         // Clean base model identifier
-        let baseId = id;
-        if (id.endsWith("-high") || id.endsWith("-medium") || id.endsWith("-low")) {
-          baseId = id.replace(/-(high|medium|low)$/, "");
-        }
+        const variant = /-(high|medium|low)$/.exec(id)?.[1] ?? null;
+        const baseId = variant ? id.slice(0, -(variant.length + 1)) : id;
 
-        if (!seen.has(baseId)) {
-          seen.add(baseId);
-          models.push({
-            id: baseId,
-            name: displayName.replace(/\s*\((High|Medium|Low)\)/i, ""),
-          });
+        let model = seen.get(baseId);
+        if (!model) {
+          model = { id: baseId, name: displayName.replace(/\s*\((High|Medium|Low)\)/i, ""), efforts: [] };
+          seen.set(baseId, model);
+          models.push(model);
         }
+        if (variant && !model.efforts.includes(variant)) model.efforts.push(variant);
       }
+      for (const model of models) model.efforts.sort((a, b) => AGY_EFFORT_ORDER.indexOf(a) - AGY_EFFORT_ORDER.indexOf(b));
 
       resolve(models.length > 0 ? models : DEFAULT_WORKER_MODELS);
     });

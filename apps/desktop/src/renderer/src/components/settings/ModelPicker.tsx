@@ -86,17 +86,29 @@ export const effortsOf = (model: CatalogModel | null): string[] =>
   (model?.efforts ?? []).filter((e) => EFFORT_LEVELS.includes(e));
 
 /**
- * The effort to use after picking a model: the current one when the model
- * takes it, else the model's default, else medium, else its first level.
- * Undefined when the model picks its own.
+ * The effort to use for a model: the current one when the model takes it,
+ * else the nearest level below it that the model has (Max on a Gemini model
+ * runs at High), else the model's default, else medium, else its first
+ * level. Undefined when the model picks its own.
  */
 export function pickEffort(model: CatalogModel | null, current?: string): string | undefined {
   const efforts = effortsOf(model);
   if (efforts.length === 0) return undefined;
   if (current && efforts.includes(current)) return current;
+  for (let i = current ? EFFORT_LEVELS.indexOf(current) - 1 : -1; i >= 0; i--) if (efforts.includes(EFFORT_LEVELS[i])) return EFFORT_LEVELS[i];
   if (model?.defaultEffort && efforts.includes(model.defaultEffort)) return model.defaultEffort;
   return efforts.includes("medium") ? "medium" : efforts[0];
 }
+
+/** What a provider calls a level, where it isn't the level's own name: `xhigh` is Claude Code's "Extra" and Codex's "Extra high". */
+const EFFORT_NAMES: Record<string, Record<string, string>> = {
+  claude: { xhigh: "Extra" },
+  codex: { xhigh: "Extra high" },
+};
+
+/** An effort as its provider names it: "Extra" for Claude Code's `xhigh`, "High" for `high`. */
+export const effortLabel = (provider: string, effort: string): string =>
+  EFFORT_NAMES[canonicalProvider(provider)]?.[effort] ?? effort.charAt(0).toUpperCase() + effort.slice(1);
 
 // ── options ──
 
@@ -130,7 +142,7 @@ function buildGroups(
 
   if (defaultWorker) {
     const dw = defaultWorker;
-    const parts = [modelName(catalog, dw.provider, dw.model), providerName(catalog, dw.provider), dw.effort].filter(Boolean);
+    const parts = [modelName(catalog, dw.provider, dw.model), providerName(catalog, dw.provider), dw.effort && effortLabel(dw.provider, dw.effort)].filter(Boolean);
     const blocked = need === "write" && !canWrite(catalog, dw.provider) ? "The default worker can't write files" : null;
     groups.push({
       key: "default",

@@ -29,7 +29,7 @@
  * lists above does, so they are null. Nothing is guessed.
  */
 
-import { ALLOWED_PROVIDERS, MODEL_CATALOG, EFFORT_LEVELS, providerDisplayName, supportsEffort } from "../config/models.js";
+import { ALLOWED_PROVIDERS, MODEL_CATALOG, EFFORT_LEVELS, claudeEfforts, providerDisplayName, supportsEffort } from "../config/models.js";
 import { workerCapabilities } from "../providers/workers/capabilities.js";
 import { orchestratorDelegates } from "../providers/orchestrators/registry.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
@@ -77,11 +77,17 @@ const CODEX_MAX_PAGES = 5;
  */
 const API_EFFORTS = ["low", "medium", "high"];
 
+/** The efforts agy has for a model it takes one for: its -low, -medium and -high variants. */
+const AGY_EFFORTS = ["low", "medium", "high"];
+
 /**
- * What a provider's `--effort` takes for a model. Codex and Claude Code accept
- * every level Kumo does; Antigravity only for the models `supportsEffort`
- * names (for its Claude models agy chooses itself); text-only API workers
- * the three levels their transport acts on; the rest choose their own.
+ * What a provider's `--effort` takes for a model, when the provider cannot
+ * list them itself. Codex every level Kumo does (its live list says which,
+ * per model); Claude Code what its model table gives the model
+ * (claudeEfforts); Antigravity its three variants, only for the models
+ * `supportsEffort` names (for its Claude models agy chooses itself);
+ * text-only API workers the three levels their transport acts on; the rest
+ * choose their own.
  *
  * @param {string} provider
  * @param {string} model
@@ -90,10 +96,11 @@ const API_EFFORTS = ["low", "medium", "high"];
 function effortsFor(provider, model) {
   switch (provider) {
     case "codex":
-    case "claude":
       return [...EFFORT_LEVELS];
+    case "claude":
+      return claudeEfforts(model);
     case "antigravity":
-      return supportsEffort(model) ? [...EFFORT_LEVELS] : [];
+      return supportsEffort(model) ? [...AGY_EFFORTS] : [];
     case "openai-api":
     case "anthropic-api":
     case "gemini-api":
@@ -215,7 +222,10 @@ async function listAntigravityModels() {
   if (list === DEFAULT_WORKER_MODELS) return null;
   return list.map((m) => {
     const known = catalogEntry("antigravity", m.id);
-    return fromCatalog("antigravity", { id: m.id, name: m.name, desc: known?.desc, alias: known?.alias });
+    const entry = fromCatalog("antigravity", { id: m.id, name: m.name, desc: known?.desc, alias: known?.alias });
+    // The variants agy listed are the efforts it has for this model (GPT-OSS: only medium).
+    const listed = Array.isArray(m.efforts) ? m.efforts.filter((level) => AGY_EFFORTS.includes(level)) : [];
+    return entry.efforts.length > 0 && listed.length > 0 ? { ...entry, efforts: listed } : entry;
   });
 }
 

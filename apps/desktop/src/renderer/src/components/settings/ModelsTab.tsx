@@ -8,6 +8,7 @@ import { loadCatalog, loadGlobalConfig, updateSettings, useStore } from "../../s
 import { IconRefresh } from "../icons";
 import { Badge, Note, PageHeader, Row, Section, Segmented, StatusDot } from "./controls";
 import {
+  effortLabel,
   effortsOf,
   findModel,
   ModelPicker,
@@ -47,6 +48,14 @@ export function ModelsTab() {
   const workerModelObj = findModel(catalog, workerProvider, workerModel);
   const workerEfforts = effortsOf(workerModelObj);
 
+  // A saved effort the model doesn't have (Max on a Gemini model, say, from
+  // before the model changed) shows as the nearest one it does, which is what
+  // it runs at (agy takes Max as High). The setting itself is left alone:
+  // roles with a model of their own inherit `workerEffort`, and rewriting the
+  // lead's mid-turn would restart it.
+  const leadFit = pickEffort(leadModelObj, orchEffort);
+  const workerFit = pickEffort(workerModelObj, workerEffort);
+
   const handleLeadChange = async (target: ModelTarget | null) => {
     if (!target) return;
     const model = findModel(catalog, target.provider, target.model);
@@ -77,8 +86,6 @@ export function ModelsTab() {
     await updateSettings({ workerEffort: effort });
   };
 
-  const effortLabel = (e: string) => e.charAt(0).toUpperCase() + e.slice(1);
-
   return (
     <>
       <PageHeader title="Models" description="The lead that plans and delegates, and the shared worker every role without its own model runs on." />
@@ -92,11 +99,11 @@ export function ModelsTab() {
             onChange={(next) => void handleLeadChange(next)}
           />
         </Row>
-        {leadEfforts.length > 0 && (
+        {leadEfforts.length > 1 && (
           <Row label="Reasoning effort" hint="More thinking per turn: better plans, slower and costlier turns.">
             <Segmented
-              value={orchEffort}
-              options={leadEfforts.map((e) => [e, effortLabel(e)])}
+              value={leadFit ?? orchEffort}
+              options={leadEfforts.map((e) => [e, effortLabel(orchProvider, e)])}
               onChange={(e) => void handleLeadEffortChange(e)}
             />
           </Row>
@@ -112,11 +119,11 @@ export function ModelsTab() {
             onChange={(next) => void handleWorkerChange(next)}
           />
         </Row>
-        {workerEfforts.length > 0 && (
+        {workerEfforts.length > 1 && (
           <Row label="Reasoning effort">
             <Segmented
-              value={workerEffort}
-              options={workerEfforts.map((e) => [e, effortLabel(e)])}
+              value={workerFit ?? workerEffort}
+              options={workerEfforts.map((e) => [e, effortLabel(workerProvider, e)])}
               onChange={(e) => void handleWorkerEffortChange(e)}
             />
           </Row>

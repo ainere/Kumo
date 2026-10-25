@@ -32,6 +32,7 @@ import path from "node:path";
 import { getCliBinary, getAgyUsage, isArgonModel } from "../../bridge/agy-runner.js";
 import { safeSpawn, childEnvFor, stopProcessTree } from "../../utils/process.js";
 import { supportsEffort } from "../../config/settings.js";
+import { agyEffort } from "../../config/models.js";
 import { ensureAntigravityBridgeConfig } from "../../config/sync.js";
 
 function getTaskSignature(raw) {
@@ -96,7 +97,7 @@ export class AgyAppClient extends EventEmitter {
       }
 
       if (this.activeEffort && supportsEffort(this.activeModel)) {
-        args.push("--effort", this.activeEffort);
+        args.push("--effort", agyEffort(this.activeEffort));
       }
 
       // Reopen the conversation this client is on (a resumed chat, or a

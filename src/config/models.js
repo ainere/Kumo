@@ -132,7 +132,11 @@ const CODEX_MODELS = [
   { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", desc: "Older; available during the GPT-6 rollout" },
 ];
 
-/** Reasoning effort levels Kumo accepts; Codex, Claude Code and agy all take each of them. */
+/**
+ * Reasoning effort levels Kumo accepts; Codex, Claude Code and agy all take
+ * each of them as a flag. Which ones a model actually has is the catalog's
+ * question (src/core/catalog.js).
+ */
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 
 /**
@@ -357,6 +361,41 @@ export function supportsEffort(model) {
   if (norm.startsWith("claude-") || /\b(opus|sonnet|haiku|fable)\b/.test(norm)) return false;
   if (/-(low|medium|high)$/.test(norm)) return false;
   return norm.startsWith("gemini-") || norm.startsWith("chatgpt-") || /^gpt-\d/.test(norm);
+}
+
+/**
+ * The effort to pass agy for a level Kumo accepts: agy has a model at low,
+ * medium and high (`agy models` lists those variants), so Extra and Max run
+ * as High. A saved level stays as it is; a Gemini model just runs it at High.
+ *
+ * @param {string} effort
+ * @returns {string}
+ */
+export function agyEffort(effort) {
+  return effort === "xhigh" || effort === "max" ? "high" : effort;
+}
+
+/** Claude models that Claude Code runs at its own effort, whatever their version says. */
+const CLAUDE_NO_EFFORT = new Set(["claude-mythos-5"]);
+
+/**
+ * The efforts Claude Code offers for a model, as its own model table has them
+ * (2.1.310): every level from the 4.7 models on, Max but not Extra (`xhigh`)
+ * on the 4.6 ones, and none on 4.5 and older, which pick their own. An alias
+ * such as `opus` resolves to a current model, which takes them all.
+ *
+ * @param {string} model
+ * @returns {string[]}
+ */
+export function claudeEfforts(model) {
+  const norm = String(model ?? "").toLowerCase().trim();
+  if (CLAUDE_NO_EFFORT.has(norm)) return [];
+  const m = /^claude-(?:opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2}))?(?=-|$)/.exec(norm);
+  if (!m) return [...EFFORT_LEVELS];
+  const version = Number(m[1]) * 100 + Number(m[2] ?? 0);
+  if (version >= 407) return [...EFFORT_LEVELS];
+  if (version === 406) return EFFORT_LEVELS.filter((level) => level !== "xhigh");
+  return [];
 }
 
 /**
