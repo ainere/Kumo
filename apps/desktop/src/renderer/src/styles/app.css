@@ -90,12 +90,27 @@ code, pre, kbd { font-family: var(--font-mono); }
 /* Sidebar */
 .sidebar { flex: 0 0 248px; min-width: 0; min-height: 0; border-radius: var(--radius-panel); padding: 14px 10px; display: flex; flex-direction: column; gap: 2px; }
 .sidebar-section { font-size: 11px; letter-spacing: 0.06em; color: var(--faint); padding: 10px 10px 6px; text-transform: uppercase; }
-.side-item { text-align: left; border: 1px solid transparent; background: transparent; border-radius: 9px; padding: 7px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-item { position: relative; text-align: left; border: 1px solid transparent; background: transparent; border-radius: 9px; padding: 7px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .side-item:hover { background: var(--chip); }
-.side-item[aria-current="true"] { background: var(--selected); border-color: var(--border); }
+.side-item.project[aria-current="true"] { background: var(--selected); border-color: var(--border); }
 .side-item.project { font-weight: 500; }
 .side-item.chat { padding-left: 22px; color: var(--muted); }
-.side-item.chat[aria-current="true"] { color: var(--text); }
+.side-item.chat[aria-current="true"] {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text);
+  font-weight: 500;
+}
+.side-item.chat[aria-current="true"]::after {
+  content: "";
+  position: absolute;
+  bottom: 2px;
+  left: 22px;
+  right: 14px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
 .side-item.action { display: flex; align-items: center; gap: 8px; color: var(--muted); margin-top: 6px; }
 .side-scroll { flex: 1; min-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .hr { height: 1px; background: var(--border); margin: 6px 6px; flex: 0 0 1px; }

@@ -7,7 +7,7 @@
 <p>
 <a href="https://github.com/ainere/Kumo/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ainere/Kumo/actions/workflows/ci.yml/badge.svg"></a>
 <img alt="Node 22+" src="https://img.shields.io/badge/node-22%2B-5fd4f4?labelColor=0b1220">
-<img alt="Windows, Linux, macOS" src="https://img.shields.io/badge/platform-Windows%20%C2%B7%20Linux%20%C2%B7%20macOS-7aa2f7?labelColor=0b1220">
+<img alt="Windows" src="https://img.shields.io/badge/platform-Windows-7aa2f7?labelColor=0b1220">
 <img alt="13 providers" src="https://img.shields.io/badge/providers-13-bb9af7?labelColor=0b1220">
 <a href="LICENSE"><img alt="GPLv3 license" src="https://img.shields.io/badge/license-GPLv3-9ece6a?labelColor=0b1220"></a>
 </p>
@@ -70,7 +70,9 @@ A Windows-first Electron app on the same engine as the CLI. Glass panels sit ove
 </tr>
 </table>
 
-- **Studio layout:** projects, chats and usage meters on the left, the conversation in the middle, and a Workers panel you can dock right, bottom, floating or hide.
+- **Studio layout:** projects, chats and usage on the left, the conversation in the middle, and a Workers panel you can dock right, bottom, floating or hide.
+- **One usage bar per subscription:** the light fill is what's left of the 5-hour window and the darker fill on top is the weekly window, with both reset times under the bar.
+- **Workers by role:** the Workers panel has a tab for each role that ran (scout, builder, reviewer, …). A role with a worker still running shows a timer and animated dots, and each run expands to its live output.
 - **Scenes:** Clouds, Night sky, or your own: drop a `defineScene` script into `~/.kumo/scenes/` and it shows up in the menu. Scenes run sandboxed, with no network and no access to your chats.
 - **Built to stay out of the way:** the engine runs in its own process, so a stuck provider never freezes the window, and the app recovers if the engine crashes.
 
