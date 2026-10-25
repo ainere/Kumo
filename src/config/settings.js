@@ -52,6 +52,51 @@ export { ALLOWED_PROVIDERS, canonicalizeProvider };
 /** Safety modes understood by the MCP bridge's write tools. */
 export const SAFETY_MODES = ["autonomous", "diff-review", "interactive"];
 
+/**
+ * How much each safety mode asks of a human before a worker writes; higher is stricter.
+ * @type {Record<string, number>}
+ */
+const SAFETY_STRICTNESS = { autonomous: 0, "diff-review": 1, interactive: 2 };
+
+/** Unknown safety modes already reported, so a config read on every call warns once. */
+const reportedSafetyModes = new Set();
+
+/**
+ * Read a safety mode that came from outside the program (a config file, an
+ * environment variable, a flag). Case and padding are forgiven. Anything that
+ * is not one of SAFETY_MODES is read as `diff-review`, and reported once: an
+ * unknown value must never turn the write gate off.
+ *
+ * @param {unknown} value
+ * @param {string} [source] - where it came from, for the warning
+ * @returns {string}
+ */
+export function normalizeSafetyMode(value, source = "the config") {
+  const norm = String(value ?? "").toLowerCase().trim();
+  if (SAFETY_MODES.includes(norm)) return norm;
+  const key = `${source}: ${String(value)}`;
+  if (!reportedSafetyModes.has(key)) {
+    reportedSafetyModes.add(key);
+    console.warn(
+      `[Warning] Unknown safetyMode '${String(value)}' in ${source}; using 'diff-review'. Allowed: ${SAFETY_MODES.join(", ")}.`
+    );
+  }
+  return "diff-review";
+}
+
+/**
+ * The stricter of two safety modes (an unknown one counts as `diff-review`).
+ *
+ * @param {unknown} a
+ * @param {unknown} b
+ * @returns {string}
+ */
+export function stricterSafetyMode(a, b) {
+  const x = normalizeSafetyMode(a);
+  const y = normalizeSafetyMode(b);
+  return SAFETY_STRICTNESS[x] >= SAFETY_STRICTNESS[y] ? x : y;
+}
+
 /** Approval policies accepted by Codex's `approval_policy` TOML key. */
 // `on-failure` is no longer in Codex's AskForApproval enum (app-server schema, codex-cli 0.153).
 export const APPROVAL_POLICIES = ["untrusted", "on-request", "never"];
@@ -308,6 +353,8 @@ export function loadConfig() {
   }
 
   const merged = { ...DEFAULT_CONFIG, ...parsed };
+  // A hand-edited tier that is not a known one falls to diff-review, never to no gate at all.
+  merged.safetyMode = normalizeSafetyMode(merged.safetyMode, file);
   // Older configs stored the `gemini` alias; normalize on read so every
   // comparison against `antigravity` in the codebase has one spelling to match.
   merged.orchestratorProvider = canonicalizeProvider(merged.orchestratorProvider);

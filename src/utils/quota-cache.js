@@ -73,3 +73,27 @@ export function saveProviderQuotas(provider, limits, agyUsage = null) {
     /* ignore write errors */
   }
 }
+
+/**
+ * Forget one provider's cached limits, after its account was signed out: the
+ * next account must not be shown the last one's quota. `antigravity` clears
+ * the Antigravity usage. Nothing is written when nothing was cached.
+ *
+ * @param {string} provider
+ */
+export function dropProviderQuotas(provider) {
+  try {
+    const old = readCache();
+    const orchestrators = { ...(old.orchestrators || {}) };
+    const hadProvider = Object.hasOwn(orchestrators, provider) || (provider === "codex" && old.codex != null);
+    const hadAgy = provider === "antigravity" && old.agy != null;
+    if (!hadProvider && !hadAgy) return;
+    delete orchestrators[provider];
+    // The legacy `codex` key is the same limits under the name older readers expect.
+    const codex = provider === "codex" ? null : (orchestrators.codex ?? old.codex ?? null);
+    const next = { ...old, orchestrators, codex, agy: provider === "antigravity" ? null : (old.agy ?? null) };
+    atomicWriteJson(cacheFile(), next);
+  } catch {
+    /* ignore write errors */
+  }
+}

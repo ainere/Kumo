@@ -4,6 +4,7 @@
  */
 
 import { spawn } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 
 const SAFE_ARG_RE = /^[A-Za-z0-9._:\\/=@+-]+$/;
@@ -243,3 +244,170 @@ export async function launchInNewWindow(optsOrWorkspace = {}, maybeArgs = undefi
   });
 }
 
+// ── Run one command in a new terminal, leaving this process alone ──
+
+/** Window titles go to the terminal and, on Windows, to cmd's `start`; keep them plain. */
+const SAFE_TITLE_RE = /^[A-Za-z0-9 ._-]{1,60}$/;
+
+/**
+ * Why `argv` cannot be run in a new terminal, or null when it can. Every
+ * element must be in the SAFE_ARG_RE alphabet (no spaces, quotes, `;`, `&`,
+ * `$`, backticks): the command is built into a shell script, and nothing a
+ * caller passes may become shell syntax.
+ *
+ * @param {unknown} argv
+ * @param {unknown} [title]
+ * @returns {string|null}
+ */
+export function terminalCommandProblem(argv, title) {
+  if (!Array.isArray(argv) || argv.length === 0) return "no command to run";
+  for (const arg of argv) {
+    if (typeof arg !== "string" || !SAFE_ARG_RE.test(arg)) return `unsafe argument ${JSON.stringify(arg)}`;
+  }
+  if (title !== undefined && (typeof title !== "string" || !SAFE_TITLE_RE.test(title))) {
+    return `unsafe window title ${JSON.stringify(title)}`;
+  }
+  return null;
+}
+
+/**
+ * The PowerShell script run in a new Windows terminal for one command. Each
+ * token is single-quoted and run through the call operator, so none of it is
+ * ever parsed as PowerShell syntax (`@name` would otherwise splat).
+ *
+ * @param {string} cwd
+ * @param {string[]} argv - already validated, see {@link terminalCommandProblem}
+ * @param {string} title
+ * @returns {string}
+ */
+export function buildWindowsCommandScript(cwd, argv, title) {
+  return `$host.UI.RawUI.WindowTitle = ${powershellQuote(title)}; Set-Location -LiteralPath ${powershellQuote(cwd)}; & ${argv.map(powershellQuote).join(" ")}`;
+}
+
+/**
+ * The AppleScript run by osascript to open Terminal on macOS for one command.
+ * Terminal keeps the window open once the command ends.
+ *
+ * @param {string} cwd
+ * @param {string[]} argv - already validated, see {@link terminalCommandProblem}
+ * @returns {string}
+ */
+export function buildMacCommandScript(cwd, argv) {
+  const shellCommand = `cd ${posixQuote(cwd)} && ${argv.map(posixQuote).join(" ")}`;
+  return `tell application "Terminal"\nactivate\ndo script ${applescriptQuote(shellCommand)}\nend tell`;
+}
+
+/**
+ * The sh script a Linux terminal runs for one command: the command, then an
+ * interactive shell, so the window stays open to show how it ended.
+ *
+ * @param {string[]} argv - already validated, see {@link terminalCommandProblem}
+ * @returns {string}
+ */
+export function buildPosixCommandScript(argv) {
+  return `${argv.map(posixQuote).join(" ")}; exec "\${SHELL:-sh}"`;
+}
+
+/**
+ * The argument list for `cmd.exe` that opens `argv` in a new PowerShell window.
+ *
+ * `start`'s first quoted argument is the window title, and an unquoted first
+ * word is taken as the program to run instead: with `title` in that slot, a
+ * one-word title such as "Kumo" would start whatever `Kumo` resolves to on PATH
+ * (a `kumo.cmd`, say) and the real command would never run. So the title slot
+ * is always the empty string, which Node passes as `""`; the window is titled
+ * by the PowerShell script itself.
+ *
+ * @param {string} cwd
+ * @param {string[]} argv - already validated, see {@link terminalCommandProblem}
+ * @param {string} title
+ * @returns {string[]}
+ */
+export function buildWindowsTerminalArgv(cwd, argv, title) {
+  return [
+    "/c",
+    "start",
+    "",
+    "powershell.exe",
+    "-NoProfile",
+    "-NoExit",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-EncodedCommand",
+    encodePowerShellCommand(buildWindowsCommandScript(cwd, argv, title)),
+  ];
+}
+
+/**
+ * Open a new terminal window running `argv`, and leave this process running.
+ * (`launchInNewWindow` exits the process once its window is up, which would
+ * take the desktop engine down with it.)
+ *
+ * Used to hand sign-in over to a provider's own login command: the user types
+ * their credentials into that CLI, never into Kumo.
+ *
+ * `env` is the terminal's whole environment, and the shell and the command
+ * inherit it. Pass `childEnvFor(provider)` so credentials that belong to other
+ * providers are left out; without `env` the terminal inherits this process's
+ * environment unchanged.
+ *
+ * @param {string[]} argv - the command and its arguments, each within SAFE_ARG_RE
+ * @param {{
+ *   cwd?: string,
+ *   title?: string,
+ *   env?: Record<string, string|undefined>,
+ *   spawnFn?: typeof spawn,
+ * }} [opts] - `cwd` defaults to the home directory; `spawnFn` is a test seam
+ * @returns {Promise<boolean>} true once a terminal process started; false when the
+ *   command was refused or no terminal could be started
+ */
+export async function launchTerminalCommand(argv, { cwd = os.homedir(), title = "Kumo", env, spawnFn = spawn } = {}) {
+  const problem = terminalCommandProblem(argv, title);
+  if (problem) {
+    console.error(`[kumo] window launcher: refused: ${problem}`);
+    return false;
+  }
+  if (!path.isAbsolute(cwd)) {
+    console.error(`[kumo] window launcher: refused: working directory is not absolute: ${JSON.stringify(cwd)}`);
+    return false;
+  }
+
+  /**
+   * Start one terminal process; true once it is running, false if it cannot start.
+   *
+   * @param {string} file
+   * @param {string[]} args
+   * @returns {Promise<boolean>}
+   */
+  const start = (file, args) =>
+    new Promise((resolve) => {
+      let child;
+      try {
+        child = spawnFn(file, args, { cwd, detached: true, stdio: "ignore", ...(env ? { env } : {}) });
+      } catch {
+        resolve(false);
+        return;
+      }
+      child.once("error", () => resolve(false));
+      child.once("spawn", () => {
+        child.unref();
+        resolve(true);
+      });
+    });
+
+  if (process.platform === "win32") {
+    return start("cmd.exe", buildWindowsTerminalArgv(cwd, argv, title));
+  }
+
+  if (process.platform === "darwin") {
+    return start("osascript", ["-e", buildMacCommandScript(cwd, argv)]);
+  }
+
+  const script = buildPosixCommandScript(argv);
+  for (const terminal of ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"]) {
+    // gnome-terminal dropped `-e` for a command list; `--` is its form.
+    const args = terminal === "gnome-terminal" ? ["--", "sh", "-c", script] : ["-e", "sh", "-c", script];
+    if (await start(terminal, args)) return true;
+  }
+  return false;
+}

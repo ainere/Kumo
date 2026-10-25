@@ -36,6 +36,7 @@ import { EventEmitter } from "node:events";
 import { getAgyUsage } from "../bridge/agy-runner.js";
 import { activeProviders } from "../config/roles.js";
 import { getCachedQuotas, saveProviderQuotas } from "../utils/quota-cache.js";
+import { accountStatus, cachedAccountStatus, onSignedOut } from "./accounts.js";
 
 /** @typedef {Record<string, unknown> | null} Limits */
 /**
@@ -46,8 +47,17 @@ import { getCachedQuotas, saveProviderQuotas } from "../utils/quota-cache.js";
  * @typedef {{ orchestrator: Limits, antigravity: Limits, providers: Record<string, Limits> }} QuotaSnapshot
  */
 
+/**
+ * What one fetch learned, to be saved: limits by provider, and whether the
+ * Antigravity usage is new.
+ *
+ * @typedef {{ limits: Record<string, NonNullable<Limits>>, agy: boolean }} Fresh
+ */
+
 export const ORCHESTRATOR_REFRESH_MS = 60 * 1000;
 export const ANTIGRAVITY_REFRESH_MS = 5 * 60 * 1000;
+/** However slow its parts are, a full probe is answered by then, and what it still runs is stopped. */
+export const PROBE_TIMEOUT_MS = 20 * 1000;
 
 export class QuotaMonitor extends EventEmitter {
   /**
@@ -57,6 +67,7 @@ export class QuotaMonitor extends EventEmitter {
    *   fetchAntigravityUsage?: () => Promise<Limits>,
    *   orchestratorRefreshMs?: number,
    *   antigravityRefreshMs?: number,
+   *   probeTimeoutMs?: number,
    *   useCache?: boolean,
    * }} opts
    */
@@ -67,6 +78,7 @@ export class QuotaMonitor extends EventEmitter {
     this.fetchAntigravityUsage = opts.fetchAntigravityUsage || (() => getAgyUsage());
     this.orchestratorRefreshMs = opts.orchestratorRefreshMs ?? ORCHESTRATOR_REFRESH_MS;
     this.antigravityRefreshMs = opts.antigravityRefreshMs ?? ANTIGRAVITY_REFRESH_MS;
+    this.probeTimeoutMs = opts.probeTimeoutMs ?? PROBE_TIMEOUT_MS;
     this.useCache = opts.useCache !== false;
     /** @type {Limits} */
     this.orchestrator = null;
@@ -77,7 +89,35 @@ export class QuotaMonitor extends EventEmitter {
     this._antigravityAt = 0;
     /** @type {NodeJS.Timeout|null} */
     this._timer = null;
+    /** @type {Promise<QuotaSnapshot>|null} the full probe in progress, shared by everyone who asks meanwhile */
+    this._probing = null;
+    /** @type {AbortController|null} */
+    this._probeAbort = null;
+    /** @type {Record<string, number>} counts how often a provider's figures were forgotten; a read begun before the last count is stale */
+    this._forgotten = {};
+    /** @type {(() => void)|null} */
+    this._unwatchSignOut = null;
+    this._watchSignOut();
     if (this.useCache) this._loadCache();
+  }
+
+  /** Drop a provider's figures when its account is signed out through Settings. */
+  _watchSignOut() {
+    if (!this._unwatchSignOut) this._unwatchSignOut = onSignedOut((provider) => this.forgetProvider(provider));
+  }
+
+  /**
+   * A signed-out account's figures are not the next account's: forget them,
+   * and make any read of them that is still in flight count for nothing.
+   *
+   * @param {string} provider
+   */
+  forgetProvider(provider) {
+    this._forgotten[provider] = (this._forgotten[provider] ?? 0) + 1;
+    delete this.known[provider];
+    if (provider === this.getSettings().orchestratorProvider) this.orchestrator = null;
+    if (provider === "antigravity") this.antigravity = null;
+    this.emit("updated", this.snapshot());
   }
 
   _loadCache() {
@@ -85,7 +125,7 @@ export class QuotaMonitor extends EventEmitter {
     const provider = this.getSettings().orchestratorProvider;
     this.known = { ...(/** @type {Record<string, Limits>} */ (cached.orchestrators || {})) };
     this.orchestrator = this.known[provider] ?? null;
-    this.antigravity = this.usesAntigravity() ? /** @type {Limits} */ (cached.agy ?? null) : null;
+    this.antigravity = /** @type {Limits} */ (cached.agy ?? null);
   }
 
   /** Providers in use by the orchestrator, the shared worker or any role. */
@@ -112,6 +152,182 @@ export class QuotaMonitor extends EventEmitter {
   }
 
   /**
+   * Quota figures across all known subscriptions, regardless of active roles.
+   * Used on boot and by Settings › Accounts.
+   *
+   * @returns {QuotaSnapshot}
+   */
+  snapshotAll() {
+    const settings = this.getSettings();
+    /** @type {Record<string, Limits>} */
+    const providers = {};
+    for (const [provider, limits] of Object.entries(this.known)) {
+      if (provider === "antigravity" || !limits) continue;
+      providers[provider] = limits;
+    }
+    if (this.orchestrator) {
+      providers[settings.orchestratorProvider] = this.orchestrator;
+    }
+    return { orchestrator: this.orchestrator, antigravity: this.antigravity, providers };
+  }
+
+  /**
+   * Fetch fresh usage and rate limits for all installed and logged in subscriptions.
+   *
+   * One probe runs at a time: a caller that asks while one is in progress gets
+   * that one's answer. It is bounded by `probeTimeoutMs`; what is still running
+   * then (a Codex app-server) is stopped and its late results are dropped.
+   *
+   * @returns {Promise<QuotaSnapshot>}
+   */
+  probeAll() {
+    if (this._probing) return this._probing;
+    const probing = this._probeAll().finally(() => {
+      if (this._probing === probing) this._probing = null;
+    });
+    this._probing = probing;
+    return probing;
+  }
+
+  /** @returns {Promise<QuotaSnapshot>} */
+  async _probeAll() {
+    const abort = new AbortController();
+    this._probeAbort = abort;
+    const { signal } = abort;
+    const timer = setTimeout(() => abort.abort(), this.probeTimeoutMs);
+    /** @type {Fresh} */
+    const fresh = { limits: {}, agy: false };
+    const work = Promise.all([this._probeLead(fresh, signal), this._probeAntigravity(fresh, signal), this._probeCodex(fresh, signal)]);
+    // A step that fails after the cap has already answered has nobody left to tell.
+    work.catch(() => {});
+    const expired = new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+    try {
+      await Promise.race([work, expired]);
+    } finally {
+      clearTimeout(timer);
+      abort.abort();
+      if (this._probeAbort === abort) this._probeAbort = null;
+    }
+
+    this._persist(fresh);
+    const snap = this.snapshotAll();
+    this.emit("updated", snap);
+    return snap;
+  }
+
+  /**
+   * 1. The active orchestrator's client.
+   *
+   * @param {Fresh} fresh
+   * @param {AbortSignal} signal
+   */
+  async _probeLead(fresh, signal) {
+    const lead = await this._readLead();
+    if (!lead || signal.aborted) return;
+    this.orchestrator = lead.limits;
+    this.known[lead.provider] = lead.limits;
+    fresh.limits[lead.provider] = lead.limits;
+  }
+
+  /**
+   * 2. Antigravity (`/usage`): only when a role runs on it (see the file
+   * header), and not when the accounts check just found it signed out.
+   *
+   * @param {Fresh} fresh
+   * @param {AbortSignal} signal
+   */
+  async _probeAntigravity(fresh, signal) {
+    if (!this.usesAntigravity() || !this._accountUsable(cachedAccountStatus("antigravity"))) return;
+    try {
+      const agy = await this.fetchAntigravityUsage().catch(() => null);
+      if (agy && !signal.aborted) {
+        this.antigravity = agy;
+        fresh.agy = true;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /**
+   * 3. Codex's limits through an app-server of its own, when Codex is not the
+   * orchestrator (whose client reports them) and its account is usable. The
+   * app-server is stopped however this ends, including when the probe's time
+   * is up.
+   *
+   * @param {Fresh} fresh
+   * @param {AbortSignal} signal
+   */
+  async _probeCodex(fresh, signal) {
+    if (this.getSettings().orchestratorProvider === "codex") return;
+    if (!this._accountUsable(await accountStatus("codex")) || signal.aborted) return;
+    try {
+      const { CodexAppClient } = await import("../providers/orchestrators/codex-client.js");
+      // No await between this check and start(): the client exists only while the abort can reach it.
+      if (signal.aborted) return;
+      const codexClient = new CodexAppClient();
+      const stopClient = () => void codexClient.stop().catch(() => {});
+      signal.addEventListener("abort", stopClient, { once: true });
+      const forgotten = this._forgotten["codex"] ?? 0;
+      try {
+        await codexClient.start();
+        const limits = await codexClient.getRateLimits();
+        if (limits && !signal.aborted && (this._forgotten["codex"] ?? 0) === forgotten) {
+          this.known["codex"] = limits;
+          fresh.limits["codex"] = limits;
+        }
+      } finally {
+        signal.removeEventListener("abort", stopClient);
+        await codexClient.stop().catch(() => {});
+      }
+    } catch {
+      /* ignore if codex app-server cannot be queried */
+    }
+  }
+
+  /**
+   * Whether an account may be asked for its limits: unless the accounts check
+   * found it signed out or not installed. No reading (null) or one that could
+   * not tell (`signedIn` null) does not rule it out.
+   *
+   * @param {{ signedIn: boolean | null } | null} status
+   */
+  _accountUsable(status) {
+    return status === null || status.signedIn !== false;
+  }
+
+  /**
+   * The orchestrator's live limits, with the provider they belong to. Null
+   * when there are none, or when the lead was switched (or signed out) while
+   * the client was being asked: a result for the old client must not be filed
+   * under the new provider.
+   *
+   * @returns {Promise<{ provider: string, limits: NonNullable<Limits> } | null>}
+   */
+  async _readLead() {
+    const provider = this.getSettings().orchestratorProvider;
+    const client = this.getClient();
+    if (!client || typeof client.getRateLimits !== "function") return null;
+    const forgotten = this._forgotten[provider] ?? 0;
+    const limits = await client.getRateLimits().catch(() => null);
+    if (!limits || this.getSettings().orchestratorProvider !== provider || (this._forgotten[provider] ?? 0) !== forgotten) return null;
+    return { provider, limits };
+  }
+
+  /**
+   * Save what a fetch just learned, each under its own provider.
+   *
+   * @param {Fresh} fresh
+   */
+  _persist(fresh) {
+    if (!this.useCache) return;
+    const agy = fresh.agy ? this.antigravity : null;
+    const entries = Object.entries(fresh.limits);
+    if (entries.length === 0 && agy) saveProviderQuotas(this.getSettings().orchestratorProvider, null, agy);
+    for (const [provider, limits] of entries) saveProviderQuotas(provider, limits, agy);
+  }
+
+  /**
    * Fetch what is due. `force` also queries Antigravity when its interval has
    * not passed (an explicit /status or /refresh).
    *
@@ -120,6 +336,8 @@ export class QuotaMonitor extends EventEmitter {
    */
   async refresh({ force = false } = {}) {
     let changed = false;
+    /** @type {Fresh} */
+    const fresh = { limits: {}, agy: false };
     // Providers only roles run on report nothing live here; pick up what
     // another session or `kumo status` cached for them since.
     if (this.useCache) {
@@ -133,14 +351,12 @@ export class QuotaMonitor extends EventEmitter {
         }
       }
     }
-    const client = this.getClient();
-    if (client && typeof client.getRateLimits === "function") {
-      const limits = await client.getRateLimits().catch(() => null);
-      if (limits) {
-        this.orchestrator = limits;
-        this.known[this.getSettings().orchestratorProvider] = limits;
-        changed = true;
-      }
+    const lead = await this._readLead();
+    if (lead) {
+      this.orchestrator = lead.limits;
+      this.known[lead.provider] = lead.limits;
+      fresh.limits[lead.provider] = lead.limits;
+      changed = true;
     }
     const now = Date.now();
     if (this.usesAntigravity() && (force || now - this._antigravityAt >= this.antigravityRefreshMs)) {
@@ -148,11 +364,12 @@ export class QuotaMonitor extends EventEmitter {
       const usage = await this.fetchAntigravityUsage().catch(() => null);
       if (usage) {
         this.antigravity = usage;
+        fresh.agy = true;
         changed = true;
       }
     }
     if (changed) {
-      if (this.useCache) saveProviderQuotas(this.getSettings().orchestratorProvider, this.orchestrator, this.antigravity);
+      this._persist(fresh);
       this.emit("updated", this.snapshot());
     }
     return this.snapshot();
@@ -161,13 +378,18 @@ export class QuotaMonitor extends EventEmitter {
   /** Refresh periodically until stop(). */
   start() {
     if (this._timer) return;
+    this._watchSignOut();
     this._timer = setInterval(() => void this.refresh(), this.orchestratorRefreshMs);
     this._timer.unref();
   }
 
+  /** Stop refreshing, stop what a probe in progress still runs, and stop listening for sign-outs. */
   stop() {
     if (this._timer) clearInterval(this._timer);
     this._timer = null;
+    this._probeAbort?.abort();
+    this._unwatchSignOut?.();
+    this._unwatchSignOut = null;
   }
 
   /** Active providers changed: reload cached limits for the new set and align the lead's. */

@@ -45,8 +45,55 @@ import { isValidId } from "../data/sessions.js";
  * @typedef {{ runId: string, tool: string, task: string }} BridgeRun
  */
 
+/**
+ * One worker call as a turn's record keeps it (the shape the desktop app's
+ * `TurnTool` reads). `ok` and `elapsedMs` stay null for a call whose end the
+ * orchestrator never reported.
+ *
+ * @typedef {{
+ *   toolId: string,
+ *   name: string,
+ *   role: string|null,
+ *   task: string,
+ *   model: string|null,
+ *   effort: string|null,
+ *   ok: boolean|null,
+ *   elapsedMs: number|null,
+ *   output: string,
+ * }} TurnTool
+ */
+
 /** Output kept for a run that has not been matched to a call yet. */
 const MAX_PENDING_OUTPUT = 256 * 1024;
+
+/** What one turn's record keeps of its trace, so a runaway turn cannot bloat the chat log. */
+export const TRACE_LIMITS = Object.freeze({
+  /** The end of the lead's reasoning. */
+  reasoningChars: 20_000,
+  /** The end of each worker call's output. */
+  toolOutputChars: 8_000,
+  /** The start of each worker call's task, which the orchestrator writes and can make any length. */
+  taskChars: 4_000,
+  /** The first worker calls of the turn. */
+  tools: 50,
+  /** Files changed by approved diffs. */
+  diffPaths: 100,
+});
+
+/**
+ * The last `n` characters of `text`, without the second half of a surrogate
+ * pair at the cut.
+ *
+ * @param {string} text
+ * @param {number} n
+ */
+function tail(text, n) {
+  if (text.length <= n) return text;
+  let cut = text.length - n;
+  const unit = text.charCodeAt(cut);
+  if (unit >= 0xdc00 && unit <= 0xdfff) cut++;
+  return text.slice(cut);
+}
 
 export class ToolTracker {
   constructor() {
@@ -188,5 +235,96 @@ export class ToolTracker {
     this.pendingRuns = [];
     this.pendingOutput.clear();
     return open;
+  }
+}
+
+/**
+ * What a turn did besides answering: the lead's reasoning, its worker calls
+ * with their output, and the files its approved diffs changed. The session
+ * feeds it from the same places it emits events, and writes `snapshot()` into
+ * the turn's record when the turn succeeds. Everything is bounded by
+ * TRACE_LIMITS, keeping the end of a stream: that is where the result is.
+ */
+export class TurnTrace {
+  constructor() {
+    this.reasoning = "";
+    /** @type {Map<string, TurnTool>} */
+    this.tools = new Map();
+    /** @type {Set<string>} */
+    this.diffPaths = new Set();
+  }
+
+  /** @param {string} text a piece of the lead's reasoning */
+  addReasoning(text) {
+    if (!text) return;
+    this.reasoning += text;
+    // Cut in bulk, so a long stream is not copied on every piece.
+    if (this.reasoning.length > 2 * TRACE_LIMITS.reasoningChars) {
+      this.reasoning = tail(this.reasoning, TRACE_LIMITS.reasoningChars);
+    }
+  }
+
+  /** @param {ToolCall} call */
+  toolStarted(call) {
+    if (this.tools.size >= TRACE_LIMITS.tools || this.tools.has(call.id)) return;
+    this.tools.set(call.id, {
+      toolId: call.id,
+      name: call.name,
+      role: call.role,
+      task: call.task.slice(0, TRACE_LIMITS.taskChars),
+      model: call.model,
+      effort: call.effort,
+      ok: null,
+      elapsedMs: null,
+      output: "",
+    });
+  }
+
+  /**
+   * @param {string} toolId
+   * @param {string} text
+   */
+  toolOutput(toolId, text) {
+    const tool = this.tools.get(toolId);
+    if (!tool || !text) return;
+    tool.output += text;
+    if (tool.output.length > 2 * TRACE_LIMITS.toolOutputChars) tool.output = tail(tool.output, TRACE_LIMITS.toolOutputChars);
+  }
+
+  /**
+   * @param {string} toolId
+   * @param {{ ok: boolean, elapsedMs: number }} result
+   */
+  toolCompleted(toolId, { ok, elapsedMs }) {
+    const tool = this.tools.get(toolId);
+    if (!tool) return;
+    tool.ok = ok;
+    tool.elapsedMs = elapsedMs;
+  }
+
+  /** @param {string[]} paths workspace-relative paths of an approved diff */
+  addDiffPaths(paths) {
+    for (const p of paths) {
+      if (this.diffPaths.size >= TRACE_LIMITS.diffPaths) return;
+      this.diffPaths.add(p);
+    }
+  }
+
+  /**
+   * The fields a turn record gains from the trace; one the turn did not
+   * produce is left out, so a plain turn's record is the same as before.
+   *
+   * @returns {{ reasoning?: string, tools?: TurnTool[], diffPaths?: string[] }}
+   */
+  snapshot() {
+    /** @type {{ reasoning?: string, tools?: TurnTool[], diffPaths?: string[] }} */
+    const out = {};
+    const reasoning = tail(this.reasoning, TRACE_LIMITS.reasoningChars).trim();
+    if (reasoning) out.reasoning = reasoning;
+    if (this.tools.size > 0) {
+      out.tools = [...this.tools.values()].map((t) => ({ ...t, output: tail(t.output, TRACE_LIMITS.toolOutputChars) }));
+    }
+    if (this.diffPaths.size > 0) out.diffPaths = [...this.diffPaths];
+    return out;
   }
 }

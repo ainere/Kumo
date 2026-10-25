@@ -30,6 +30,7 @@ import path from "node:path";
 import { loadConfig, supportsEffort } from "../config/settings.js";
 import { MODEL_CATALOG } from "../config/models.js";
 import { formatIsoResetTime } from "../utils/ui.js";
+import { loadProjectRegistry, hashWorkspace } from "../data/sessions.js";
 import {
   safeSpawn,
   childEnvFor,
@@ -221,7 +222,18 @@ export async function runAgy(opts) {
     compositePrompt += `[DIFF PREVIEW MODE]\nYou are running in read-only diff preview mode. DO NOT modify any files on disk.\nCarefully analyze the workspace and produce a complete unified git diff (--- a/... +++ b/...) of the exact changes you propose to make, followed by an impact summary.\n\n`;
   }
   if (workspace) {
-    compositePrompt += `[Target Workspace]\n${workspace}\nStay strictly inside this workspace directory. Do not explore parent directories or search external drives.\n\n`;
+    compositePrompt += `[Target Workspace]\n${workspace}\n`;
+    try {
+      const registry = loadProjectRegistry?.() || {};
+      const hash = hashWorkspace(path.resolve(workspace));
+      const extras = registry[hash]?.accessibleFolders || [];
+      if (extras.length > 0) {
+        compositePrompt += `[Authorized Accessible Folders]\n${extras.map((f) => `- ${f}`).join("\n")}\nYou have explicit permission to access files in these folders in addition to the workspace.\n`;
+      }
+    } catch {
+      /* ignore */
+    }
+    compositePrompt += `Stay strictly inside this workspace directory and authorized accessible folders. Do not explore unauthorized parent directories or search external drives.\n\n`;
   }
   if (files && files.length > 0) {
     compositePrompt += `[Relevant Files]\n${files.map((f) => `- ${f}`).join("\n")}\n\n`;

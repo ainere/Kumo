@@ -35,6 +35,7 @@ import { isToolCallItem } from "./items.js";
 import { formatPlanType, formatResetTime } from "../../utils/ui.js";
 import { safeSpawn, stopProcessTree, childEnvFor, bridgeEnvFrom, bridgeEnvNames } from "../../utils/process.js";
 import { activeProviders } from "../../config/roles.js";
+import { MODEL_CATALOG } from "../../config/models.js";
 import { nodeCommand } from "../../core/node-command.js";
 import { VERSION } from "../../version.js";
 
@@ -92,6 +93,21 @@ export function bridgeEnvVarNames(env, providers = []) {
   return Object.keys(env)
     .filter((k) => env[k] !== undefined && (k.startsWith("KUMO_") || names.has(k)))
     .sort();
+}
+
+/** Models asked for per `model/list` page, and the most pages followed (a plan offers a few dozen at most). */
+const MODEL_LIST_PAGE_SIZE = 100;
+const MODEL_LIST_MAX_PAGES = 20;
+
+/**
+ * Whether a `model/list` entry is the model a name refers to: Codex lists each
+ * with an `id` and the `model` slug a turn is started with.
+ *
+ * @param {{ id?: string, model?: string }} entry
+ * @param {string} name
+ */
+function isListedModel(entry, name) {
+  return entry.id === name || entry.model === name;
 }
 
 /** The elicitation answer that allows an MCP tool call. */
@@ -327,12 +343,58 @@ export class CodexAppClient extends EventEmitter {
             usedPercent: secondary.usedPercent,
             resetsAt: secondary.resetsAt,
             resetFormatted: formatResetTime(secondary.resetsAt),
+            windowMinutes: secondary.windowDurationMins ?? null,
           }
         : null,
     };
 
     this.rateLimits = normalized;
     return normalized;
+  }
+
+  /**
+   * Resolve the model to use. Only when the account's whole model list is in
+   * hand and the requested model is truly absent from it does this fall back:
+   * to the first of Kumo's Codex models (`MODEL_CATALOG.codex`, in catalog
+   * order, which opens with the most capable; nothing in it marks a default)
+   * that the account offers, else the account's own default, else the first
+   * it lists. A list that could not be read to its end proves nothing, so the
+   * model stays as asked.
+   *
+   * @template {{ model?: string }} T
+   * @param {T} opts
+   * @returns {Promise<T>}
+   */
+  async _resolveAvailableModel(opts) {
+    if (!opts.model) return opts;
+    const models = await this.listModels();
+    if (!models || models.length === 0 || !this._modelsComplete) return opts;
+    if (models.some((m) => isListedModel(m, opts.model))) return opts;
+
+    let fallback = null;
+    let rule = "";
+    for (const cat of MODEL_CATALOG.codex || []) {
+      if (models.some((m) => isListedModel(m, cat.id))) {
+        fallback = cat.id;
+        rule = "the first of Kumo's Codex models this account offers";
+        break;
+      }
+    }
+    if (!fallback) {
+      const def = models.find((m) => m.isDefault);
+      fallback = def ? def.id : models[0].id;
+      rule = def ? "the account's default" : "the first model it lists";
+    }
+
+    const available = models.map((m) => (m.isDefault ? `${m.id} (default)` : m.id)).join(", ");
+    this.emit("warning", {
+      message:
+        `Model '${opts.model}' is not available on this Codex account (available: ${available}). ` +
+        `Falling back to '${fallback}' (${rule}).`,
+    });
+
+    this.model = fallback;
+    return { ...opts, model: fallback };
   }
 
   /**
@@ -344,8 +406,9 @@ export class CodexAppClient extends EventEmitter {
    * is what lets `/model worker` take effect without restarting the thread.
    */
   async startThread(opts = {}) {
-    const { model, payload } = this._threadPayload(opts);
-    if (model) await this._warnIfModelUnavailable(model);
+    const resolvedOpts = await this._resolveAvailableModel(opts);
+    const { model, payload } = this._threadPayload(resolvedOpts);
+    this.model = model;
     const res = await this.request("thread/start", payload);
     this.threadId = res?.thread?.id || res?.threadId;
     return this.threadId;
@@ -359,8 +422,9 @@ export class CodexAppClient extends EventEmitter {
    * @param {{ threadId: string, workspace?: string, model?: string, reasoningEffort?: string }} opts
    */
   async resumeThread(opts) {
-    const { model, payload } = this._threadPayload(opts);
-    if (model) await this._warnIfModelUnavailable(model);
+    const resolvedOpts = await this._resolveAvailableModel(opts);
+    const { model, payload } = this._threadPayload(resolvedOpts);
+    this.model = model;
     // The history is already in the thread; Kumo does not render it.
     const res = await this.request("thread/resume", { ...payload, threadId: opts.threadId, excludeTurns: true });
     this.threadId = res?.thread?.id || opts.threadId;
@@ -417,19 +481,39 @@ export class CodexAppClient extends EventEmitter {
   }
 
   /**
-   * Models this Codex account can use, from `model/list` (cached per client).
+   * Models this Codex account can use, from `model/list` (cached per client):
+   * every page, hidden models included (they run; they are only left out of
+   * pickers). `_modelsComplete` says whether the list was read to its end.
    * Returns null when the server cannot say.
    *
-   * @returns {Promise<Array<{ id: string, isDefault?: boolean }>|null>}
+   * @returns {Promise<Array<{ id: string, model?: string, isDefault?: boolean }>|null>}
    */
   async listModels() {
     if (this._models !== undefined) return this._models;
+    /** @type {any[]} */
+    const items = [];
+    let complete = false;
     try {
-      const res = await this.request("model/list", {});
-      this._models = Array.isArray(res?.data) && res.data.length > 0 ? res.data : null;
+      /** @type {string|null} */
+      let cursor = null;
+      const cursors = new Set();
+      for (let page = 0; page < MODEL_LIST_MAX_PAGES; page++) {
+        const res = await this.request("model/list", { limit: MODEL_LIST_PAGE_SIZE, includeHidden: true, ...(cursor ? { cursor } : {}) });
+        if (Array.isArray(res?.data)) items.push(...res.data);
+        cursor = typeof res?.nextCursor === "string" && res.nextCursor ? res.nextCursor : null;
+        if (!cursor) {
+          complete = true;
+          break;
+        }
+        // A server that hands back a cursor it already gave never reaches the end.
+        if (cursors.has(cursor)) break;
+        cursors.add(cursor);
+      }
     } catch {
-      this._models = null;
+      /* what was read stays, and is marked incomplete */
     }
+    this._modelsComplete = complete;
+    this._models = items.length > 0 ? items : null;
     return this._models;
   }
 
@@ -442,7 +526,7 @@ export class CodexAppClient extends EventEmitter {
    */
   async _warnIfModelUnavailable(model) {
     const models = await this.listModels();
-    if (!models || models.some((m) => m.id === model)) return;
+    if (!models || !this._modelsComplete || models.some((m) => isListedModel(m, model))) return;
     const available = models.map((m) => (m.isDefault ? `${m.id} (default)` : m.id)).join(", ");
     this.emit("warning", {
       message:

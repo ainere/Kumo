@@ -52,7 +52,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { getWorker, workerCapabilities, KNOWN_WORKERS } from "../providers/workers/registry.js";
 import { getSystemPrompt } from "./prompts.js";
-import { loadConfig, detectProviderForModel, canonicalizeProvider } from "../config/settings.js";
+import { loadConfig, detectProviderForModel, canonicalizeProvider, normalizeSafetyMode, stricterSafetyMode } from "../config/settings.js";
 import { EFFORT_LEVELS } from "../config/models.js";
 import { listRoles, findRole, resolveRoleTarget, describeTarget } from "../config/roles.js";
 import {
@@ -61,6 +61,7 @@ import {
   clearActiveLiveRun,
   getApprovalDir,
 } from "../data/sessions.js";
+import { loadProjectRegistry, hashWorkspace } from "../data/sessions.js";
 import { atomicWriteJson } from "../config/paths.js";
 import { VERSION } from "../version.js";
 import { routeLiveOutput } from "../utils/process.js";
@@ -71,7 +72,8 @@ import { StringDecoder } from "node:string_decoder";
 let workspaceDir = process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd();
 let modelOverride = process.env.GEMINI_MODEL || null;
 let effortOverride = null;
-let safetyModeOverride = process.env.KUMO_SAFETY_MODE || null;
+// An unknown value reads as diff-review (see normalizeSafetyMode): a typo must not turn the write gate off.
+let safetyModeOverride = process.env.KUMO_SAFETY_MODE ? normalizeSafetyMode(process.env.KUMO_SAFETY_MODE, "KUMO_SAFETY_MODE") : null;
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--workspace" && args[i + 1]) {
@@ -84,7 +86,7 @@ for (let i = 0; i < args.length; i++) {
     effortOverride = args[i + 1];
     i++;
   } else if (args[i] === "--safety-mode" && args[i + 1]) {
-    safetyModeOverride = args[i + 1];
+    safetyModeOverride = normalizeSafetyMode(args[i + 1], "--safety-mode");
     i++;
   }
 }
@@ -105,25 +107,48 @@ const nestedInWorker = process.env[NESTED_ENV] === "1";
  */
 let engine = null;
 
+/**
+ * The safety mode the session last reported. The saved config knows nothing of
+ * a tier set for this session alone, so it may only tighten what this holds.
+ * @type {string | null}
+ */
+let engineSafetyMode = null;
+
 /** Test seam: attach (or detach, with null) an engine connection. */
 export function setEngineConnection(connection) {
   engine = connection;
+  engineSafetyMode = null;
 }
 
 /**
  * The settings for this call: the session's own when an engine is
  * connected, else the saved config. The session's win, so a worker or
  * safety-mode switch in one window no longer changes another window's turn.
+ *
+ * When the session cannot be asked (it is closing, or the request failed) the
+ * saved config stands in, but never at a looser safety mode than the session
+ * last reported: a tier set for this session alone must not lapse.
  */
 async function effectiveConfig() {
   const config = loadConfig();
-  if (!engine || engine.closed) return config;
+  if (!engine || engine.closed) return keepSessionTier(config);
   try {
     const session = await engine.request("settings.get");
+    if (session?.safetyMode !== undefined) engineSafetyMode = normalizeSafetyMode(session.safetyMode, "the session settings");
     return { ...config, ...session };
-  } catch {
-    return config;
+  } catch (err) {
+    console.error(`[Warning] Could not read the session's settings (${err instanceof Error ? err.message : err}); using the saved config.`);
+    return keepSessionTier(config);
   }
+}
+
+/**
+ * @param {Record<string, any>} config
+ * @returns {Record<string, any>} the config, its safety mode no looser than the session's last
+ */
+function keepSessionTier(config) {
+  if (engineSafetyMode === null) return config;
+  return { ...config, safetyMode: stricterSafetyMode(config.safetyMode, engineSafetyMode) };
 }
 
 export const PREVIEW_TTL_MS = 15 * 60 * 1000; // 15 minutes TTL
@@ -491,6 +516,11 @@ export function readWorkspaceFiles(workspace, files) {
   } catch {
     root = path.resolve(workspace);
   }
+  const registry = loadProjectRegistry?.() || {};
+  const hash = hashWorkspace(root);
+  const extraDirs = (registry[hash]?.accessibleFolders || []).map((dir) => {
+    try { return fs.realpathSync(dir); } catch { return path.resolve(dir); }
+  });
   const out = [];
   let budget = INLINE_MAX_TOTAL_BYTES;
   for (const rel of files || []) {
@@ -503,7 +533,13 @@ export function readWorkspaceFiles(workspace, files) {
       continue;
     }
     const inside = path.relative(root, real);
-    if (inside.startsWith("..") || path.isAbsolute(inside)) {
+    const isInsideRoot = !inside.startsWith("..") && !path.isAbsolute(inside);
+    const isInsideExtra = extraDirs.some((dir) => {
+      const relExtra = path.relative(dir, real);
+      return !relExtra.startsWith("..") && !path.isAbsolute(relExtra);
+    });
+
+    if (!isInsideRoot && !isInsideExtra) {
       note("(outside the workspace; not read)");
       continue;
     }
@@ -1117,8 +1153,9 @@ export async function handleRoleTool(registered, { task, files, confirm, preview
     return formatResult(await dispatch({ permission: "read" }), toolName);
   }
 
-  const safetyMode = safetyModeOverride || config.safetyMode || "autonomous";
-  const gated = safetyMode === "diff-review" || safetyMode === "interactive";
+  // Whatever the source, a mode that is not a known one is gated like diff-review; only an explicit autonomous writes freely.
+  const safetyMode = safetyModeOverride || normalizeSafetyMode(config.safetyMode, "the session settings");
+  const gated = safetyMode !== "autonomous";
 
   // ── Phase 1: preview only ──
   if (gated && !confirm) {

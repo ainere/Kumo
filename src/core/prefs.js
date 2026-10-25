@@ -29,14 +29,41 @@ import path from "node:path";
 import { z } from "zod";
 import { kumoHome, atomicWriteJson } from "../config/paths.js";
 
+const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/);
+
+/**
+ * Color overrides for one mode. A missing key keeps the theme's own value;
+ * the accent is shared by both modes (`accent` below).
+ */
+const ModeColorsSchema = z
+  .object({ ground: hex.optional(), text: hex.optional(), muted: hex.optional(), glass: hex.optional() })
+  .strict();
+
 export const PrefsSchema = z.object({
   mode: z.enum(["system", "light", "dark"]),
   scene: z.string().min(1).max(64),
   dock: z.enum(["right", "bottom", "floating", "hidden"]),
   glassBlur: z.number().int().min(0).max(40),
   glassOpacity: z.number().int().min(15).max(90),
-  accent: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable(),
+  accent: hex.nullable(),
+  /** Ground, text, muted and glass tint, per mode. */
+  colors: z.object({ dark: ModeColorsSchema, light: ModeColorsSchema }).strict(),
   grid: z.boolean(),
+  /** The scene's frame-rate cap. */
+  sceneFps: z.number().int().min(10).max(60),
+  /** On top of the OS settings, which always apply. */
+  reduceTransparency: z.boolean(),
+  reduceMotion: z.boolean(),
+  /** Chimes when a turn finishes or needs approval. */
+  sounds: z.boolean(),
+  soundVolume: z.number().int().min(0).max(100),
+  errorToasts: z.boolean(),
+  /** Where chats are exported: a folder inside the workspace, relative to it; null is the workspace itself. */
+  exportDir: z.string().min(1).max(240).nullable(),
+  /** The first-run wizard is done (or was skipped). */
+  onboarded: z.boolean(),
+  /** Don't ask before continuing a chat on another provider. */
+  skipProviderSwitchWarning: z.boolean(),
   lastWorkspace: z.string().nullable(),
 });
 
@@ -50,7 +77,17 @@ export const DEFAULT_PREFS = {
   glassBlur: 18,
   glassOpacity: 46,
   accent: null,
+  colors: { dark: {}, light: {} },
   grid: true,
+  sceneFps: 60,
+  reduceTransparency: false,
+  reduceMotion: false,
+  sounds: true,
+  soundVolume: 50,
+  errorToasts: true,
+  exportDir: null,
+  onboarded: false,
+  skipProviderSwitchWarning: false,
   lastWorkspace: null,
 };
 
@@ -68,12 +105,16 @@ export function loadPrefs() {
   /** @type {Record<string, unknown>} */
   let stored = {};
   try {
-    stored = JSON.parse(fs.readFileSync(prefsFile(), "utf-8"));
+    const parsed = JSON.parse(fs.readFileSync(prefsFile(), "utf-8"));
+    // `null`, a number or a list parse fine but hold no preferences; the defaults
+    // stand in, and the next savePrefs writes the file anew.
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) stored = parsed;
   } catch {
     /* none yet, or unreadable */
   }
+  // A deep copy: `colors` is nested, and a caller that edits the result must not edit the defaults.
   /** @type {Record<string, unknown>} */
-  const out = { ...DEFAULT_PREFS };
+  const out = structuredClone(DEFAULT_PREFS);
   const shape = /** @type {Record<string, z.ZodType>} */ (PrefsSchema.shape);
   for (const [key, schema] of Object.entries(shape)) {
     if (key in stored && schema.safeParse(stored[key]).success) out[key] = stored[key];

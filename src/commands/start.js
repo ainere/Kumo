@@ -637,7 +637,7 @@ export async function startCommand(opts = {}) {
         );
         if (!chosen || chosen === "cancel" || chosen === session.chatId) return;
         try {
-          const { resumed } = await session.openChat(chosen);
+          const { resumed, replayed } = await session.openChat(chosen);
           console.clear();
           header();
           const title = chats.find((x) => x.id === chosen)?.title || chosen;
@@ -645,7 +645,9 @@ export async function startCommand(opts = {}) {
           console.log(
             resumed
               ? `  ${c.dim}The orchestrator resumed this conversation with its earlier turns.${c.reset}\n`
-              : `  ${c.dim}New turns are saved to this chat, but the orchestrator starts a fresh conversation (this provider cannot resume it).${c.reset}\n`
+              : replayed
+                ? `  ${c.dim}This chat ran on another provider: its earlier turns go into the new conversation with your next message.${c.reset}\n`
+                : `  ${c.dim}New turns are saved to this chat, but the orchestrator starts a fresh conversation (this provider cannot resume it).${c.reset}\n`
           );
         } catch (err) {
           console.log(`  ${badge.warn} ${err.message}\n`);

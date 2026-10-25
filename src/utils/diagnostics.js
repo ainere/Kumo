@@ -11,8 +11,20 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { loadConfig, getConfigPath } from "../config/settings.js";
 import { getCliBinary } from "../bridge/agy-runner.js";
 import { findCodexBinary } from "../providers/orchestrators/codex.js";
-import { safeSpawn, resolveBinary, killProcessTree } from "./process.js";
+import { safeSpawn, resolveBinary, killProcessTree, childEnvFor } from "./process.js";
+import { nodeCommand } from "../core/node-command.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Spawn options for a version probe: piped output, no console window flashing up
+ * on Windows, and the given environment when there is one.
+ *
+ * @param {Record<string, string|undefined>} [env]
+ * @returns {import("node:child_process").SpawnOptions}
+ */
+export function probeSpawnOptions(env) {
+  return { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, ...(env ? { env } : {}) };
+}
 
 /**
  * Run a command and return stdout or null if error.
@@ -20,23 +32,37 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * Goes through resolveBinary + safeSpawn: `execFile` cannot launch the `.cmd`
  * shims npm installs on Windows (EINVAL), and a bare name would never find
  * them, so every npm-installed CLI used to be reported as missing.
+ *
+ * `env` is the child's whole environment. Probing a provider CLI should pass
+ * `childEnvFor(provider)` so no unrelated credential reaches it; left out, the
+ * child inherits this process's environment.
+ *
+ * @param {string} file
+ * @param {string[]} argsArray
+ * @param {{ timeoutMs?: number, env?: Record<string, string|undefined> }} [opts]
+ * @returns {Promise<{ ok: true, output: string } | { ok: false, error: string }>}
  */
-function checkCommandFile(file, argsArray) {
+export function checkCommandFile(file, argsArray, { timeoutMs = 10000, env } = {}) {
   return new Promise((resolve) => {
     let proc;
     try {
-      proc = safeSpawn(resolveBinary(file), argsArray, { stdio: ["ignore", "pipe", "pipe"] });
+      proc = safeSpawn(resolveBinary(file), argsArray, probeSpawnOptions(env));
     } catch (err) {
       resolve({ ok: false, error: err.message });
       return;
     }
     let stdout = "";
+    let stderr = "";
     const timer = setTimeout(() => {
       killProcessTree(proc);
       resolve({ ok: false, error: "timed out" });
-    }, 10000);
+    }, timeoutMs);
     proc.stdout?.on("data", (chunk) => {
       stdout += chunk.toString();
+    });
+    // Some CLIs print their version on stderr; keep it as a fallback.
+    proc.stderr?.on("data", (chunk) => {
+      stderr = (stderr + chunk.toString()).slice(-2000);
     });
     proc.on("error", (err) => {
       clearTimeout(timer);
@@ -44,9 +70,65 @@ function checkCommandFile(file, argsArray) {
     });
     proc.on("close", (code) => {
       clearTimeout(timer);
-      resolve(code === 0 ? { ok: true, output: stdout.trim() } : { ok: false, error: `exit code ${code}` });
+      resolve(code === 0 ? { ok: true, output: stdout.trim() || stderr.trim() } : { ok: false, error: `exit code ${code}` });
     });
   });
+}
+
+/**
+ * Start the MCP bridge the way an orchestrator would, list its tools, and stop it.
+ *
+ * Spawned through nodeCommand(): inside the desktop app `process.execPath` is
+ * Electron, which only behaves as node with ELECTRON_RUN_AS_NODE set, and a bare
+ * "node" may not be on PATH at all. The child gets the SDK's minimal default
+ * environment, so the Kumo state directory is passed on by hand or the probe
+ * would read a different config than the caller does (`kumoHome` overrides it:
+ * the bridge's loadConfig moves a corrupt config.json aside, so a caller that
+ * must not touch the user's files points it at a scratch folder). Bounded by a
+ * timeout so a hung bridge cannot hang the caller.
+ *
+ * @param {{ workspace?: string, timeoutMs?: number, kumoHome?: string }} [opts]
+ * @returns {Promise<{ ok: boolean, tools: string[], details: string }>}
+ */
+export async function probeBridge({ workspace = process.cwd(), timeoutMs = 15000, kumoHome } = {}) {
+  const serverScript = path.resolve(__dirname, "../bridge/server.js");
+  const node = nodeCommand();
+  const env = { ...node.env };
+  const home = kumoHome ?? process.env.KUMO_HOME;
+  if (home) env.KUMO_HOME = home;
+  const transport = new StdioClientTransport({
+    command: node.command,
+    args: [serverScript, "--workspace", workspace],
+    env,
+    stderr: "pipe",
+  });
+  // Piped stderr must be drained; its tail also explains a failed start.
+  let stderrTail = "";
+  transport.stderr?.on("data", (chunk) => {
+    stderrTail = (stderrTail + chunk.toString()).slice(-600);
+  });
+  const client = new Client({ name: "doctor-client", version: "1.0.0" }, { capabilities: {} });
+
+  let timer;
+  try {
+    const tools = await Promise.race([
+      (async () => {
+        await client.connect(transport);
+        return (await client.listTools()).tools.map((t) => t.name);
+      })(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`no answer within ${timeoutMs} ms`)), timeoutMs);
+      }),
+    ]);
+    return { ok: true, tools, details: `Bridge initialized successfully with ${tools.length} tools registered.` };
+  } catch (err) {
+    const tail = stderrTail.trim();
+    return { ok: false, tools: [], details: `MCP server failed: ${err.message}${tail ? ` (${tail})` : ""}` };
+  } finally {
+    clearTimeout(timer);
+    // Ends the child (stdin close, then SIGTERM/SIGKILL); never throws out of here.
+    await transport.close().catch(() => {});
+  }
 }
 
 /**
@@ -64,6 +146,7 @@ export async function runDiagnostics() {
     anthropicApi: { ok: false, details: "missing" },
     geminiApi: { ok: false, details: "missing" },
     compatApi: { ok: false, details: "missing" },
+    claude: { ok: false, installed: false, details: "" },
     copilot: { ok: false, installed: false, details: "" },
     cursor: { ok: false, installed: false, details: "" },
     geminiCli: { ok: false, installed: false, details: "" },
@@ -76,15 +159,15 @@ export async function runDiagnostics() {
   // 1. Node.js version
   const nodeVersion = process.version;
   const major = parseInt(nodeVersion.replace("v", "").split(".")[0], 10);
-  if (major >= 20) {
+  if (major >= 22) {
     results.node = { ok: true, details: `${nodeVersion} (Supported)` };
   } else {
-    results.node = { ok: false, details: `${nodeVersion} (Node.js >= 20.0.0 required)` };
+    results.node = { ok: false, details: `${nodeVersion} (Node.js >= 22.0.0 required)` };
   }
 
   // 2. Codex CLI
   const codexBin = findCodexBinary();
-  const codexCheck = await checkCommandFile(codexBin, ["--version"]);
+  const codexCheck = await checkCommandFile(codexBin, ["--version"], { env: childEnvFor("codex") });
   if (codexCheck.ok) {
     results.codex.installed = true;
     results.codex.ok = true;
@@ -97,7 +180,7 @@ export async function runDiagnostics() {
 
   // 3. Antigravity / Gemini CLI
   const workerBin = getCliBinary();
-  const workerCheck = await checkCommandFile(workerBin, ["--version"]);
+  const workerCheck = await checkCommandFile(workerBin, ["--version"], { env: childEnvFor("antigravity") });
   if (workerCheck.ok) {
     results.gemini.installed = true;
     results.gemini.ok = true;
@@ -105,7 +188,7 @@ export async function runDiagnostics() {
   } else {
     // Check fallback
     const fallback = workerBin === "agy" ? "gemini" : "agy";
-    const fallbackCheck = await checkCommandFile(fallback, ["--version"]);
+    const fallbackCheck = await checkCommandFile(fallback, ["--version"], { env: childEnvFor(fallback === "agy" ? "antigravity" : "gemini-cli") });
     if (fallbackCheck.ok) {
       results.gemini.installed = true;
       results.gemini.ok = true;
@@ -139,14 +222,15 @@ export async function runDiagnostics() {
 
   // 3c. New subscription CLI --version probes with install hints on failure.
   const cliProbes = [
-    { key: "copilot", bin: process.env.COPILOT_BIN || "gh", args: ["copilot", "--version"], hint: "Install GitHub CLI with copilot extension: gh extension install github/gh-copilot" },
-    { key: "cursor", bin: process.env.CURSOR_BIN || "cursor-agent", args: ["--version"], hint: "Install Cursor Agent and ensure 'cursor-agent' is on PATH" },
-    { key: "geminiCli", bin: process.env.GEMINI_BIN || "gemini", args: ["--version"], hint: "Install Gemini CLI: npm install -g @google/gemini-cli" },
-    { key: "ollama", bin: process.env.OLLAMA_BIN || "ollama", args: ["--version"], hint: "Install Ollama from https://ollama.com and ensure 'ollama' is on PATH" },
+    { key: "claude", provider: "claude", bin: process.env.CLAUDE_BIN || "claude", args: ["--version"], hint: "Install Claude Code: npm install -g @anthropic-ai/claude-code, then run 'claude' to log in" },
+    { key: "copilot", provider: "copilot", bin: process.env.COPILOT_BIN || "gh", args: ["copilot", "--version"], hint: "Install GitHub CLI with copilot extension: gh extension install github/gh-copilot" },
+    { key: "cursor", provider: "cursor", bin: process.env.CURSOR_BIN || "cursor-agent", args: ["--version"], hint: "Install Cursor Agent and ensure 'cursor-agent' is on PATH" },
+    { key: "geminiCli", provider: "gemini-cli", bin: process.env.GEMINI_BIN || "gemini", args: ["--version"], hint: "Install Gemini CLI: npm install -g @google/gemini-cli" },
+    { key: "ollama", provider: "ollama", bin: process.env.OLLAMA_BIN || "ollama", args: ["--version"], hint: "Install Ollama from https://ollama.com and ensure 'ollama' is on PATH" },
   ];
   await Promise.all(
-    cliProbes.map(async ({ key, bin, args, hint }) => {
-      const check = await checkCommandFile(bin, args);
+    cliProbes.map(async ({ key, provider, bin, args, hint }) => {
+      const check = await checkCommandFile(bin, args, { env: childEnvFor(provider) });
       if (check.ok) {
         results[key] = { ok: true, installed: true, details: `Installed '${bin}' (${check.output})` };
       } else {
@@ -156,35 +240,14 @@ export async function runDiagnostics() {
   );
 
   // 4. MCP Bridge test
-  const serverScript = path.resolve(__dirname, "../bridge/server.js");
-  try {
-    const transport = new StdioClientTransport({
-      command: "node",
-      args: [serverScript, "--workspace", process.cwd()],
-    });
-    const client = new Client(
-      { name: "doctor-client", version: "1.0.0" },
-      { capabilities: {} }
-    );
-    await client.connect(transport);
-    const { tools } = await client.listTools();
-    await transport.close();
-
-    results.bridge = {
-      ok: true,
-      details: `Bridge initialized successfully with ${tools.length} tools registered.`,
-    };
-  } catch (err) {
-    results.bridge = {
-      ok: false,
-      details: `MCP server failed: ${err.message}`,
-    };
-  }
+  const bridge = await probeBridge();
+  results.bridge = { ok: bridge.ok, details: bridge.details };
 
   // 5. Overall orchestrator-path health: ok when at least one subscription login OR any API key is present.
   const subscriptionOk =
     Boolean(results.codex?.ok) ||
     Boolean(results.gemini?.ok) ||
+    Boolean(results.claude?.ok) ||
     Boolean(results.copilot?.ok) ||
     Boolean(results.cursor?.ok) ||
     Boolean(results.geminiCli?.ok) ||

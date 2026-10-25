@@ -34,7 +34,11 @@ export function inspectGraph(targetDir) {
   try {
     const data = JSON.parse(fs.readFileSync(graphJson, "utf-8"));
     if (data && Array.isArray(data.nodes)) nodeCount = data.nodes.length;
-    if (data && Array.isArray(data.edges)) edgeCount = data.edges.length;
+    if (data && Array.isArray(data.edges)) {
+      edgeCount = data.edges.length;
+    } else if (data && Array.isArray(data.links)) {
+      edgeCount = data.links.length;
+    }
   } catch {
     /* ignore json parse errors */
   }

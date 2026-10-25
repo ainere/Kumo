@@ -24,7 +24,9 @@
  * window that switched a role's model tells its worker the truth.
  */
 
+import path from "node:path";
 import { findRole } from "../config/roles.js";
+import { loadProjectRegistry, hashWorkspace } from "../data/sessions.js";
 
 /** The role names the tools carried before roles had their own names. */
 const LEGACY_ROLE_NAMES = {
@@ -64,11 +66,25 @@ export function getWorkerPreamble(opts = {}) {
   const workspace = opts.workspace || "";
   const title = opts.title || "Execution";
 
+  let extras = [];
+  try {
+    if (workspace) {
+      const registry = loadProjectRegistry?.() || {};
+      const hash = hashWorkspace(path.resolve(workspace));
+      extras = registry[hash]?.accessibleFolders || [];
+    }
+  } catch {
+    /* ignore */
+  }
+  const folderRule = extras.length > 0
+    ? `- Stay strictly within the assigned workspace (${workspace}) and authorized accessible folders: ${extras.join(", ")}. Do not search unauthorized external directories, parent folders, or system drives.`
+    : `- Stay strictly within the assigned workspace${workspace ? ` (${workspace})` : ""}. Do not search external directories, parent folders, or system drives.`;
+
   return `You are Kumo's ${title} worker (running on ${model}, reasoning effort: ${effort}), dispatched by the lead orchestrator (running on ${leadModel}, reasoning effort: ${leadEffort}). The lead has already handled planning, scoping, and requirements. Focus only on executing the assigned task.
 
 [Critical Execution Rules]
 - NEVER call \`invoke_subagent\` or spawn background subagents. You are running as a headless execution worker; execute all file operations, code edits, and terminal commands directly in this single thread.
-- Stay strictly within the assigned workspace${workspace ? ` (${workspace})` : ""}. Do not search external directories, parent folders, or system drives.
+${folderRule}
 - Do not engage in open-ended brainstorming, interactive dialogue, or multi-phase surveys. Execute the bounded instructions directly, concisely, and return immediately.
 
 [Superpowers Skills Policy]

@@ -45,7 +45,8 @@ import { runTurn } from "../providers/orchestrators/turn-wait.js";
 import * as defaultStore from "../data/sessions.js";
 import { makeEvent } from "./events.js";
 import { snapshotSettings, applySettingsPatch } from "./settings.js";
-import { ToolTracker } from "./tool-tracker.js";
+import { providerDisplayName } from "../config/models.js";
+import { ToolTracker, TurnTrace } from "./tool-tracker.js";
 import { LiveLogTailer } from "./live-log-tailer.js";
 import { QuotaMonitor } from "./quota-monitor.js";
 import { EngineIpcServer } from "./ipc/engine-server.js";
@@ -85,6 +86,24 @@ const PROTECTED_EXPORT_DIRS = new Set([".git", ".codex", ".claude", ".agents", "
 
 /** Files the agent CLIs load as standing instructions; a conversation must not be written over one. */
 const PROTECTED_EXPORT_FILES = new Set(["agents.md", "claude.md", "claude.local.md", "gemini.md"]);
+
+/** Names Windows treats as devices, with or without an extension; an export folder is never one. */
+const WINDOWS_DEVICE_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
+
+/**
+ * How much of the chat so far goes in front of the first prompt on a new lead
+ * provider. The newest turns win; each part of a turn is clipped, so one
+ * long answer cannot crowd out the rest.
+ */
+const REPLAY_MAX_CHARS = 48_000;
+/** Room kept inside REPLAY_MAX_CHARS for the preamble's own wording. */
+const REPLAY_FRAME_CHARS = 700;
+const REPLAY_PROMPT_CHARS = 6_000;
+const REPLAY_ANSWER_CHARS = 12_000;
+const REPLAY_TASK_CHARS = 200;
+const REPLAY_TOOL_LINES = 30;
+/** Worker calls and changed files listed under a turn in an exported Markdown file. */
+const EXPORT_LIST_ITEMS = 20;
 
 /**
  * How links are resolved on the workspace's filesystem. The native call is
@@ -174,6 +193,148 @@ function exportTarget(workspace, filename) {
   return target;
 }
 
+/**
+ * The workspace-relative paths a unified diff changes, read from its
+ * `---`/`+++` headers: git's `a/` `b/` prefixes are removed when every header
+ * has them (as the bridge applies the diff), /dev/null is skipped and
+ * separators become "/". A header pair counts only when a hunk follows, so a
+ * removed line that reads `-- x` followed by an added `++ y` is not a file.
+ * The preview is text from a worker, so a path that leaves the workspace is
+ * dropped rather than recorded.
+ *
+ * @param {string} previewText
+ * @returns {string[]}
+ */
+export function diffPathsOf(previewText) {
+  const lines = String(previewText || "").split(/\r?\n/);
+  /** @param {string} line */
+  const pathOf = (line) => line.slice(4).split("\t")[0].trim().replace(/^"(.*)"$/, "$1");
+  /** @type {string[]} */
+  const headers = [];
+  for (let i = 0; i + 2 < lines.length; i++) {
+    if (!lines[i].startsWith("--- ") || !lines[i + 1].startsWith("+++ ") || !lines[i + 2].startsWith("@@")) continue;
+    for (const p of [pathOf(lines[i]), pathOf(lines[i + 1])]) {
+      if (p && p !== "/dev/null") headers.push(p);
+    }
+    i += 2;
+  }
+  const prefixed = headers.length > 0 && headers.every((p) => /^[ab]\//.test(p));
+  /** @type {Set<string>} */
+  const paths = new Set();
+  for (const header of headers) {
+    const rel = path.posix.normalize((prefixed ? header.slice(2) : header).replace(/\\/g, "/"));
+    if (rel === "." || rel === ".." || rel.startsWith("../") || path.posix.isAbsolute(rel) || /^[A-Za-z]:/.test(rel)) continue;
+    paths.add(rel);
+  }
+  return [...paths];
+}
+
+/** @param {unknown} text */
+const oneLine = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
+
+/**
+ * @param {string} text
+ * @param {number} max
+ * @param {"head"|"tail"} keep which end survives
+ */
+function clip(text, max, keep) {
+  if (text.length <= max) return text;
+  const note = `[${text.length - max} characters omitted]`;
+  return keep === "head" ? `${text.slice(0, max)} ${note}` : `${note} ${text.slice(text.length - max)}`;
+}
+
+/** How a worker call ended, in a word. @param {{ ok?: boolean|null }} tool */
+const outcomeWord = (tool) => (tool.ok === true ? "ok" : tool.ok === false ? "failed" : "unfinished");
+
+/**
+ * One earlier turn as the replay shows it: the prompt, the lead's answer and a
+ * line per worker call. Reasoning stays out; it can be huge and means little
+ * to another model.
+ *
+ * @param {any} turn
+ * @param {number} number
+ */
+function replayTurn(turn, number) {
+  const answer = oneLine(turn.responseSummary) ? String(turn.responseSummary).trim() : "(no answer)";
+  const lines = [
+    `Turn ${number}`,
+    `User: ${clip(String(turn.prompt ?? "").trim(), REPLAY_PROMPT_CHARS, "head")}`,
+    `Lead: ${clip(answer, REPLAY_ANSWER_CHARS, "tail")}`,
+  ];
+  const tools = Array.isArray(turn.tools) ? turn.tools : [];
+  if (tools.length > 0) {
+    lines.push("Worker calls:");
+    for (const tool of tools.slice(0, REPLAY_TOOL_LINES)) {
+      lines.push(`- ${tool.role || tool.name || "worker"} (${outcomeWord(tool)}): ${clip(oneLine(tool.task), REPLAY_TASK_CHARS, "head")}`);
+    }
+    if (tools.length > REPLAY_TOOL_LINES) lines.push(`- ... and ${tools.length - REPLAY_TOOL_LINES} more`);
+  }
+  // The block sits inside a tag: a turn's own text must not close it.
+  return lines.join("\n").replaceAll("</kumo-replay>", "</ kumo-replay>");
+}
+
+/**
+ * The text that goes in front of the first prompt on a new lead provider so
+ * the chat's earlier turns reach it. Newest turns win when it has to be cut.
+ *
+ * @param {unknown[]} turns the chat's turn log, oldest first
+ * @param {number} [maxChars]
+ * @returns {string|null} null when there is nothing to carry over
+ */
+export function replayPreamble(turns, maxChars = REPLAY_MAX_CHARS) {
+  const log = (Array.isArray(turns) ? turns : []).filter((t) => t && typeof t === "object");
+  if (log.length === 0) return null;
+  /** @type {string[]} */
+  const blocks = [];
+  let used = REPLAY_FRAME_CHARS;
+  for (let i = log.length - 1; i >= 0; i--) {
+    const block = replayTurn(log[i], i + 1);
+    // The newest turn always goes in, whatever the limit.
+    if (blocks.length > 0 && used + block.length + 2 > maxChars) break;
+    blocks.unshift(block);
+    used += block.length + 2;
+  }
+  const omitted = log.length - blocks.length;
+  return [
+    "<kumo-replay>",
+    "This chat was handed to you from another model. Its earlier turns follow, oldest first, as context. They are done: do not repeat or redo them.",
+    ...(omitted > 0 ? ["", `[${omitted} earlier turn${omitted === 1 ? "" : "s"} omitted]`] : []),
+    "",
+    blocks.join("\n\n"),
+    "</kumo-replay>",
+    "",
+    "Continue the conversation from there. The user's new message:",
+  ].join("\n");
+}
+
+/**
+ * A turn's worker calls and changed files as they appear in an exported
+ * Markdown file: short lists, no reasoning and no worker output.
+ *
+ * @param {any} turn
+ * @returns {string} empty for a turn that has neither
+ */
+function exportedTrace(turn) {
+  let md = "";
+  const tools = Array.isArray(turn.tools) ? turn.tools : [];
+  if (tools.length > 0) {
+    md += "**Worker calls:**\n\n";
+    for (const tool of tools.slice(0, EXPORT_LIST_ITEMS)) {
+      const secs = typeof tool.elapsedMs === "number" ? `, ${(tool.elapsedMs / 1000).toFixed(1)}s` : "";
+      md += `- ${tool.role || tool.name || "worker"} (${outcomeWord(tool)}${secs}): ${clip(oneLine(tool.task), REPLAY_TASK_CHARS, "head")}\n`;
+    }
+    if (tools.length > EXPORT_LIST_ITEMS) md += `- ... and ${tools.length - EXPORT_LIST_ITEMS} more\n`;
+    md += "\n";
+  }
+  const files = Array.isArray(turn.diffPaths) ? turn.diffPaths : [];
+  if (files.length > 0) {
+    md += `**Files changed:** ${files.slice(0, EXPORT_LIST_ITEMS).map((f) => `\`${f}\``).join(", ")}`;
+    md += files.length > EXPORT_LIST_ITEMS ? `, and ${files.length - EXPORT_LIST_ITEMS} more\n\n` : "\n\n";
+  }
+  if (turn.replayed) md += "*This turn moved the chat to another lead model; the earlier turns were replayed into its context.*\n\n";
+  return md;
+}
+
 export class Session extends EventEmitter {
   /** @param {SessionOptions} opts */
   constructor(opts) {
@@ -195,17 +356,24 @@ export class Session extends EventEmitter {
     this.turnCount = 0;
     /** @type {any} */
     this.client = null;
+    /**
+     * The safety mode the current client was built with.
+     * @type {string|null}
+     */
+    this._clientSafetyMode = null;
     this.needsReconnect = false;
     this.busy = false;
     this.closed = false;
     /** @type {{ done: Promise<any>, interrupt: (reason?: string) => void } | null} */
     this.activeTurn = null;
-    /** @type {{ id: string, transcript: string[] } | null} */
+    /** @type {{ id: string, transcript: string[], trace: TurnTrace } | null} */
     this._turn = null;
+    /** The next prompt carries the chat's earlier turns: the lead provider changed under them. */
+    this._replayPending = false;
     this.tools = new ToolTracker();
     /** @type {Map<string, LiveLogTailer>} */
     this._tailers = new Map();
-    /** @type {Map<string, { kind: "write"|"orchestrator", resolve: (approved: boolean, reason?: string) => void }>} */
+    /** @type {Map<string, { kind: "write"|"orchestrator", paths?: string[], resolve: (approved: boolean, reason?: string) => void }>} */
     this.pendingApprovals = new Map();
     /** @type {Set<string>} bridge approval files already asked about */
     this._seenApprovalFiles = new Set();
@@ -270,10 +438,16 @@ export class Session extends EventEmitter {
     let threadId = null;
     if (this.persist) {
       this.store.registerProject(this.workspace);
-      const chat = this.chatId ? this._chatRecord(this.chatId) : null;
+      let chat = this.chatId ? this._chatRecord(this.chatId) : null;
+      if (!chat) {
+        chat = this._findEmptyChat();
+      }
       if (chat) {
+        this.chatId = chat.id;
         this.turnCount = chat.turns || 0;
         threadId = chat.provider === this.settings.orchestratorProvider ? chat.threadId || null : null;
+        // Another provider cannot resume that thread: it gets the earlier turns in its first prompt.
+        if (this.turnCount > 0 && chat.provider !== this.settings.orchestratorProvider) this._armReplay(this.turnCount);
       } else {
         this.chatId = this._newChatRecord();
       }
@@ -285,7 +459,7 @@ export class Session extends EventEmitter {
 
     let resumed = false;
     try {
-      resumed = await this._connect({ threadId });
+      ({ resumed } = await this._connect({ threadId }));
     } catch (err) {
       // stop() cut the connect short; that is not a failure to report.
       if (this.closed) return;
@@ -339,7 +513,7 @@ export class Session extends EventEmitter {
    * Replace the orchestrator client and open a thread on it.
    *
    * @param {{ threadId?: string | null }} [opts]
-   * @returns {Promise<boolean>} whether an earlier thread was resumed
+   * @returns {Promise<{ resumed: boolean, resumeFailed: boolean }>} see _openThread
    */
   async _connect({ threadId = null } = {}) {
     const previous = this.client;
@@ -370,13 +544,16 @@ export class Session extends EventEmitter {
       env: this._clientEnv(),
     });
     this.client = client;
+    this._clientSafetyMode = this.settings.safetyMode;
     this._attach(client);
     try {
       await client.start();
       this._assertOpen();
-      const resumed = await this._openThread({ threadId });
+      const opened = await this._openThread({ threadId });
       this._assertOpen();
-      return resumed;
+      // This chat's thread would not come back: the new one has not seen its earlier turns.
+      if (opened.resumeFailed && this.turnCount > 0 && !this._replayPending) this._armReplay(this.turnCount);
+      return opened;
     } catch (err) {
       // A client with no thread fails every later prompt with "No active
       // thread"; the next prompt retries the whole start instead.
@@ -389,6 +566,16 @@ export class Session extends EventEmitter {
       }
       throw err;
     }
+  }
+
+  /**
+   * Whether the client was built for another safety mode than the session has
+   * now. Only Antigravity matters: it fixes its permission mode (skipping them,
+   * or not) when it starts. The other leads are held to the tier by the bridge,
+   * which reads it from the session on every worker call.
+   */
+  _clientTierStale() {
+    return this.settings.orchestratorProvider === "antigravity" && this._clientSafetyMode !== this.settings.safetyMode;
   }
 
   /** Environment handed to the orchestrator, and through it to the bridge. */
@@ -409,7 +596,8 @@ export class Session extends EventEmitter {
    * Resume `threadId` when the client can, else start a new thread.
    *
    * @param {{ threadId?: string | null }} opts
-   * @returns {Promise<boolean>} whether the thread was resumed
+   * @returns {Promise<{ resumed: boolean, resumeFailed: boolean }>} whether the thread was resumed, and whether
+   *   resuming was tried and failed (the new thread has not seen the conversation)
    */
   async _openThread({ threadId = null }) {
     const client = this.client;
@@ -418,16 +606,25 @@ export class Session extends EventEmitter {
       model: this.settings.orchestratorModel,
       reasoningEffort: this.settings.reasoningEffort,
     };
+    let resumed = false;
+    let resumeFailed = false;
     if (threadId && typeof client.resumeThread === "function") {
       try {
         await client.resumeThread({ ...opts, threadId });
-        return true;
+        resumed = true;
       } catch (err) {
+        resumeFailed = true;
         this._warn(`Could not resume the earlier conversation (${err instanceof Error ? err.message : err}); starting a new one.`);
       }
     }
-    await client.startThread(opts);
-    return false;
+    if (!resumed) {
+      await client.startThread(opts);
+    }
+    if (client.model && client.model !== this.settings.orchestratorModel) {
+      this.settings.orchestratorModel = client.model;
+      this._emit("settings.changed", { settings: { ...this.settings }, changed: ["orchestratorModel"] });
+    }
+    return { resumed, resumeFailed };
   }
 
   /** @param {any} cl */
@@ -441,6 +638,7 @@ export class Session extends EventEmitter {
     });
     cl.on("reasoning", (/** @type {string} */ text) => {
       if (!current() || !this._turn) return;
+      this._turn.trace.addReasoning(text || "");
       this._emit("turn.reasoning", { turnId: this._turn.id, text: text || "" });
     });
     cl.on("warning", (/** @type {any} */ w) => {
@@ -485,25 +683,33 @@ export class Session extends EventEmitter {
     const startedAt = Date.now();
     /** @type {string[]} */
     const transcript = [];
-    this._turn = { id: turnId, transcript };
+    const trace = new TurnTrace();
+    this._turn = { id: turnId, transcript, trace };
+    // The prompt shown and recorded is the user's own; a replay goes in front of it only on its way to the lead.
     this._emit("turn.started", { turnId, prompt });
 
     /** @type {{ ok: boolean, reason?: string, timedOut?: boolean, interrupted?: boolean }} */
     let outcome;
+    let replayed = false;
     try {
       // A failed background start is retried here rather than surfacing twice.
       await this.start().catch(() => {});
-      if (this.needsReconnect || !this.client) {
+      if (this.needsReconnect || !this.client || this._clientTierStale()) {
         this._notice("Starting the orchestrator...");
         await this._connect({ threadId: this._chatThreadId() });
       }
       this._refreshProjectConfigs();
       if (this.interactive && this.settings.safetyMode === "interactive") this._startApprovalWatcher();
 
+      // Built after the start: opening the chat may have armed the replay.
+      const preamble = this._replayPending ? this._takeReplayPreamble() : null;
+      replayed = preamble !== null;
+      const sent = preamble === null ? prompt : [preamble, "", prompt].join("\n");
+
       const client = this.client;
       this.activeTurn = runTurn(
         client,
-        () => client.startTurn(prompt, { model: this.settings.orchestratorModel, effort: this.settings.reasoningEffort }),
+        () => client.startTurn(sent, { model: this.settings.orchestratorModel, effort: this.settings.reasoningEffort }),
         { timeoutMs: this.settings.turnTimeoutMs }
       );
       outcome = await this.activeTurn.done;
@@ -511,8 +717,9 @@ export class Session extends EventEmitter {
       outcome = { ok: false, reason: err instanceof Error ? err.message : String(err) };
     } finally {
       this.activeTurn = null;
-      this._turn = null;
+      // Before the turn is forgotten: a log tailer's last output and the end of unfinished calls belong to it.
       this._finishTurnTools();
+      this._turn = null;
       this._stopApprovalWatcher();
       this._settleApprovals("all", null, "the turn ended");
       this.busy = false;
@@ -521,7 +728,9 @@ export class Session extends EventEmitter {
     const elapsedMs = Date.now() - startedAt;
     const text = transcript.join("");
     if (outcome.ok) {
-      this._recordTurn(prompt, text, elapsedMs);
+      this._recordTurn(prompt, text, elapsedMs, { trace, replayed });
+      // The context reached the lead and the turn is saved; a failed turn leaves it pending for the next prompt.
+      if (replayed) this._replayPending = false;
       this._emit("turn.completed", { turnId, text, elapsedMs });
     } else {
       this._emit("turn.failed", {
@@ -549,11 +758,16 @@ export class Session extends EventEmitter {
   }
 
   /**
+   * Save a finished turn: what was asked and answered, which provider and
+   * model answered, and its trace (reasoning, worker calls, changed files).
+   * Only a successful turn is saved; a failed or interrupted one leaves no record.
+   *
    * @param {string} prompt
    * @param {string} text
    * @param {number} elapsedMs
+   * @param {{ trace: TurnTrace, replayed: boolean }} extra
    */
-  _recordTurn(prompt, text, elapsedMs) {
+  _recordTurn(prompt, text, elapsedMs, { trace, replayed }) {
     if (!this.persist || !this.chatId) return;
     this.turnCount++;
     this.store.appendTurn(this.workspace, this.chatId, {
@@ -561,7 +775,10 @@ export class Session extends EventEmitter {
       responseSummary: text || null,
       timestamp: Date.now(),
       model: this.settings.orchestratorModel,
+      provider: this.settings.orchestratorProvider,
       elapsedMs,
+      ...trace.snapshot(),
+      ...(replayed ? { replayed: true } : {}),
     });
     /** @type {Record<string, unknown>} */
     const update = {
@@ -592,6 +809,7 @@ export class Session extends EventEmitter {
     const target = resolveRoleTarget(this.settings, role, /** @type {any} */ (toolArgsOf(item)));
     const call = this.tools.start(item, { role, model: target.model || null, effort: target.effort || null });
     if (!call) return;
+    this._turn?.trace.toolStarted(call);
     this._emit("tool.started", {
       turnId: this._turn?.id || null,
       toolId: call.id,
@@ -604,13 +822,13 @@ export class Session extends EventEmitter {
     });
     if (call.runId) {
       const held = this.tools.takeHeldOutput(call.runId);
-      if (held) this._emit("tool.output", { toolId: call.id, text: held });
+      if (held) this._emitToolOutput(call.id, held);
     } else if (!this.ipc || this.ipc.connectedBridges === 0) {
       // No bridge reached the engine: follow its live-log file instead.
       const tailer = new LiveLogTailer({
         workspace: this.workspace,
         toolId: call.id,
-        onText: (text) => this._emit("tool.output", { toolId: call.id, text }),
+        onText: (text) => this._emitToolOutput(call.id, text),
       });
       this._tailers.set(call.id, tailer);
       tailer.start();
@@ -622,12 +840,30 @@ export class Session extends EventEmitter {
     const call = this.tools.complete(item);
     if (!call) return;
     this._stopTailer(call.id);
-    this._emit("tool.completed", {
-      toolId: call.id,
-      name: call.name,
-      ok: !(item?.status === "failed" || item?.error),
-      elapsedMs: Date.now() - call.startedAt,
-    });
+    this._emitToolCompleted(call, !(item?.status === "failed" || item?.error));
+  }
+
+  /**
+   * Report a worker call's output, and keep its end for the turn's record.
+   *
+   * @param {string} toolId
+   * @param {string} text
+   */
+  _emitToolOutput(toolId, text) {
+    this._turn?.trace.toolOutput(toolId, text);
+    this._emit("tool.output", { toolId, text });
+  }
+
+  /**
+   * Report a worker call's end, and note it for the turn's record.
+   *
+   * @param {import("./tool-tracker.js").ToolCall} call
+   * @param {boolean} ok
+   */
+  _emitToolCompleted(call, ok) {
+    const elapsedMs = Date.now() - call.startedAt;
+    this._turn?.trace.toolCompleted(call.id, { ok, elapsedMs });
+    this._emit("tool.completed", { toolId: call.id, name: call.name, ok, elapsedMs });
   }
 
   /** @param {{ runId?: string, tool?: string, task?: string }} params */
@@ -637,14 +873,14 @@ export class Session extends EventEmitter {
     if (!call) return;
     this._stopTailer(call.id);
     const held = this.tools.takeHeldOutput(runId);
-    if (held) this._emit("tool.output", { toolId: call.id, text: held });
+    if (held) this._emitToolOutput(call.id, held);
   }
 
   /** @param {{ runId?: string, text?: string }} params */
   _onRunOutput({ runId, text }) {
     if (!runId || !text) return;
     const routed = this.tools.outputFor(runId, String(text));
-    if (routed) this._emit("tool.output", { toolId: routed.call.id, text: routed.text });
+    if (routed) this._emitToolOutput(routed.call.id, routed.text);
   }
 
   /** @param {string} toolId */
@@ -659,7 +895,7 @@ export class Session extends EventEmitter {
   _finishTurnTools() {
     for (const call of this.tools.clear()) {
       this._stopTailer(call.id);
-      this._emit("tool.completed", { toolId: call.id, name: call.name, ok: false, elapsedMs: Date.now() - call.startedAt });
+      this._emitToolCompleted(call, false);
     }
     for (const id of [...this._tailers.keys()]) this._stopTailer(id);
   }
@@ -708,6 +944,7 @@ export class Session extends EventEmitter {
       const approvalId = previewId && !this.pendingApprovals.has(previewId) ? previewId : randomUUID();
       this.pendingApprovals.set(approvalId, {
         kind: "write",
+        paths: diffPathsOf(String(previewText || "")),
         resolve: (approved, reason) =>
           resolve(approved ? { approved: true } : { approved: false, reason: reason || "the operator declined the change" }),
       });
@@ -732,6 +969,8 @@ export class Session extends EventEmitter {
     const pending = this.pendingApprovals.get(approvalId);
     if (!pending) return false;
     this.pendingApprovals.delete(approvalId);
+    // What the operator approved is what the turn changed (as far as the engine sees: see diffPathsOf).
+    if (approved && pending.paths?.length) this._turn?.trace.addDiffPaths(pending.paths);
     pending.resolve(Boolean(approved), reason);
     this._emit("approval.resolved", { approvalId, approved: Boolean(approved), ...(reason ? { reason } : {}) });
     return true;
@@ -787,6 +1026,7 @@ export class Session extends EventEmitter {
       const decisionFile = path.join(dir, `${previewId}.decision.json`);
       this.pendingApprovals.set(approvalId, {
         kind: "write",
+        paths: diffPathsOf(String(record?.previewText || "")),
         resolve: (approved) => {
           try {
             fs.writeFileSync(decisionFile, JSON.stringify({ approved, decidedAt: Date.now() }, null, 2), {
@@ -819,6 +1059,18 @@ export class Session extends EventEmitter {
     return this.store.listChats(this.workspace).find((c) => c.id === chatId) || null;
   }
 
+  _findEmptyChat() {
+    if (!this.persist) return null;
+    const chats = this.store.listChats(this.workspace);
+    return (
+      chats.find((c) => {
+        if ((c.turns || 0) > 0) return false;
+        const turns = this.store.loadTurnLog(this.workspace, c.id);
+        return turns.length === 0;
+      }) || null
+    );
+  }
+
   _newChatRecord() {
     return this.store.createChat(this.workspace, {
       model: this.settings.orchestratorModel,
@@ -832,6 +1084,32 @@ export class Session extends EventEmitter {
     const chat = this._chatRecord(this.chatId);
     if (!chat || chat.provider !== this.settings.orchestratorProvider) return null;
     return chat.threadId || null;
+  }
+
+  /**
+   * The chat's earlier turns must reach a lead that has not seen them: the
+   * next prompt carries them, and the turn that does is recorded as replayed.
+   *
+   * @param {number} turns how many earlier turns the chat has
+   */
+  _armReplay(turns) {
+    this._replayPending = true;
+    const lead = providerDisplayName(this.settings.orchestratorProvider);
+    const earlier = turns === 1 ? "its 1 earlier turn goes" : `its ${turns} earlier turns go`;
+    this._notice(`Continuing this chat on ${lead}: ${earlier} into the new model's context.`);
+  }
+
+  /**
+   * The text for the pending replay, from the chat's turn log. With nothing to
+   * carry over (the log is gone) there is nothing pending any more.
+   *
+   * @returns {string|null}
+   */
+  _takeReplayPreamble() {
+    const turns = this.chatId ? this.store.loadTurnLog(this.workspace, this.chatId) : [];
+    const preamble = replayPreamble(turns);
+    if (preamble === null) this._replayPending = false;
+    return preamble;
   }
 
   _assertOpen() {
@@ -850,27 +1128,42 @@ export class Session extends EventEmitter {
 
   _saveChatState() {
     if (this.persist && this.chatId) {
-      this.store.updateChat(this.workspace, this.chatId, { lastUsedAt: Date.now(), turns: this.turnCount });
+      this.store.updateChat(this.workspace, this.chatId, { turns: this.turnCount });
     }
   }
 
-  /** Start a fresh conversation (a new chat and a new provider thread). */
+  /** Start a fresh conversation (or navigate to an existing empty chat). */
   async newChat() {
     this._assertIdle();
     this._saveChatState();
+    // If the current chat has 0 turns and an empty log, keep using it.
+    if (this.chatId && this.turnCount === 0 && this.store.loadTurnLog(this.workspace, this.chatId).length === 0) {
+      await this._ensureClient();
+      this._emit("chat.changed", { workspace: this.workspace, chatId: this.chatId, title: "New Chat", resumed: false });
+      return;
+    }
+    // If an empty chat exists elsewhere in this workspace, navigate to it instead of making another.
+    const empty = this._findEmptyChat();
+    if (empty) {
+      await this.openChat(empty.id);
+      return;
+    }
     await this._ensureClient();
     await this._openThread({});
     this.chatId = this.persist ? this._newChatRecord() : null;
     this.turnCount = 0;
+    this._replayPending = false;
     this._emit("chat.changed", { workspace: this.workspace, chatId: this.chatId, title: "New Chat", resumed: false });
   }
 
   /**
    * Switch to an earlier chat of this workspace, resuming its provider thread
-   * when the provider supports it (Codex, Claude Code, Antigravity).
+   * when the provider supports it (Codex, Claude Code, Antigravity). A chat
+   * made on another provider cannot be resumed there: its earlier turns go
+   * into the first prompt instead (`replayed`).
    *
    * @param {string} chatId
-   * @returns {Promise<{ resumed: boolean }>}
+   * @returns {Promise<{ resumed: boolean, hadTurns: boolean, replayed: boolean }>}
    */
   async openChat(chatId) {
     this._assertIdle();
@@ -878,33 +1171,67 @@ export class Session extends EventEmitter {
     if (!chat) throw new Error(`No chat '${chatId}' in this workspace.`);
     this._saveChatState();
     await this._ensureClient();
-    const threadId = chat.provider === this.settings.orchestratorProvider ? chat.threadId || null : null;
-    const resumed = await this._openThread({ threadId });
+    const sameProvider = chat.provider === this.settings.orchestratorProvider;
+    const { resumed, resumeFailed } = await this._openThread({ threadId: sameProvider ? chat.threadId || null : null });
     this.chatId = chat.id;
     this.turnCount = chat.turns || 0;
+    // Whatever was pending belonged to the chat that was open.
+    this._replayPending = false;
     this._emit("chat.changed", { workspace: this.workspace, chatId: chat.id, title: chat.title || "Chat", resumed });
-    return { resumed };
+    const hadTurns = this.turnCount > 0;
+    // Its thread is gone or on another provider: the lead has not seen these turns.
+    const replayed = hadTurns && (!sameProvider || resumeFailed);
+    if (replayed) this._armReplay(this.turnCount);
+    return { resumed, hadTurns, replayed };
   }
 
   /**
-   * Move the session to another workspace, with a new chat there.
+   * Move the session to another workspace, opening a specified chat, reusing an empty one, or creating a fresh one.
    *
    * @param {string} dir
+   * @param {{ chatId?: string }} [opts]
    */
-  async setWorkspace(dir) {
+  async setWorkspace(dir, { chatId } = {}) {
     this._assertIdle();
     const resolved = path.resolve(dir);
     if (!fs.existsSync(resolved)) throw new Error(`Directory not found: ${resolved}`);
     this._saveChatState();
     this.workspace = resolved;
+    // Whatever was pending belonged to the chat that was open; the chat chosen below may arm its own.
+    this._replayPending = false;
+    let targetChat = null;
+    let threadId = null;
     if (this.persist) {
       this.store.registerProject(resolved);
-      this.chatId = this._newChatRecord();
+      if (chatId) {
+        targetChat = this._chatRecord(chatId);
+      }
+      if (!targetChat) {
+        targetChat = this._findEmptyChat();
+      }
+      if (targetChat) {
+        this.chatId = targetChat.id;
+        this.turnCount = targetChat.turns || 0;
+        threadId = targetChat.provider === this.settings.orchestratorProvider ? targetChat.threadId || null : null;
+        if (this.turnCount > 0 && targetChat.provider !== this.settings.orchestratorProvider) {
+          this._armReplay(this.turnCount);
+        }
+      } else {
+        this.chatId = this._newChatRecord();
+        this.turnCount = 0;
+      }
+    } else {
+      this.chatId = null;
+      this.turnCount = 0;
     }
-    this.turnCount = 0;
     // The bridge is started for one workspace and the client env names it.
-    await this._connect({});
-    this._emit("chat.changed", { workspace: resolved, chatId: this.chatId, title: "New Chat", resumed: false });
+    const { resumed } = await this._connect({ threadId });
+    this._emit("chat.changed", {
+      workspace: resolved,
+      chatId: this.chatId,
+      title: targetChat?.title || "New Chat",
+      resumed,
+    });
   }
 
   /** @param {string} title */
@@ -923,15 +1250,40 @@ export class Session extends EventEmitter {
   }
 
   /**
+   * The export folder as a clean relative path, or "" for the workspace itself.
+   * It comes from the user's preferences, so it is checked here as well as by exportTarget.
+   *
+   * @param {unknown} dir
+   * @returns {string}
+   */
+  _exportFolder(dir) {
+    if (dir === undefined || dir === null) return "";
+    if (typeof dir !== "string") throw new Error("The export folder must be a path.");
+    const folder = dir.trim();
+    if (!folder) return "";
+    if (path.isAbsolute(folder)) throw new Error(`'${dir}' is not a workspace-relative folder.`);
+    if (process.platform === "win32" && folder.split(/[\\/]/).some((part) => WINDOWS_DEVICE_NAME.test(part.split(".")[0].trimEnd()))) {
+      throw new Error(`'${dir}' names a Windows device; export to another folder.`);
+    }
+    return folder;
+  }
+
+  /**
    * Write the chat as Markdown into the workspace.
    *
    * @param {string} [filename]
+   * @param {{ dir?: string | null }} [opts] `dir`: a workspace-relative folder to write into, made when missing
+   *   (the folder the user chose in their preferences); the file is judged by exportTarget either way
    * @returns {string} the file written
    */
-  exportMarkdown(filename) {
+  exportMarkdown(filename, { dir } = {}) {
     const log = this.turnLog();
     if (log.length === 0) throw new Error("No turns to save in the current conversation.");
-    const out = exportTarget(this.workspace, filename || `kumo-session-${new Date().toISOString().slice(0, 10)}.md`);
+    const name = filename || `kumo-session-${new Date().toISOString().slice(0, 10)}.md`;
+    const folder = this._exportFolder(dir);
+    const out = exportTarget(this.workspace, folder ? path.join(folder, name) : name);
+    // Only a path that passed the checks above may be created.
+    if (folder) fs.mkdirSync(path.dirname(out), { recursive: true });
     const s = this.settings;
     let md = `# Kumo Session — ${new Date().toLocaleDateString()}\n\n`;
     md += `**Workspace:** ${this.workspace}\n\n`;
@@ -941,6 +1293,7 @@ export class Session extends EventEmitter {
       md += `## Turn ${i + 1} (${new Date(turn.timestamp).toLocaleTimeString()})\n\n`;
       md += `**Prompt:**\n\n${turn.prompt}\n\n`;
       if (turn.responseSummary) md += `**Response:**\n\n${turn.responseSummary}\n\n`;
+      md += exportedTrace(turn);
       md += `*Elapsed: ${((turn.elapsedMs || 0) / 1000).toFixed(1)}s*\n\n---\n\n`;
     });
     fs.writeFileSync(out, md, "utf-8");
@@ -957,6 +1310,11 @@ export class Session extends EventEmitter {
    * the orchestrator reads when it starts: the client restarts and resumes
    * the same thread, so the conversation survives.
    *
+   * All or nothing: when the orchestrator cannot follow (a provider that will
+   * not start), the session keeps its earlier settings, nothing is saved and
+   * the error is thrown. `settings.changed` is emitted either way, carrying
+   * the settings the session really has.
+   *
    * @param {Partial<Record<string, unknown>>} patch
    * @param {{ persist?: boolean }} [opts] - also save as the global defaults
    * @returns {Promise<string[]>} the keys that changed
@@ -969,25 +1327,47 @@ export class Session extends EventEmitter {
       throw new Error("The orchestrator cannot change while a turn is running.");
     }
     const toolsChanged = roleToolSignature(this.settings.roles) !== roleToolSignature(next.roles);
+    // Antigravity fixes its permission mode when it starts, so a new tier needs a new client.
+    const tierChanged = changed.includes("safetyMode") && next.orchestratorProvider === "antigravity";
+    // Taken now: connecting may correct the model, and the saved default is what the user asked for.
+    const saved = changed.map((key) => /** @type {[string, unknown]} */ ([key, /** @type {Record<string, unknown>} */ (next)[key]]));
+    const previous = this.settings;
+    const replayWas = this._replayPending;
     this.settings = next;
-    if (persist) {
-      for (const key of changed) setConfigValue(key, /** @type {Record<string, unknown>} */ (next)[key]);
+    let applied = false;
+    try {
+      if (changed.includes("orchestratorProvider")) {
+        this.quotas.providerChanged();
+        if (this.client || this._ready) await this._connect({});
+        // The new provider starts an empty thread, so the chat's earlier turns ride along with the next prompt.
+        // Armed once the provider is up: if it cannot start, the chat stays on the one it had.
+        if (this.persist && this.chatId && this.turnCount > 0) this._armReplay(this.turnCount);
+      } else if ((toolsChanged || tierChanged) && this.client) {
+        // A running turn keeps its tools and its permissions; the next one starts on the new ones.
+        if (this.busy) {
+          this.needsReconnect = true;
+          if (tierChanged) this._notice("Antigravity applies the new safety mode from the next turn.");
+        } else {
+          await this._connect({ threadId: this._clientThreadId() });
+        }
+      } else if (changed.includes("orchestratorModel") || changed.includes("reasoningEffort")) {
+        await this.client?.applyModel?.({ model: next.orchestratorModel, reasoningEffort: next.reasoningEffort });
+      }
+      applied = true;
+      // Saved last: a provider that cannot start must not become the default.
+      if (persist) for (const [key, value] of saved) setConfigValue(key, value);
+    } catch (err) {
+      if (!applied) {
+        // The session could not follow the change, so it stays as it was.
+        this.settings = previous;
+        this._replayPending = replayWas;
+        if (changed.includes("orchestratorProvider")) this.quotas.providerChanged();
+      }
+      throw err;
+    } finally {
+      // Whatever happened, a listener learns the settings the session really has.
+      if (!this.closed) this._emit("settings.changed", { settings: { ...this.settings }, changed: applied ? changed : [] });
     }
-
-    if (changed.includes("orchestratorProvider")) {
-      this.quotas.providerChanged();
-      if (this.client || this._ready) await this._connect({});
-    } else if (toolsChanged && this.client) {
-      // A running turn keeps its tools; the next one starts on the new list.
-      if (this.busy) this.needsReconnect = true;
-      else await this._connect({ threadId: this._clientThreadId() });
-    } else if (changed.includes("orchestratorModel") || changed.includes("reasoningEffort")) {
-      await this.client?.applyModel?.({ model: next.orchestratorModel, reasoningEffort: next.reasoningEffort });
-    } else if (changed.includes("safetyMode") && this.settings.orchestratorProvider === "antigravity" && !this.busy) {
-      // agy fixes its permission mode when it starts.
-      if (this.client) await this._connect({ threadId: this._clientThreadId() });
-    }
-    this._emit("settings.changed", { settings: { ...this.settings }, changed });
     if (!changed.includes("orchestratorProvider") && (changed.includes("workerProvider") || changed.includes("roles"))) {
       this.quotas.providerChanged();
     }
@@ -996,9 +1376,10 @@ export class Session extends EventEmitter {
 
   // ── quotas ──
 
-  /** Fetch fresh quota figures now (an explicit /status or /refresh). */
-  refreshQuotas() {
-    return this.quotas.refresh({ force: true });
+  /** Fetch fresh quota figures now across all subscriptions (an explicit /status, /refresh, or startup probe). */
+  async refreshQuotas() {
+    // probeAll reports through the monitor's `updated` event, which becomes `quota.updated` (and not after close).
+    return this.quotas.probeAll();
   }
 
   // ── teardown ──

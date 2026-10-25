@@ -23,6 +23,7 @@ export async function doctorCommand() {
 
   printCheck("Node.js Runtime", results.node);
   printCheck("Codex CLI (OpenAI)", results.codex);
+  printCheck("Claude Code CLI (Anthropic)", results.claude || { ok: false, details: "missing" });
   printCheck("Gemini CLI (Google)", results.gemini);
   printCheck("Copilot CLI (GitHub)", results.copilot || { ok: false, details: "missing" });
   printCheck("Cursor Agent", results.cursor || { ok: false, details: "missing" });
