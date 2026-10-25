@@ -34,6 +34,32 @@ import { loadPrefs, savePrefs, PrefsSchema } from "./prefs.js";
 const id = z.string().min(1).max(128);
 const sessionOnly = z.object({ sessionId: id }).strict();
 
+/** Names Windows treats as devices, with or without an extension (`con.md` is the console). */
+const WINDOWS_DEVICE_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
+
+/**
+ * Whether `name` is one plain Markdown file name and not a path: no
+ * separators, drive or stream colons, `..`, leading dot, control characters,
+ * Windows device names, or a stem that Windows would trim.
+ *
+ * @param {string} name
+ */
+function isSafeExportName(name) {
+  if (!/\.md$/i.test(name) || name.startsWith(".") || name.includes("..")) return false;
+  if (/[\\/:*?"<>|]/.test(name)) return false;
+  if ([...name].some((ch) => ch.charCodeAt(0) < 0x20)) return false;
+  const stem = name.slice(0, -".md".length);
+  if (/[. ]$/.test(stem)) return false;
+  return !WINDOWS_DEVICE_NAME.test(name.split(".")[0].trimEnd());
+}
+
+/** A file name the renderer may ask for: it picks the name, never the folder. */
+const exportFilename = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine(isSafeExportName, "must be a plain file name ending in .md (no folders, no leading dot)");
+
 export const CommandSchemas = {
   "app.info": z.object({}).strict(),
   "prefs.get": z.object({}).strict(),
@@ -54,7 +80,7 @@ export const CommandSchemas = {
   "session.resolveApproval": z
     .object({ sessionId: id, approvalId: id, approved: z.boolean(), reason: z.string().max(500).optional() })
     .strict(),
-  "session.exportMarkdown": z.object({ sessionId: id, filename: z.string().min(1).max(200).optional() }).strict(),
+  "session.exportMarkdown": z.object({ sessionId: id, filename: exportFilename.optional() }).strict(),
   "session.refreshQuotas": sessionOnly,
   "session.stop": sessionOnly,
 };

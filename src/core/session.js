@@ -80,6 +80,100 @@ import { ENGINE_ENDPOINT_ENV, SESSION_TOKEN_ENV } from "./ipc/protocol.js";
 /** How often the fallback approval watcher looks for bridge request files. */
 const APPROVAL_POLL_MS = 500;
 
+/** Folders git and the agent CLIs read their hooks, rules and settings from; an export never lands in one. */
+const PROTECTED_EXPORT_DIRS = new Set([".git", ".codex", ".claude", ".agents", ".gemini"]);
+
+/** Files the agent CLIs load as standing instructions; a conversation must not be written over one. */
+const PROTECTED_EXPORT_FILES = new Set(["agents.md", "claude.md", "claude.local.md", "gemini.md"]);
+
+/**
+ * How links are resolved on the workspace's filesystem. The native call is
+ * best; some drives (RAM disks, network shares) refuse it, so the JavaScript
+ * walk is next, and without either paths are only made absolute. Picked once
+ * for the workspace and used for the target too, so both are judged alike.
+ *
+ * @param {string} workspace
+ * @returns {(p: string) => string}
+ */
+function linkResolverFor(workspace) {
+  /** @type {Array<(p: string) => string>} */
+  const resolvers = [(p) => fs.realpathSync.native(p), (p) => fs.realpathSync(p), (p) => path.resolve(p)];
+  for (const resolve of resolvers) {
+    try {
+      resolve(workspace);
+      return resolve;
+    } catch (err) {
+      // A workspace that is not there is an error whatever the filesystem.
+      if (/** @type {NodeJS.ErrnoException} */ (err).code === "ENOENT") throw err;
+    }
+  }
+  return path.resolve;
+}
+
+/**
+ * `p` with the links resolved in the part of it that exists; what does not
+ * exist yet cannot be a link and is kept as written.
+ *
+ * @param {string} p
+ * @param {(p: string) => string} realpath
+ * @returns {string}
+ */
+function resolveExisting(p, realpath) {
+  /** @type {string[]} */
+  const missing = [];
+  let dir = p;
+  for (;;) {
+    try {
+      return path.join(realpath(dir), ...missing.reverse());
+    } catch (err) {
+      const parent = path.dirname(dir);
+      if (/** @type {NodeJS.ErrnoException} */ (err).code !== "ENOENT" || parent === dir) throw err;
+      missing.push(path.basename(dir));
+      dir = parent;
+    }
+  }
+}
+
+/**
+ * Where `exportMarkdown` may write `filename`: inside `workspace`, outside the
+ * protected folders, not an agent-instruction file, and not through a link
+ * (symbolic or hard). The name comes from outside the engine (the desktop
+ * renderer), so this holds whatever the command schema let through.
+ *
+ * @param {string} workspace
+ * @param {string} filename
+ * @returns {string} the absolute path to write
+ */
+function exportTarget(workspace, filename) {
+  if (filename.includes(String.fromCharCode(0))) throw new Error("The file name contains a NUL character.");
+  const asGiven = path.resolve(workspace, filename);
+  if (fs.lstatSync(asGiven, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    throw new Error(`'${filename}' is a link; export to a regular file.`);
+  }
+  // Both sides go through the same resolution, so a link in a folder name is judged by where it leads.
+  const realpath = linkResolverFor(workspace);
+  const root = realpath(workspace);
+  const target = resolveExisting(asGiven, realpath);
+  const rel = path.relative(root, target);
+  if (!rel || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    throw new Error(`'${filename}' is outside the workspace; export to a file inside it.`);
+  }
+  // ':' names an NTFS data stream or a drive; neither is part of a file name here.
+  if (process.platform === "win32" && rel.includes(":")) throw new Error(`'${filename}' is not a plain file path.`);
+  if (rel.split(path.sep).some((part) => PROTECTED_EXPORT_DIRS.has(part.toLowerCase()))) {
+    throw new Error(`'${filename}' is inside a protected folder (${[...PROTECTED_EXPORT_DIRS].join(", ")}).`);
+  }
+  if (PROTECTED_EXPORT_FILES.has(path.basename(target).toLowerCase())) {
+    throw new Error(`'${filename}' is an agent instruction file; export to another name.`);
+  }
+  // Writing through a second name for a file would overwrite that file, wherever its other name is.
+  const existing = fs.lstatSync(target, { throwIfNoEntry: false });
+  if (existing?.isFile() && existing.nlink > 1) {
+    throw new Error(`'${filename}' is a hard link to another file; export to a new name.`);
+  }
+  return target;
+}
+
 export class Session extends EventEmitter {
   /** @param {SessionOptions} opts */
   constructor(opts) {
@@ -121,13 +215,18 @@ export class Session extends EventEmitter {
     this.ipc = null;
     /** @type {Promise<void>|null} */
     this._ready = null;
+    /** @type {Promise<void>|null} */
+    this._stopping = null;
 
     this.quotas = new QuotaMonitor({
       getClient: () => this.client,
       getSettings: () => this.settings,
       useCache: opts.quotas !== false,
     });
-    this.quotas.on("updated", (snapshot) => this._emit("quota.updated", snapshot));
+    this.quotas.on("updated", (snapshot) => {
+      // A refresh in flight when the session stopped must not report after `session.closed`.
+      if (!this.closed) this._emit("quota.updated", snapshot);
+    });
     this._runQuotas = opts.quotas !== false;
   }
 
@@ -167,6 +266,7 @@ export class Session extends EventEmitter {
   }
 
   async _boot() {
+    if (this.closed) return;
     let threadId = null;
     if (this.persist) {
       this.store.registerProject(this.workspace);
@@ -179,20 +279,29 @@ export class Session extends EventEmitter {
       }
     }
     if (this.useIpc) await this._openIpc();
+    // stop() ran while the endpoint opened; _openIpc has already closed it.
+    if (this.closed) return;
     if (this._runQuotas) this.quotas.start();
 
     let resumed = false;
     try {
       resumed = await this._connect({ threadId });
+    } catch (err) {
+      // stop() cut the connect short; that is not a failure to report.
+      if (this.closed) return;
+      throw err;
     } finally {
-      this._emit("session.ready", {
-        workspace: this.workspace,
-        chatId: this.chatId,
-        resumed,
-        settings: { ...this.settings },
-      });
+      if (!this.closed) {
+        this._emit("session.ready", {
+          workspace: this.workspace,
+          chatId: this.chatId,
+          resumed,
+          settings: { ...this.settings },
+        });
+      }
     }
-    if (this._runQuotas) void this.quotas.refresh();
+    // Stopped by a `session.ready` listener, say: no provider is queried for a closed session.
+    if (this._runQuotas && !this.closed) void this.quotas.refresh();
   }
 
   async _openIpc() {
@@ -210,11 +319,20 @@ export class Session extends EventEmitter {
     });
     try {
       await server.listen();
-      this.ipc = server;
     } catch (err) {
+      await server.close();
       // Without it the bridge falls back to files; nothing else is lost.
-      this._warn(`Could not open the engine endpoint (${err instanceof Error ? err.message : err}); using file-based worker updates.`);
+      if (!this.closed) {
+        this._warn(`Could not open the engine endpoint (${err instanceof Error ? err.message : err}); using file-based worker updates.`);
+      }
+      return;
     }
+    // stop() ran while the endpoint opened and found nothing to close.
+    if (this.closed) {
+      await server.close();
+      return;
+    }
+    this.ipc = server;
   }
 
   /**
@@ -232,6 +350,8 @@ export class Session extends EventEmitter {
         await previous.stop();
       } catch {}
     }
+    // After every await below: stop() may have run, and a client started now would outlive the session.
+    this._assertOpen();
     this.needsReconnect = false;
 
     const provider = this.settings.orchestratorProvider;
@@ -253,11 +373,20 @@ export class Session extends EventEmitter {
     this._attach(client);
     try {
       await client.start();
-      return await this._openThread({ threadId });
+      this._assertOpen();
+      const resumed = await this._openThread({ threadId });
+      this._assertOpen();
+      return resumed;
     } catch (err) {
       // A client with no thread fails every later prompt with "No active
       // thread"; the next prompt retries the whole start instead.
       this.needsReconnect = true;
+      // stop() stops the client it found; this one may have been started after.
+      if (this.closed) {
+        try {
+          await client.stop();
+        } catch {}
+      }
       throw err;
     }
   }
@@ -403,7 +532,7 @@ export class Session extends EventEmitter {
         timedOut: Boolean(outcome.timedOut),
       });
     }
-    if (this._runQuotas) void this.quotas.refresh();
+    if (this._runQuotas && !this.closed) void this.quotas.refresh();
     return {
       ok: outcome.ok,
       ...(outcome.ok ? {} : { reason: outcome.reason || "turn failed" }),
@@ -705,8 +834,12 @@ export class Session extends EventEmitter {
     return chat.threadId || null;
   }
 
-  _assertIdle() {
+  _assertOpen() {
     if (this.closed) throw new Error("This session is closed.");
+  }
+
+  _assertIdle() {
+    this._assertOpen();
     if (this.busy) throw new Error("A turn is running; wait for it or interrupt it first.");
   }
 
@@ -798,7 +931,7 @@ export class Session extends EventEmitter {
   exportMarkdown(filename) {
     const log = this.turnLog();
     if (log.length === 0) throw new Error("No turns to save in the current conversation.");
-    const out = path.resolve(this.workspace, filename || `kumo-session-${new Date().toISOString().slice(0, 10)}.md`);
+    const out = exportTarget(this.workspace, filename || `kumo-session-${new Date().toISOString().slice(0, 10)}.md`);
     const s = this.settings;
     let md = `# Kumo Session — ${new Date().toLocaleDateString()}\n\n`;
     md += `**Workspace:** ${this.workspace}\n\n`;
@@ -879,9 +1012,18 @@ export class Session extends EventEmitter {
     }
   }
 
-  /** Stop everything this session started. */
-  async stop() {
-    if (this.closed) return;
+  /**
+   * Stop everything this session started. Every call returns the same
+   * promise, which settles once nothing of the session is left running.
+   *
+   * @returns {Promise<void>}
+   */
+  stop() {
+    if (!this._stopping) this._stopping = this._teardown();
+    return this._stopping;
+  }
+
+  async _teardown() {
     this.closed = true;
     this.activeTurn?.interrupt("session closed");
     this._finishTurnTools();
@@ -895,6 +1037,10 @@ export class Session extends EventEmitter {
         await client.stop();
       } catch {}
     }
+    // A start still in flight sees `closed` after its current step and releases
+    // what that step made. Wait for it, so no endpoint, client or timer survives
+    // this call and `session.ready` never follows `session.closed`.
+    await this._ready?.catch(() => {});
     if (this.ipc) {
       await this.ipc.close();
       this.ipc = null;

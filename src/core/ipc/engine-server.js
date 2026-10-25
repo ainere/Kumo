@@ -36,17 +36,22 @@ import { newEndpoint, readMessages, writeMessage } from "./protocol.js";
  * @typedef {{ id: number, pid: number | null }} EngineConnectionInfo
  */
 
+/** How long a new connection has to say `hello` with the token before it is dropped. */
+export const HANDSHAKE_TIMEOUT_MS = 5000;
+
 export class EngineIpcServer extends EventEmitter {
   /**
    * @param {{
    *   requests: Record<string, Handler>,
    *   notifications?: Record<string, Handler>,
    *   hello?: (params: any) => object,
+   *   handshakeTimeoutMs?: number,
    * }} handlers
    */
   constructor(handlers) {
     super();
     this.handlers = handlers;
+    this.handshakeTimeoutMs = handlers.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
     this.token = randomBytes(32).toString("hex");
     /** @type {string|null} */
     this.endpoint = null;
@@ -95,9 +100,12 @@ export class EngineIpcServer extends EventEmitter {
     const info = { id: this._nextId++, pid: null };
     let authed = false;
     const close = () => socket.destroy();
+    // A peer that connects and says nothing would otherwise hold the slot for good.
+    const handshake = setTimeout(close, this.handshakeTimeoutMs);
 
     socket.on("error", () => {});
     socket.on("close", () => {
+      clearTimeout(handshake);
       this.sockets.delete(socket);
       if (authed) {
         this.authenticated--;
@@ -114,6 +122,7 @@ export class EngineIpcServer extends EventEmitter {
             return;
           }
           authed = true;
+          clearTimeout(handshake);
           this.authenticated++;
           info.pid = typeof message.params.pid === "number" ? message.params.pid : null;
           const result = this.handlers.hello ? this.handlers.hello(message.params) : {};

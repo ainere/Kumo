@@ -20,6 +20,59 @@ function applescriptQuote(s) {
 }
 
 /**
+ * Quote a string as a PowerShell single-quoted literal: nothing inside it is
+ * expanded, so `$env:X` and `$(...)` in a folder name stay text. PowerShell
+ * also treats the typographic single quotes as quote characters; each of them
+ * is escaped, like the plain one, by doubling it.
+ *
+ * @param {*} s
+ * @returns {string}
+ */
+function powershellQuote(s) {
+  return `'${String(s).replace(/['‘’‚‛]/g, "$&$&")}'`;
+}
+
+/**
+ * Quote a string as a POSIX shell single-quoted word, so `$(...)`, backticks
+ * and `$VAR` in a folder name are not expanded by sh or zsh.
+ *
+ * @param {*} s
+ * @returns {string}
+ */
+function posixQuote(s) {
+  return `'${String(s).replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * The PowerShell script run in the new Windows terminal. `args` are tokens
+ * already validated against SAFE_ARG_RE.
+ *
+ * @param {string} workspace
+ * @param {string[]} args
+ * @returns {string}
+ */
+export function buildWindowsLaunchScript(workspace, args) {
+  const winCmd = ["kumo", "--here", ...args].join(" ");
+  return `$host.UI.RawUI.WindowTitle = 'KUMO — 雲'; Set-Location -LiteralPath ${powershellQuote(workspace)}; ${winCmd}`;
+}
+
+/**
+ * The AppleScript run by osascript to open Terminal on macOS. The shell command
+ * is built first, with the workspace single-quoted for sh, and then quoted once
+ * as an AppleScript string. `args` are tokens already validated against
+ * SAFE_ARG_RE.
+ *
+ * @param {string} workspace
+ * @param {string[]} args
+ * @returns {string}
+ */
+export function buildMacLaunchScript(workspace, args) {
+  const kumoCmd = ["kumo", "--here", ...args].join(" ");
+  const innerShellCommand = `cd ${posixQuote(workspace)} && ${kumoCmd}`;
+  return `tell application "Terminal" to do script ${applescriptQuote(innerShellCommand)}`;
+}
+
+/**
  * Encode a PowerShell script into a base64-encoded UTF-16LE string for -EncodedCommand.
  *
  * @param {string} script
@@ -71,11 +124,7 @@ export async function launchInNewWindow(optsOrWorkspace = {}, maybeArgs = undefi
 
   if (isWin) {
     // Build PowerShell script and encode via base64 UTF-16LE (-EncodedCommand)
-    // Notice arguments are safe tokens validated by SAFE_ARG_RE.
-    const winCmdTokens = ["kumo", "--here", ...cleanArgs];
-    const winCmd = winCmdTokens.join(" ");
-    const psScript = `$host.UI.RawUI.WindowTitle = 'KUMO — 雲'; Set-Location -LiteralPath ${JSON.stringify(workspace)}; ${winCmd}`;
-    const encodedCommand = encodePowerShellCommand(psScript);
+    const encodedCommand = encodePowerShellCommand(buildWindowsLaunchScript(workspace, cleanArgs));
 
     return new Promise((resolve) => {
       let child;
@@ -129,12 +178,7 @@ export async function launchInNewWindow(optsOrWorkspace = {}, maybeArgs = undefi
   }
 
   if (isMac) {
-    // Dedicated applescriptQuote escapes \ and " and double quotes values
-    const cdCmd = `cd ${applescriptQuote(workspace)}`;
-    const kumoTokens = ["kumo", "--here", ...cleanArgs];
-    const kumoCmd = kumoTokens.join(" ");
-    const innerShellCommand = `${cdCmd} && ${kumoCmd}`;
-    const script = `tell application "Terminal" to do script ${applescriptQuote(innerShellCommand)}`;
+    const script = buildMacLaunchScript(workspace, cleanArgs);
 
     return new Promise((resolve) => {
       let child;

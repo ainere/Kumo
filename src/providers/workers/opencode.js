@@ -34,7 +34,7 @@ export async function executeTask(opts) {
   } = opts;
 
   const bin = findOpencodeBinary();
-  const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files });
+  const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files, fileContents: opts.fileContents });
 
   const args = [];
   if (model) {

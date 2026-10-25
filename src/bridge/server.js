@@ -702,6 +702,230 @@ export function extractUnifiedDiff(text) {
 }
 
 /**
+ * Directories that configure git or the agent tools around the workspace
+ * (hooks, MCP servers, permission settings). A patch applied by the bridge,
+ * outside any worker sandbox, must never write into them.
+ */
+const PROTECTED_PATCH_DIRS = new Set([".git", ".codex", ".claude", ".agents", ".gemini"]);
+
+/** Escapes git uses inside a quoted path (`"a/\056git"`), besides `\ooo` octal bytes. */
+const GIT_PATH_ESCAPES = { a: "\x07", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" };
+
+/** Decode the C-style escapes of a quoted git path, so `\056codex` is seen as `.codex`. */
+function decodeGitPath(p) {
+  const bytes = Buffer.from(p, "utf-8")
+    .toString("latin1")
+    .replace(/\\([0-3][0-7]{2}|.)/g, (_, e) => (e.length === 3 ? String.fromCharCode(parseInt(e, 8)) : (GIT_PATH_ESCAPES[e] ?? e)));
+  return Buffer.from(bytes, "latin1").toString("utf-8");
+}
+
+/**
+ * The protected directory a path segment names, or null. Case-insensitive, and
+ * NTFS-aware: it ignores trailing dots/spaces and `:stream` suffixes, and a
+ * short name (`GIT~1`) names the same directory as `.git`.
+ *
+ * @param {string} segment
+ * @returns {string|null}
+ */
+function protectedPatchDir(segment) {
+  const name = segment.toLowerCase().replace(/:.*$/, "").replace(/[. ]+$/, "");
+  if (PROTECTED_PATCH_DIRS.has(name)) return name;
+  const short = /^([^~]+)~\d+$/.exec(name);
+  return short && PROTECTED_PATCH_DIRS.has(`.${short[1]}`) ? `.${short[1]}` : null;
+}
+
+/** @param {string} p */
+const outsideMessage = (p) => `the diff names a path outside the workspace (${p})`;
+/** @param {string} dir @param {string} p */
+const protectedMessage = (dir, p) => `the diff touches ${dir}/ (${p}), which is never patched through the bridge; make that change by hand`;
+const SYMLINK_MESSAGE = "the diff creates or changes a symbolic link";
+
+/**
+ * Whether a mode, as git reads it (octal, up to the first non-digit, so
+ * `0120000` and `120644` count), is a symbolic link.
+ *
+ * @param {string} mode
+ * @returns {boolean}
+ */
+function isSymlinkMode(mode) {
+  return (parseInt(mode, 8) & 0o170000) === 0o120000;
+}
+
+/**
+ * Why a path a patch names must not be written, or null when it is fine.
+ *
+ * @param {string} p - as written in the patch, relative to the workspace
+ * @returns {string|null}
+ */
+function patchPathProblem(p) {
+  // Raw and decoded: backslashes are separators on Windows but escapes in a
+  // quoted git path, and either reading must pass.
+  for (const candidate of new Set([p, decodeGitPath(p)])) {
+    const segments = candidate.split(/[\\/]/);
+    if (path.isAbsolute(candidate) || /^([A-Za-z]:|[\\/])/.test(candidate) || segments.includes("..")) {
+      return outsideMessage(p);
+    }
+    const dir = segments.map(protectedPatchDir).find(Boolean);
+    if (dir) return protectedMessage(dir, p);
+  }
+  return null;
+}
+
+/**
+ * Like {@link patchPathProblem} for text that holds paths git splits by rules
+ * of its own (a `diff --git` line, where a name may contain spaces): every
+ * fragment between separators, quotes, braces and whitespace is looked at, so
+ * nothing depends on guessing where one path ends. It can only over-refuse.
+ *
+ * @param {string} text
+ * @returns {string|null}
+ */
+function patchTextProblem(text) {
+  for (const candidate of new Set([text, decodeGitPath(text)])) {
+    for (const fragment of candidate.split(/["\s/\\{}]+/)) {
+      if (fragment === "..") return outsideMessage(text);
+      const dir = protectedPatchDir(fragment);
+      if (dir) return protectedMessage(dir, text);
+    }
+  }
+  return null;
+}
+
+/**
+ * Why an approved diff must not be applied, according to its own text, or
+ * null. This is the first of two layers; the second asks git what it reads
+ * (see {@link gitPatchRefusal}), because git and this scan can disagree on a
+ * crafted patch. Here every `---`/`+++` line counts by itself (git does not
+ * need them in pairs), as do `rename`/`copy` lines in both spellings (`from`/
+ * `to` and the legacy `old`/`new`) and each mode line. A header line with a
+ * bare CR, VT or FF is refused: git ends a name there, so the name it reads is
+ * not the one on the line.
+ *
+ * @param {string} diff
+ * @returns {string|null}
+ */
+function patchRefusal(diff) {
+  if (diff.includes("\0")) return "the diff contains a NUL byte";
+  /** @type {string[]} */
+  const named = [];
+  const unquote = (/** @type {string} */ p) => p.replace(/^"(.*)"$/s, "$1");
+  for (const raw of diff.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    // Hunk bodies start with a space, `+`, `-` or `\` and may hold any
+    // character. `--- ` and `+++ ` lines are read as headers wherever they sit.
+    if (/^[ +\\-]/.test(line) && !/^(?:---|\+\+\+) /.test(line)) continue;
+    if (/[\r\v\f]/.test(line)) return "the diff has a control character in a header line";
+
+    const mode = /^(?:new file mode|deleted file mode|new mode|old mode)\s*(\d+)/.exec(line) || /^index \S+ (\d+)/.exec(line);
+    if (mode && isSymlinkMode(mode[1])) return SYMLINK_MESSAGE;
+
+    const header = /^(?:---|\+\+\+) (.*)$/.exec(line);
+    if (header) {
+      const p = unquote(header[1].split("\t")[0].trim());
+      // Also without its first component: that is what `-p1` leaves.
+      if (p && p !== "/dev/null") named.push(p, p.replace(/^[^/\\]*[/\\]/, ""));
+      continue;
+    }
+    const moved = /^(?:rename|copy) (?:from|to|old|new) (.+)$/.exec(line);
+    if (moved) named.push(unquote(moved[1]));
+    if (line.startsWith("diff --git ")) {
+      const problem = patchTextProblem(line.slice("diff --git ".length));
+      if (problem) return problem;
+    }
+  }
+  for (const p of named) {
+    const problem = patchPathProblem(p);
+    if (problem) return problem;
+  }
+  return null;
+}
+
+/**
+ * Every path a `rename`/`copy` line of `git apply --summary` may name. The
+ * summary prints `old => new`, or `prefix{old => new}suffix` when the two share
+ * a prefix and suffix, and a name can hold those characters too, so each
+ * reading is returned.
+ *
+ * @param {string} body - the text between `rename`/`copy` and the `(NN%)`
+ * @returns {string[]}
+ */
+function renameCandidates(body) {
+  /** @type {string[]} */
+  const out = [];
+  for (let i = body.indexOf(" => "); i !== -1; i = body.indexOf(" => ", i + 1)) {
+    const left = body.slice(0, i);
+    const right = body.slice(i + 4);
+    out.push(left, right);
+    const open = left.lastIndexOf("{");
+    const close = right.indexOf("}");
+    if (open !== -1 && close !== -1) {
+      const before = left.slice(0, open);
+      const after = right.slice(close + 1);
+      out.push(before + left.slice(open + 1) + after, before + right.slice(0, close) + after);
+    }
+  }
+  return out;
+}
+
+/**
+ * The second layer: ask git what it reads in the patch, with the very flags
+ * the apply will use, and check every path and mode it reports.
+ * `--numstat -z` lists the file each patch writes (the deleted one for a
+ * delete); `--summary` adds creations and deletions with their modes, mode
+ * changes, and the source of a rename or copy, which `--numstat` leaves out.
+ * Whatever the patch's text suggests, git is the one that will write.
+ *
+ * @param {(extra: string[]) => import("node:child_process").SpawnSyncReturns<string>} run
+ * @param {string} prefix - the `--directory` root git prepends to every name, "" for none
+ * @returns {string|null} why to refuse, or null (also when git cannot read the patch: `--check` says why)
+ */
+export function gitPatchRefusal(run, prefix) {
+  const numstat = run(["--numstat", "-z"]);
+  const summary = run(["--summary"]);
+  if (numstat.status !== 0 || summary.status !== 0) return null;
+
+  /** @type {string[]} */
+  const named = [];
+  for (const record of numstat.stdout.split("\0")) {
+    const entry = /^(?:\d+|-)\t(?:\d+|-)\t([\s\S]+)$/.exec(record);
+    if (entry) named.push(entry[1]);
+  }
+  for (const line of summary.stdout.split("\n")) {
+    const created = /^ (?:create|delete) mode (\d+) /.exec(line);
+    if (created && isSymlinkMode(created[1])) return SYMLINK_MESSAGE;
+    const changed = /^ mode change (\d+) => (\d+) /.exec(line);
+    if (changed && (isSymlinkMode(changed[1]) || isSymlinkMode(changed[2]))) return SYMLINK_MESSAGE;
+    const moved = /^ (?:rename|copy) (.*) \(\d+%\)$/.exec(line);
+    if (moved) named.push(...renameCandidates(moved[1].replace(/"/g, "")));
+  }
+  for (const name of named) {
+    // Judge the name inside the workspace, not the repository path above it.
+    const problem = patchPathProblem(prefix && name.startsWith(prefix) ? name.slice(prefix.length) : name);
+    if (problem) return problem;
+  }
+  return null;
+}
+
+/** What git says when it refuses a path itself: not a patch that merely went stale. */
+const GIT_POLICY_ERROR_RE = /invalid path|beyond a symbolic link|is outside (?:of )?the repository/i;
+
+/**
+ * A failed `git apply`, as `applyApprovedDiff` reports it. Git's own
+ * refusals of a path (`invalid path '.git/…'`, `beyond a symbolic link`) are
+ * marked `refused`, so the caller does not answer them by letting a worker
+ * write the change.
+ *
+ * @param {import("node:child_process").SpawnSyncReturns<string>} result
+ * @param {string} fallback
+ * @returns {{ ok: false, reason: string, refused?: boolean }}
+ */
+function gitFailure(result, fallback) {
+  const text = (result.stderr || result.error?.message || fallback).trim();
+  const reason = text.split("\n")[0];
+  return GIT_POLICY_ERROR_RE.test(text) ? { ok: false, reason, refused: true } : { ok: false, reason };
+}
+
+/**
  * Apply an approved preview exactly as it was shown, with `git apply`.
  *
  * Re-running the worker after approval — the only path before — applies
@@ -709,40 +933,60 @@ export function extractUnifiedDiff(text) {
  * operator approved. `--check` runs first so a patch that no longer applies
  * leaves the tree untouched; git refuses paths outside the working tree.
  *
+ * A patch that is refused on policy (paths outside the workspace, protected
+ * directories such as `.git/` or `.claude/`, symbolic links) comes back with
+ * `refused: true`: it is not a patch that merely failed to apply, so the
+ * caller must not fall back to letting a worker write the change instead.
+ * Two layers decide: a scan of the patch text, then git's own report of the
+ * files and modes it reads in it. Nothing is written unless both pass.
+ *
  * No `--recount`: it rewrites hunk line counts to fit whatever body is
  * present, which hides a truncated diff. A hunk whose counts are wrong is
  * rejected instead, and the caller falls back or asks for a new preview.
  *
  * @param {string} cwd
  * @param {string} previewText
- * @returns {{ ok: true } | { ok: false, reason: string }}
+ * @returns {{ ok: true } | { ok: false, reason: string, refused?: boolean }}
  */
 export function applyApprovedDiff(cwd, previewText) {
   const diff = extractUnifiedDiff(previewText);
   if (!diff) return { ok: false, reason: "the preview contains no unified diff" };
 
-  const headers = diffHeaderPaths(diff);
-  const level = diffStripLevel(headers);
-  const targets = headers.map((p) => (level === 1 ? p.slice(2) : p));
-  const unsafe = targets.find((p) => path.isAbsolute(p) || /^[A-Za-z]:/.test(p) || p.split(/[\\/]/).includes(".."));
-  if (unsafe) return { ok: false, reason: `the diff names a path outside the workspace (${unsafe})` };
+  const level = diffStripLevel(diffHeaderPaths(diff));
+  const refusal = patchRefusal(diff);
+  if (refusal) return { ok: false, reason: refusal, refused: true };
+
+  // The patch names workspace-relative paths. Run inside a subdirectory of the
+  // repository, git reads a `diff --git` patch as root-relative and silently
+  // skips what lies outside that subdirectory (exit 0, nothing written), while
+  // a plain `---`/`+++` patch is read cwd-relative. Running from the repository
+  // root with `--directory=<workspace>` makes both mean the workspace.
+  const prefix = git(cwd, ["rev-parse", "--show-prefix"]).trim();
+  const top = prefix ? git(cwd, ["rev-parse", "--show-toplevel"]).trim() : "";
+  const fromRoot = Boolean(prefix && top);
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-apply-"));
   const patchFile = path.join(dir, "approved.patch");
   try {
     fs.writeFileSync(patchFile, diff, "utf-8");
-    const base = ["apply", `-p${level}`, "--whitespace=nowarn"];
-    const run = (extra) =>
-      spawnSync("git", [...base, ...extra, patchFile], { cwd, encoding: "utf-8", timeout: 60000 });
+    const base = ["apply", `-p${level}`, "--whitespace=nowarn", ...(fromRoot ? [`--directory=${prefix}`] : [])];
+    // C locale: git's refusals are matched by their English text below.
+    const env = { ...process.env, LC_ALL: "C", LANGUAGE: "C" };
+    const run = (/** @type {string[]} */ extra) =>
+      spawnSync("git", [...base, ...extra, "--", patchFile], {
+        cwd: fromRoot ? top : cwd,
+        encoding: "utf-8",
+        timeout: 60000,
+        env,
+      });
+
+    const gitRefusal = gitPatchRefusal(run, fromRoot ? prefix : "");
+    if (gitRefusal) return { ok: false, reason: gitRefusal, refused: true };
+
     const check = run(["--check"]);
-    if (check.status !== 0) {
-      const why = (check.stderr || check.error?.message || "git apply --check failed").trim().split("\n")[0];
-      return { ok: false, reason: why };
-    }
+    if (check.status !== 0) return gitFailure(check, "git apply --check failed");
     const applied = run([]);
-    if (applied.status !== 0) {
-      return { ok: false, reason: (applied.stderr || "git apply failed").trim().split("\n")[0] };
-    }
+    if (applied.status !== 0) return gitFailure(applied, "git apply failed");
     return { ok: true };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -951,6 +1195,10 @@ export async function handleRoleTool(registered, { task, files, confirm, preview
         stderr: "",
         timedOut: false,
       };
+    } else if (applied.refused) {
+      // A patch the bridge will not write is not a stale one: re-running the
+      // worker would just hand it the same write.
+      return errorResult(`the approved diff was refused (${applied.reason}); nothing was written.`);
     } else if (safetyMode === "interactive" && interactiveApprovalAvailable()) {
       // The operator approved this exact diff, not whatever a re-run writes;
       // writing anything else would bypass the human gate.
@@ -1020,10 +1268,10 @@ const FIELD_HINTS = {
  * @param {import("../config/roles.js").RoleInfo} role
  */
 function schemaFor(role) {
-  const [taskHint, filesHint] = FIELD_HINTS[role.id] || [
-    "The task for this role, with clear acceptance criteria",
-    "Optional context file paths",
-  ];
+  // Own keys only: a custom role may be called "constructor" or "toString".
+  const [taskHint, filesHint] = Object.hasOwn(FIELD_HINTS, role.id)
+    ? FIELD_HINTS[role.id]
+    : ["The task for this role, with clear acceptance criteria", "Optional context file paths"];
   const shape = {
     task: taskField.describe(taskHint),
     files: filesField.describe(filesHint),
@@ -1101,6 +1349,10 @@ export async function startServer() {
   // Set here, not at import: only a running bridge spawns workers, and a
   // module-level write would leak into any process that merely imports this.
   process.env[NESTED_ENV] = "1";
+  // The desktop app starts the bridge as Electron run as node. Node has booted
+  // by now, so drop the switch: worker CLIs and the Electron or Playwright
+  // tools they run would otherwise inherit it and start as plain Node.
+  delete process.env.ELECTRON_RUN_AS_NODE;
   // Connect before serving: the first tool call must already know its
   // session, and the tool list is built from that session's roles.
   engine = await connectEngine({ version: VERSION });

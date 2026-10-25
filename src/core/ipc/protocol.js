@@ -72,27 +72,35 @@ export function newEndpoint() {
  */
 export function readMessages(socket, onMessage, onError) {
   let buffer = "";
+  let failed = false;
+  /** @param {string} reason */
+  const fail = (reason) => {
+    failed = true;
+    buffer = "";
+    onError(new Error(reason));
+  };
   socket.setEncoding("utf8");
   socket.on("data", (chunk) => {
+    if (failed) return;
     buffer += chunk;
-    if (Buffer.byteLength(buffer) > MAX_LINE_BYTES && !buffer.includes("\n")) {
-      onError(new Error("message exceeds the size limit"));
-      return;
-    }
     let newline;
     while ((newline = buffer.indexOf("\n")) !== -1) {
-      const line = buffer.slice(0, newline).trim();
+      const raw = buffer.slice(0, newline);
       buffer = buffer.slice(newline + 1);
+      // A newline anywhere in the chunk must not let an earlier line past the limit.
+      if (Buffer.byteLength(raw) > MAX_LINE_BYTES) return fail("message exceeds the size limit");
+      const line = raw.trim();
       if (!line) continue;
       let message;
       try {
         message = JSON.parse(line);
       } catch {
-        onError(new Error("malformed message"));
-        return;
+        return fail("malformed message");
       }
       onMessage(message);
     }
+    // The unfinished line so far.
+    if (Buffer.byteLength(buffer) > MAX_LINE_BYTES) fail("message exceeds the size limit");
   });
 }
 

@@ -44,6 +44,8 @@ import { BRIDGE_SERVER_PATH } from "../../config/sync.js";
 import { kumoHome, ensureDir, atomicWriteJson } from "../../config/paths.js";
 import { formatResetTime } from "../../utils/ui.js";
 import { nodeCommand } from "../../core/node-command.js";
+import { bridgeEnvFrom } from "../../utils/process.js";
+import { activeProviders } from "../../config/roles.js";
 
 /** Permission rule that matches every tool the bridge exposes. */
 export const BRIDGE_TOOL_RULE = "mcp__kumo-bridge";
@@ -179,8 +181,17 @@ export class ClaudeAppClient extends GenericAppClient {
     return { args, stdin: prompt };
   }
 
+  /**
+   * Claude Code passes its own environment on to the stdio MCP servers it
+   * starts, and the bridge is one. The scrub would otherwise take the
+   * direct-API workers' keys and endpoints away from it, so the bridge's own
+   * names (and the keys of the worker providers the session assigns) are put
+   * back — never into the MCP config file, which sits on disk.
+   * The variables that would switch Claude Code off the subscription still go.
+   */
   childEnv(extra = {}) {
-    const env = super.childEnv(extra);
+    const providers = this.options.config ? activeProviders(this.options.config) : [];
+    const env = super.childEnv({ ...bridgeEnvFrom(process.env, providers), ...this.options.env, ...extra });
     for (const name of CLAUDE_AUTH_OVERRIDE_ENV) delete env[name];
     return env;
   }

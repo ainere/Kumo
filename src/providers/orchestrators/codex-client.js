@@ -33,7 +33,8 @@ import { fileURLToPath } from "node:url";
 import { findCodexBinary } from "./codex.js";
 import { isToolCallItem } from "./items.js";
 import { formatPlanType, formatResetTime } from "../../utils/ui.js";
-import { safeSpawn, stopProcessTree } from "../../utils/process.js";
+import { safeSpawn, stopProcessTree, childEnvFor, bridgeEnvFrom, bridgeEnvNames } from "../../utils/process.js";
+import { activeProviders } from "../../config/roles.js";
 import { nodeCommand } from "../../core/node-command.js";
 import { VERSION } from "../../version.js";
 
@@ -72,34 +73,8 @@ export const SERVER_REQUEST_DEFAULTS = {
 export const BRIDGE_SERVER_NAME = "kumo-bridge";
 
 /**
- * Variables (besides every `KUMO_*` one) the bridge needs from the session:
- * provider binary overrides, endpoint overrides, and the direct-API keys.
- */
-const BRIDGE_ENV_NAMES = new Set([
-  "AGY_BIN",
-  "GEMINI_BIN",
-  "CODEX_BIN",
-  "CLAUDE_BIN",
-  "OLLAMA_BIN",
-  "COPILOT_BIN",
-  "CURSOR_BIN",
-  "OPENCODE_BIN",
-  "COMMANDCODE_BIN",
-  "GEMINI_TIMEOUT_MS",
-  "OPENAI_BASE_URL",
-  "ANTHROPIC_BASE_URL",
-  "GEMINI_BASE_URL",
-  "GOOGLE_GENERATIVE_AI_BASE_URL",
-  "COMPAT_BASE_URL",
-  "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "GEMINI_API_KEY",
-  "GOOGLE_GENERATIVE_AI_API_KEY",
-  "COMPAT_API_KEY",
-]);
-
-/**
- * Names of the session variables to forward to the bridge.
+ * Names of the session variables to forward to the bridge. Besides every
+ * `KUMO_*` one these are the bridge's own names (`bridgeEnvNames`).
  *
  * Codex starts MCP servers with a filtered environment — verified against
  * codex-cli 0.153: an inherited variable does not arrive, one listed in
@@ -109,11 +84,13 @@ const BRIDGE_ENV_NAMES = new Set([
  * name keeps secret values out of the thread config Codex records.
  *
  * @param {Record<string, string|undefined>} env
+ * @param {string[]} [providers] - worker providers the session assigns
  * @returns {string[]}
  */
-export function bridgeEnvVarNames(env) {
+export function bridgeEnvVarNames(env, providers = []) {
+  const names = bridgeEnvNames(providers);
   return Object.keys(env)
-    .filter((k) => env[k] !== undefined && (k.startsWith("KUMO_") || BRIDGE_ENV_NAMES.has(k)))
+    .filter((k) => env[k] !== undefined && (k.startsWith("KUMO_") || names.has(k)))
     .sort();
 }
 
@@ -195,6 +172,21 @@ export class CodexAppClient extends EventEmitter {
   }
 
   /**
+   * The app-server's environment: the session's, minus credentials Codex does
+   * not need (see `childEnvFor`), plus the variables the session set for it.
+   *
+   * @returns {Record<string, string>}
+   */
+  _childEnv() {
+    return childEnvFor("codex", { ...bridgeEnvFrom(process.env, this._workerProviders()), ...this.options.env });
+  }
+
+  /** The worker providers this session assigns (empty when the client was given no settings). */
+  _workerProviders() {
+    return this.options.config ? activeProviders(this.options.config) : [];
+  }
+
+  /**
    * Start the background `codex app-server --stdio` process.
    */
   async start() {
@@ -215,10 +207,7 @@ export class CodexAppClient extends EventEmitter {
       try {
         this.proc = safeSpawn(this.bin, ["app-server", "--stdio"], {
           stdio: ["pipe", "pipe", "pipe"],
-          env: {
-            ...process.env,
-            ...this.options.env,
-          },
+          env: this._childEnv(),
         });
       } catch (err) {
         return reject(new Error(`Failed to spawn Codex app-server at '${this.bin}': ${err.message}`));
@@ -412,7 +401,7 @@ export class CodexAppClient extends EventEmitter {
         [BRIDGE_SERVER_NAME]: {
           command: node.command,
           args: [BRIDGE_SCRIPT, "--workspace", workspace],
-          env_vars: bridgeEnvVarNames({ ...process.env, ...this.options.env }),
+          env_vars: bridgeEnvVarNames(this._childEnv(), this._workerProviders()),
           // Inside the desktop app the command is Electron, which needs this
           // to run the script as node. Not a secret, so passed by value.
           ...(Object.keys(node.env).length > 0 ? { env: node.env } : {}),

@@ -138,8 +138,11 @@ export const CUSTOM_ROLE_ID_PATTERN = /^[a-z][a-z0-9-]{0,29}[a-z0-9]$/;
 
 /**
  * Ids a custom role cannot take: the built-in roles, words the CLI gives a
- * meaning (`lead`, `default`), and the suffixes of the built-in tools — a
- * custom `explore` would register a second `worker_explore`.
+ * meaning (`lead`, `default`), the tab ids of the desktop Workers panel
+ * (`all`, `other`), and the suffixes of the built-in tools — a custom
+ * `explore` would register a second `worker_explore`. Also the names
+ * every plain object carries (`constructor`, …): looked up by role id in an
+ * object literal, they find an inherited function instead of nothing.
  */
 export const RESERVED_ROLE_IDS = new Set([
   ...BUILTIN_ROLE_IDS,
@@ -150,6 +153,9 @@ export const RESERVED_ROLE_IDS = new Set([
   "custom",
   "default",
   "task",
+  "all",
+  "other",
+  ...Object.getOwnPropertyNames(Object.prototype).flatMap((name) => [name, name.toLowerCase()]),
 ]);
 
 export const MAX_CUSTOM_ROLES = 16;
@@ -255,7 +261,7 @@ function normalizeCustomRole(raw, index, seen) {
     throw new Error(`${where}.id must match ${CUSTOM_ROLE_ID_PATTERN} (lowercase letters, digits and '-', 2-31 chars)`);
   }
   where = `role '${id}'`;
-  if (RESERVED_ROLE_IDS.has(id)) throw new Error(`${where}: '${id}' is reserved; pick another id`);
+  if (RESERVED_ROLE_IDS.has(id)) throw new Error(`${where}: '${id}' is reserved; rename the role (change its id in the config, or add it again under another id)`);
   if (seen.has(id)) throw new Error(`${where} is defined twice`);
 
   const access = raw.access === undefined || raw.access === null || raw.access === "" ? "read" : String(raw.access).toLowerCase().trim();

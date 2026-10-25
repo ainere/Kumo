@@ -10,7 +10,7 @@
 
 import { EventEmitter } from "node:events";
 import { StringDecoder } from "node:string_decoder";
-import { safeSpawn, resolveBinary, stopProcessTree } from "../../utils/process.js";
+import { safeSpawn, resolveBinary, stopProcessTree, childEnvFor } from "../../utils/process.js";
 
 /** How much trailing stderr is kept to explain a failed turn. */
 const STDERR_TAIL_CHARS = 2000;
@@ -91,13 +91,14 @@ export class GenericAppClient extends EventEmitter {
   }
 
   /**
-   * Environment for a turn's process.
+   * Environment for a turn's process: the session's environment with
+   * credentials the CLI does not need removed (see `childEnvFor`).
    *
    * @param {Record<string, string>} extra
    * @returns {Record<string, string|undefined>}
    */
   childEnv(extra = {}) {
-    return { ...process.env, ...this.options.env, ...extra };
+    return childEnvFor(this.options.provider || this.command, { ...this.options.env, ...extra });
   }
 
   async startTurn(prompt, { model, effort } = {}) {

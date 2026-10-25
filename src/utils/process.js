@@ -240,8 +240,35 @@ export function clearBinaryCache() {
 /**
  * Environment variables that look like credentials. Anything matching is
  * removed from a child's environment unless the provider explicitly needs it.
+ *
+ * Beyond the usual `*_API_KEY` / `*_TOKEN` / `*_SECRET` / `*_PASSWORD` names it
+ * takes any `*_KEY` (SECRET_KEY, PRIVATE_KEY, STRIPE_KEY, …), database and
+ * broker connection URLs (DATABASE_URL, REDIS_URL, MONGODB_URI, …), webhook
+ * URLs, DSNs and connection strings, which embed credentials in the value.
+ * Endpoint overrides such as OPENAI_BASE_URL are deliberately not matched.
  */
-export const SECRET_ENV_RE = /(API_KEY|_TOKEN|_SECRET|PASSWORD|CREDENTIAL)/i;
+export const SECRET_ENV_RE = new RegExp(
+  [
+    "API_KEY|_TOKEN|_SECRET|PASSWORD|PASSWD|CREDENTIAL",
+    "^(TOKEN|SECRET)",
+    "_KEY$",
+    "(^|_)(DATABASE|DB|REDIS|MONGO|POSTGRES|MYSQL|MARIADB|AMQP|RABBITMQ|SQL)[A-Z0-9_]*_?(URL|URI)$",
+    "WEBHOOK|(^|_)DSN$|CONNECTION_?STRING",
+  ].join("|"),
+  "i"
+);
+
+/**
+ * System variables a child needs to find binaries and its profile, compared
+ * lower-case. They are never scrubbed, whatever {@link SECRET_ENV_RE} grows to
+ * match: stripping one of them breaks binary resolution on Windows.
+ */
+const SAFE_ENV_NAMES = new Set([
+  "path", "pathext", "home", "homedrive", "homepath", "userprofile", "appdata", "localappdata",
+  "systemroot", "systemdrive", "windir", "comspec", "temp", "tmp", "tmpdir", "term", "lang",
+  "shell", "user", "username", "logname", "programdata", "programfiles", "programfiles(x86)",
+  "programw6432", "computername", "os",
+]);
 
 /**
  * Per-provider credential allowlist. CLI workers authenticate from their own
@@ -253,7 +280,84 @@ const PROVIDER_ENV_KEEP = {
   "compat-api": ["OPENAI_API_KEY", "COMPAT_API_KEY"],
   "anthropic-api": ["ANTHROPIC_API_KEY"],
   "gemini-api": ["GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
+  // The subscription token `claude setup-token` prints, for a login made by
+  // environment instead of on disk. Cloud-provider credentials are deliberately
+  // not here: Kumo runs Claude Code on the subscription only.
+  claude: ["CLAUDE_CODE_OAUTH_TOKEN"],
+  // `gh copilot` authenticates from these when there is no stored login.
+  copilot: ["GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"],
+  // Cursor Agent's headless mode authenticates from its API key.
+  cursor: ["CURSOR_API_KEY"],
+  "gemini-cli": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+  ollama: ["OLLAMA_API_KEY"],
 };
+
+/**
+ * Variables (besides every `KUMO_*` one) the bridge needs from the session:
+ * provider binary overrides, endpoint overrides, and the direct-API keys. The
+ * single list both the Codex and the Claude orchestrator clients pass on.
+ */
+export const BRIDGE_ENV_NAMES = new Set([
+  "AGY_BIN",
+  "GEMINI_BIN",
+  "CODEX_BIN",
+  "CLAUDE_BIN",
+  "OLLAMA_BIN",
+  "COPILOT_BIN",
+  "CURSOR_BIN",
+  "OPENCODE_BIN",
+  "COMMANDCODE_BIN",
+  "GEMINI_TIMEOUT_MS",
+  "OPENAI_BASE_URL",
+  "ANTHROPIC_BASE_URL",
+  "GEMINI_BASE_URL",
+  "GOOGLE_GENERATIVE_AI_BASE_URL",
+  "COMPAT_BASE_URL",
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_GENERATIVE_AI_API_KEY",
+  "COMPAT_API_KEY",
+]);
+
+/**
+ * Every name a lead passes on to its bridge: the fixed list, plus the own keys
+ * of each worker provider the session actually assigns (`GH_TOKEN` for a
+ * Copilot worker, `CURSOR_API_KEY` for a Cursor one, …). Those would otherwise
+ * reach the lead and the bridge for nobody, so they follow the assignment; a
+ * worker switched in mid-session finds its key only after the lead restarts.
+ *
+ * @param {string[]} [providers] - worker providers in use, canonical ids
+ * @returns {Set<string>}
+ */
+export function bridgeEnvNames(providers = []) {
+  const names = new Set(BRIDGE_ENV_NAMES);
+  for (const provider of providers) {
+    const id = String(provider || "").toLowerCase();
+    if (Object.hasOwn(PROVIDER_ENV_KEEP, id)) for (const name of PROVIDER_ENV_KEEP[id]) names.add(name);
+  }
+  return names;
+}
+
+/**
+ * The bridge's own variables that `env` holds. `childEnvFor` removes
+ * credential-shaped names from an orchestrator's environment, and the keys
+ * among them are what the orchestrator passes on to the bridge it starts, so a
+ * lead's client hands them back through `extra`. Nothing else secret-looking
+ * goes along.
+ *
+ * @param {Record<string, string|undefined>} env
+ * @param {string[]} [providers] - worker providers in use, see {@link bridgeEnvNames}
+ * @returns {Record<string, string>}
+ */
+export function bridgeEnvFrom(env, providers = []) {
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const name of bridgeEnvNames(providers)) {
+    if (env[name] !== undefined) out[name] = env[name];
+  }
+  return out;
+}
 
 /**
  * Build the environment for a spawned provider CLI.
@@ -264,16 +368,24 @@ const PROVIDER_ENV_KEEP = {
  * APPDATA, ComSpec, TEMP, …) are preserved untouched — stripping those breaks
  * binary resolution on Windows.
  *
+ * `ELECTRON_RUN_AS_NODE` is dropped too: the desktop app sets it for the bridge
+ * only, and a child that inherited it would run Electron-based tools (and the
+ * provider CLIs themselves) as plain Node. A caller that really wants it passes
+ * it in `extra`.
+ *
  * @param {string} provider - worker/orchestrator provider id
  * @param {Record<string, string|undefined>} [extra={}] - variables to set after scrubbing
  * @returns {Record<string, string>}
  */
 export function childEnvFor(provider, extra = {}) {
   const env = { ...process.env };
-  const keep = new Set(PROVIDER_ENV_KEEP[String(provider || "").toLowerCase()] || []);
+  const id = String(provider || "").toLowerCase();
+  const keep = new Set(Object.hasOwn(PROVIDER_ENV_KEEP, id) ? PROVIDER_ENV_KEEP[id] : []);
 
   for (const key of Object.keys(env)) {
-    if (SECRET_ENV_RE.test(key) && !keep.has(key)) {
+    if (key.toUpperCase() === "ELECTRON_RUN_AS_NODE") {
+      delete env[key];
+    } else if (SECRET_ENV_RE.test(key) && !keep.has(key) && !SAFE_ENV_NAMES.has(key.toLowerCase())) {
       delete env[key];
     }
   }

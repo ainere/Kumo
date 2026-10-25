@@ -174,6 +174,12 @@ function sanitizeMessage(message, apiKey) {
     text = text.replaceAll(apiKey, "[REDACTED]");
   }
   text = text.replace(/(?:sk-|xoxb-|ghp_|gho_)[A-Za-z0-9_-]{10,}/g, "[REDACTED]");
+  // Google API keys, GitHub fine-grained tokens, Slack tokens, and whatever
+  // follows an Authorization-style `Bearer`.
+  text = text.replace(/AIza[0-9A-Za-z_-]{35}/g, "[REDACTED]");
+  text = text.replace(/github_pat_[0-9A-Za-z_]+/g, "[REDACTED]");
+  text = text.replace(/xox[abprs]-[0-9A-Za-z-]+/g, "[REDACTED]");
+  text = text.replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]");
   return text;
 }
 

@@ -105,7 +105,7 @@ You MAY use these skills when they genuinely help your assigned task:
  * @returns {string}
  */
 export function getSystemPrompt(role, opts = {}) {
-  const id = LEGACY_ROLE_NAMES[role] || role;
+  const id = Object.hasOwn(LEGACY_ROLE_NAMES, role) ? LEGACY_ROLE_NAMES[role] : role;
   const config = opts.config || {};
   const leadModel = config.orchestratorModel || "frontier orchestrator";
   const workerModel = opts.model || config.workerModel || "execution worker";

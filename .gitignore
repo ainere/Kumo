@@ -40,9 +40,11 @@ scratch/
 # Provider configs generated per-machine by `syncAgentConfigs`
 # (each bakes in an absolute path to this installation's bridge server)
 .claude/
-.codex/config.toml
-.codex/agents/
+.codex/
 *.bak
+
+# Conversations exported with /save (they can quote anything said in a session)
+kumo-session-*.md
 
 # Knowledge graph & build artifacts
 graphify-out/

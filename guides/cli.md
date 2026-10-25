@@ -50,7 +50,7 @@ Inside an interactive Kumo session (`kumo ›`), manage sessions, workspaces, mo
 - `/projects`: Interactive arrow-key menu to browse and switch registered project workspaces.
 - `/cd <path>`: Switch active workspace directory on the fly.
 - `/rename <title>`: Rename the active conversation thread.
-- `/save [file]`: Export conversation transcript to a Markdown document.
+- `/save [file]`: Export conversation transcript to a Markdown document inside the workspace (default `kumo-session-<date>.md`). Give a file name or a path under the workspace, ending in `.md`. Paths outside it, the `.git`, `.codex`, `.claude`, `.agents` and `.gemini` folders, hard-linked files, and agent-instruction files (`AGENTS.md`, `CLAUDE.md`, `CLAUDE.local.md`, `GEMINI.md`) are refused.
 
 ### Models & Reasoning
 - `/model`: Opens the interactive arrow-key model & provider picker.
