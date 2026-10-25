@@ -24,7 +24,7 @@ npm run start -w @kumo/desktop      # run the build
 
 ## Your own scenes
 
-Every `.js` or `.ts` file in `~/.kumo/scenes/` (or `$KUMO_HOME/scenes/`) is loaded as a scene script, and shows up in Settings › Appearance next to the built-in ones. A `.ts` file has its types stripped, nothing more: one file, no imports. That's also the place for scenes you can't redistribute: they never enter the app or the repository.
+Every `.js` or `.ts` file in `~/.kumo/scenes/` (or `$KUMO_HOME/scenes/`) is loaded as a scene script, and shows up in the scene gallery in Settings › Appearance next to the built-in ones. A file with an error gets a card you can't pick, with the error in its tooltip. A `.ts` file has its types stripped, nothing more: one file, no imports. That's also the place for scenes you can't redistribute: they never enter the app or the repository.
 
 A scene is one `defineScene` call. The runtime owns the canvas and the loop; the scene draws and reacts:
 

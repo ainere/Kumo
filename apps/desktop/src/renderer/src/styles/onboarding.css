@@ -4,12 +4,26 @@
 .onboarding-stage { flex: 1; min-height: 0; display: grid; place-items: center; padding: 24px; overflow-y: auto; }
 
 .onboarding.glass-strong {
+  position: relative; isolation: isolate;
   width: min(640px, 100%); display: flex; flex-direction: column; gap: 22px; padding: 28px 32px 24px;
   border-radius: 22px;
   backdrop-filter: blur(var(--glass-blur-deep)) saturate(180%);
-  box-shadow: var(--specular-strong), var(--lift-2);
+  box-shadow: var(--rim), var(--lift-2);
 }
 [data-transparency="reduced"] .onboarding.glass-strong { backdrop-filter: none; }
+/* The same glass as the Settings sheet: a sheen and the accent from the top, the frost over it. */
+.onboarding.glass-strong::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
+  background:
+    var(--sheen),
+    radial-gradient(80% 50% at 15% 0%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%);
+}
+.onboarding.glass-strong::after {
+  content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
+  background: var(--grain) 0 0 / 180px 180px;
+  opacity: var(--grain-opacity); mix-blend-mode: overlay;
+}
+[data-transparency="reduced"] .onboarding.glass-strong::after { display: none; }
 
 .onboarding-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .onboarding-head-text { min-width: 0; }
@@ -29,7 +43,7 @@
 .onboarding-step[data-state="current"] { color: var(--text); font-weight: 500; }
 .onboarding-step[data-state="current"] .onboarding-step-dot {
   border-color: transparent; background: var(--accent); color: var(--on-accent, #04121a);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent), 0 0 16px -2px color-mix(in srgb, var(--accent) 70%, transparent);
 }
 [data-mode="light"] .onboarding-step[data-state="current"] .onboarding-step-dot { color: var(--on-accent, #fff); }
 .onboarding-step[data-state="done"] { color: var(--muted); }
@@ -46,9 +60,10 @@
 .onboarding-list {
   list-style: none; margin: 0; padding: 4px; display: flex; flex-direction: column; gap: 2px;
   max-height: 290px; overflow-y: auto;
-  border-radius: 14px; border: 1px solid var(--border); background: var(--chip); box-shadow: var(--specular);
+  border-radius: 14px; border: 1px solid var(--border); background: var(--card); box-shadow: var(--specular), var(--lift-1);
 }
 .onboarding-row { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 10px 8px 12px; border-radius: 10px; }
+.onboarding-row:not(.onboarding-row-skel):hover { background: color-mix(in srgb, var(--text) 3.5%, transparent); }
 .onboarding-row + .onboarding-row { box-shadow: inset 0 1px 0 var(--border); }
 .onboarding-row[data-installed="false"] { opacity: 0.7; }
 .onboarding-row-text { flex: 1; min-width: 0; }
@@ -61,7 +76,7 @@
 .onboarding-note[data-tone="warn"] { color: var(--warn); }
 
 /* Step 2: the two pickers, label beside picker. */
-.onboarding-fields { display: flex; flex-direction: column; border-radius: 14px; border: 1px solid var(--border); background: var(--chip); box-shadow: var(--specular); }
+.onboarding-fields { display: flex; flex-direction: column; border-radius: 14px; border: 1px solid var(--border); background: var(--card); box-shadow: var(--specular), var(--lift-1); }
 .onboarding-field { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 20px; padding: 14px 16px; }
 .onboarding-field + .onboarding-field { border-top: 1px solid var(--border); }
 .onboarding-field-text { display: flex; flex-direction: column; gap: 3px; flex: 1 1 200px; min-width: 0; }
@@ -69,15 +84,25 @@
 /* Step 3: the folder, as one large target. */
 .onboarding-folder {
   display: flex; align-items: center; gap: 14px; width: 100%; padding: 16px 16px 16px 14px; text-align: left;
-  border-radius: 14px; border: 1px dashed color-mix(in srgb, var(--text) 22%, var(--border)); background: var(--chip); color: var(--text);
+  border-radius: 14px; border: 1px dashed color-mix(in srgb, var(--text) 22%, var(--border)); background: var(--well); color: var(--text);
 }
-.onboarding-folder:hover:not(:disabled) { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); background: var(--selected); }
-.onboarding-folder[data-chosen] { border-style: solid; border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); box-shadow: var(--specular); }
+.onboarding-folder:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 6%, var(--well));
+}
+.onboarding-folder:active:not(:disabled) { transform: scale(0.99); }
+.onboarding-folder[data-chosen] {
+  border-style: solid; border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 9%, transparent), transparent), var(--card);
+  box-shadow: var(--specular), var(--lift-1);
+}
 .onboarding-folder:disabled { opacity: 0.6; cursor: default; }
 .onboarding-folder-icon {
   width: 40px; height: 40px; flex: 0 0 40px; border-radius: 11px; display: grid; place-items: center;
   background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent);
+  box-shadow: var(--specular), 0 0 16px -6px color-mix(in srgb, var(--accent) 70%, transparent);
 }
+.onboarding-folder:hover:not(:disabled) .onboarding-folder-icon { transform: translateY(-1px) scale(1.04); }
 .onboarding-folder-icon svg { width: 18px; height: 18px; }
 .onboarding-folder-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .onboarding-folder-title { font-size: 14px; font-weight: 500; }
@@ -93,11 +118,16 @@
   :root:not([data-motion="reduced"]) .onboarding-body[data-dir="forward"] { animation: onboarding-step-forward 320ms var(--ease-out); }
   :root:not([data-motion="reduced"]) .onboarding-body[data-dir="back"] { animation: onboarding-step-back 320ms var(--ease-out); }
   :root:not([data-motion="reduced"]) .onboarding-step-dot { transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease, box-shadow 260ms var(--ease-out); }
-  :root:not([data-motion="reduced"]) .onboarding-folder { transition: border-color 160ms ease, background-color 160ms ease; }
+  :root:not([data-motion="reduced"]) .onboarding-step + .onboarding-step::before { transition: background-color 320ms ease; }
+  :root:not([data-motion="reduced"]) .onboarding-step[data-state="current"] .onboarding-step-dot { animation: onboarding-dot-in 420ms var(--ease-spring); }
+  :root:not([data-motion="reduced"]) .onboarding-folder { transition: border-color 160ms ease, background-color 160ms ease, transform 90ms ease; }
+  :root:not([data-motion="reduced"]) .onboarding-folder-icon { transition: transform 260ms var(--ease-spring); }
+  :root:not([data-motion="reduced"]) .onboarding-row { transition: background-color 140ms ease; }
 }
 @keyframes onboarding-in { from { opacity: 0; transform: translateY(14px) scale(0.985); } }
 @keyframes onboarding-step-forward { from { opacity: 0; transform: translateX(18px); filter: blur(2px); } }
 @keyframes onboarding-step-back { from { opacity: 0; transform: translateX(-18px); filter: blur(2px); } }
+@keyframes onboarding-dot-in { from { transform: scale(0.7); } }
 
 @media (max-width: 620px) {
   .onboarding.glass-strong { padding: 22px 20px 18px; }

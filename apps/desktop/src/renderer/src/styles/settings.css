@@ -1,8 +1,12 @@
 /* Settings: the full-height glass surface below the title bar, its nav rail,
    and the primitives every tab is built from (components/settings/controls.tsx).
-   Cards inside the surface use --chip, never their own blur: a blurred element
+   Cards inside the surface use tints, never their own blur: a blurred element
    inside another one only blurs what's inside its parent. Popovers and dialogs
-   are portaled to the body, so their glass blurs the window behind them. */
+   are portaled to the body, so their glass blurs the window behind them.
+
+   Depth, from the back: the sheet (frosted glass with a lit rim), cards on it
+   (tiles a touch brighter at the top), wells in a card (recessed), and
+   dialogs and popovers above it all. */
 
 /* ── depth tokens: light on the top edge of a sheet, and the drop under it ── */
 
@@ -11,27 +15,54 @@
   --scrim: rgb(2 4 10 / 0.5);
   --specular: inset 0 1px 0 rgb(255 255 255 / 0.05);
   --specular-strong: inset 0 1px 0 rgb(255 255 255 / 0.09);
+  /* A sheet's rim: lit along the top, a shade darker along the bottom. */
+  --rim: inset 0 1px 0 rgb(255 255 255 / 0.1), inset 0 0 0 1px rgb(255 255 255 / 0.025), inset 0 -1px 0 rgb(0 0 0 / 0.22);
+  --sheen: linear-gradient(180deg, rgb(255 255 255 / 0.035), transparent 180px);
   --lift-1: 0 1px 2px rgb(0 0 0 / 0.2), 0 6px 16px -8px rgb(0 0 0 / 0.4);
   --lift-2: 0 2px 6px rgb(0 0 0 / 0.22), 0 28px 64px -16px rgb(0 0 0 / 0.6);
+  --lift-hover: 0 2px 4px rgb(0 0 0 / 0.22), 0 16px 32px -14px rgb(0 0 0 / 0.7);
+  --card: linear-gradient(180deg, rgb(160 190 240 / 0.085), rgb(160 190 240 / 0.05));
+  --card-border-hover: rgb(160 190 240 / 0.24);
+  --well: rgb(3 6 13 / 0.3);
+  --well-inset: inset 0 1px 2px rgb(0 0 0 / 0.3), inset 0 0 0 1px rgb(160 190 240 / 0.05);
   --field: rgb(3 6 13 / 0.45);
   --field-inset: inset 0 1px 2px rgb(0 0 0 / 0.3);
-  --rail: rgb(3 6 13 / 0.2);
+  --rail: linear-gradient(180deg, rgb(3 6 13 / 0.12), rgb(3 6 13 / 0.26));
+  --grain-opacity: 0.07;
 }
 [data-mode="light"] {
   --scrim: rgb(14 22 38 / 0.2);
   --specular: inset 0 1px 0 rgb(255 255 255 / 0.65);
   --specular-strong: inset 0 1px 0 rgb(255 255 255 / 0.9);
-  --lift-1: 0 1px 2px rgb(14 22 38 / 0.06), 0 6px 16px -8px rgb(14 22 38 / 0.14);
+  --rim: inset 0 1px 0 rgb(255 255 255 / 0.95), inset 0 0 0 1px rgb(255 255 255 / 0.35), inset 0 -1px 0 rgb(14 30 60 / 0.05);
+  --sheen: linear-gradient(180deg, rgb(255 255 255 / 0.45), transparent 180px);
+  --lift-1: 0 1px 2px rgb(14 22 38 / 0.05), 0 6px 16px -8px rgb(14 22 38 / 0.12);
   --lift-2: 0 2px 6px rgb(14 22 38 / 0.06), 0 28px 64px -16px rgb(14 22 38 / 0.24);
+  --lift-hover: 0 2px 4px rgb(14 22 38 / 0.06), 0 16px 32px -14px rgb(14 22 38 / 0.24);
+  --card: linear-gradient(180deg, rgb(255 255 255 / 0.7), rgb(255 255 255 / 0.48));
+  --card-border-hover: rgb(14 30 60 / 0.17);
+  --well: rgb(14 30 60 / 0.035);
+  --well-inset: inset 0 1px 2px rgb(14 22 38 / 0.05), inset 0 0 0 1px rgb(14 30 60 / 0.045);
   --field: rgb(255 255 255 / 0.7);
   --field-inset: inset 0 1px 2px rgb(14 22 38 / 0.06);
-  --rail: rgb(255 255 255 / 0.22);
+  --rail: linear-gradient(180deg, rgb(255 255 255 / 0.3), rgb(255 255 255 / 0.14));
+  --grain-opacity: 0.05;
 }
 :root {
-  /* The settings sheet and dialogs sit a layer above the panels: deeper glass, from the same preference. */
-  --glass-blur-deep: calc(var(--glass-blur) * 1.8);
+  /* The settings sheet and dialogs sit a layer above the panels: deeper glass,
+     from the same preference (32px at the default 18px). */
+  --glass-blur-deep: calc(var(--glass-blur) * 16 / 9);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+  /* A touch of overshoot, for things that land: dialogs, checks. */
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent), 0 0 18px -4px color-mix(in srgb, var(--accent) 55%, transparent);
+  /* Keyboard focus: a crisp accent edge, a halo, and a glow around both. */
+  --focus-glow:
+    0 0 0 1.5px color-mix(in srgb, var(--accent) 92%, transparent),
+    0 0 0 4.5px color-mix(in srgb, var(--accent) 20%, transparent),
+    0 0 22px -2px color-mix(in srgb, var(--accent) 55%, transparent);
+  /* Frost: a fine noise over the glass, under everything on it. */
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)'/%3E%3C/svg%3E");
 }
 
 /* ── surface ── */
@@ -41,14 +72,24 @@
   display: flex; min-height: 0;
   border-radius: var(--radius-panel); overflow: hidden;
   backdrop-filter: blur(var(--glass-blur-deep)) saturate(180%);
-  box-shadow: var(--specular-strong), var(--lift-2);
+  box-shadow: var(--rim), var(--lift-2);
 }
 [data-transparency="reduced"] .settings.glass { backdrop-filter: none; }
-/* A faint wash of the accent from the top-left corner, under everything on the sheet. */
+/* Under everything on the sheet: a sheen along the top, and a faint wash of the accent from two corners. */
 .settings::before {
   content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
-  background: radial-gradient(90% 55% at 0% 0%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 70%);
+  background:
+    var(--sheen),
+    radial-gradient(90% 55% at 0% 0%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 70%),
+    radial-gradient(55% 45% at 100% 100%, color-mix(in srgb, var(--accent) 3.5%, transparent), transparent 70%);
 }
+/* The frost: what makes the sheet read as glass rather than a tint. */
+.settings::after {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: var(--grain) 0 0 / 180px 180px;
+  opacity: var(--grain-opacity); mix-blend-mode: overlay;
+}
+[data-transparency="reduced"] .settings::after { display: none; }
 
 /* The nav rail: a slightly deeper pane, one tab per section. */
 .settings-rail {
@@ -56,12 +97,19 @@
   padding: 14px 10px 12px; border-right: 1px solid var(--border); overflow-y: auto;
   background: var(--rail);
 }
-/* The selected tab's pill slides between tabs (--at, set inline). */
+/* The selected tab's pill slides between tabs (--at, set inline), and its
+   accent mark trails it a little, so the move reads. */
 .settings-rail-tabs { position: relative; display: flex; flex-direction: column; gap: 2px; }
 .settings-rail-tabs::before {
   content: ""; position: absolute; left: 0; right: 0; top: 0; height: 36px; pointer-events: none;
   border-radius: 9px; border: 1px solid var(--border); background: var(--selected);
-  box-shadow: var(--specular);
+  box-shadow: var(--specular), var(--lift-1);
+  transform: translateY(calc(var(--at, 0) * 38px));
+}
+.settings-rail-tabs::after {
+  content: ""; position: absolute; left: 1px; top: 10px; width: 3px; height: 16px; pointer-events: none;
+  border-radius: 0 3px 3px 0; background: var(--accent);
+  box-shadow: 0 0 10px 1px color-mix(in srgb, var(--accent) 60%, transparent);
   transform: translateY(calc(var(--at, 0) * 38px));
 }
 .settings-tab {
@@ -73,8 +121,9 @@
 .settings-tab svg { flex: 0 0 auto; color: var(--faint); }
 .settings-tab:hover:not([aria-selected="true"]) { background: var(--chip); color: var(--text); }
 .settings-tab:hover svg { color: var(--muted); }
+.settings-tab:active:not([aria-selected="true"]) { transform: scale(0.98); }
 .settings-tab[aria-selected="true"] { color: var(--text); font-weight: 500; }
-.settings-tab[aria-selected="true"] svg { color: var(--accent); }
+.settings-tab[aria-selected="true"] svg { color: var(--accent); filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 55%, transparent)); }
 .settings-rail-hint { margin-top: auto; padding: 10px 10px 2px; font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
 .settings-rail-hint kbd {
   font-family: inherit; font-size: 10.5px; padding: 1px 5px; margin-right: 4px;
@@ -107,19 +156,23 @@
 
 .settings-section { display: flex; flex-direction: column; gap: 8px; }
 .settings-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 22px; }
-/* The sidebar's small caps. */
-.settings-section-label { margin: 0; padding: 0 2px; font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+/* The sidebar's small caps, with a hairline that runs out toward the section's actions. */
+.settings-section-label {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px;
+  margin: 0; padding: 0 2px; font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint);
+}
+.settings-section-label::after { content: ""; flex: 1; min-width: 24px; height: 1px; background: linear-gradient(90deg, var(--border), transparent 85%); }
 .settings-section-actions { display: flex; align-items: center; gap: 8px; margin-right: 16px; }
 .settings-section-hint { margin: -2px 0 2px; padding: 0 2px; max-width: 80ch; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
 .settings-section-body { display: flex; flex-direction: column; gap: 10px; }
 .settings-card {
-  border-radius: 14px; border: 1px solid var(--border); background: var(--chip);
-  box-shadow: var(--specular);
+  border-radius: 14px; border: 1px solid var(--border); background: var(--card);
+  box-shadow: var(--specular), var(--lift-1);
   display: flex; flex-direction: column;
 }
 
 .settings-row { display: flex; align-items: center; flex-wrap: wrap; column-gap: 24px; row-gap: 10px; min-height: 58px; padding: 12px 16px; }
-.settings-row + .settings-row { border-top: 1px solid var(--border); }
+.settings-row + .settings-row { border-top: 1px solid color-mix(in srgb, var(--border) 75%, transparent); }
 .settings-row-text { flex: 1 1 240px; min-width: 0; }
 .settings-row-label { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 14px; font-weight: 500; line-height: 1.35; }
 .settings-row-hint { margin-top: 3px; max-width: 72ch; font-size: 12.5px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
@@ -133,7 +186,7 @@
 /* Callout: one message about the page (an error, a repair's result), with its action. */
 .settings-callout {
   display: flex; align-items: center; gap: 12px; padding: 11px 12px 11px 16px;
-  border-radius: 12px; border: 1px solid var(--border); background: var(--chip); box-shadow: var(--specular);
+  border-radius: 12px; border: 1px solid var(--border); background: var(--card); box-shadow: var(--specular);
   font-size: 13px; line-height: 1.5;
 }
 .settings-callout-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -146,14 +199,15 @@
 /* Segmented inside a row: one line, sized to its options. */
 .settings-row .segmented { flex-wrap: nowrap; }
 .settings-row .segmented button { flex: 0 0 auto; padding: 0 12px; }
-:is(.settings, .modal, .onboarding) .segmented { box-shadow: var(--field-inset); }
+:is(.settings, .modal, .onboarding) .segmented { background: var(--well); box-shadow: var(--well-inset); }
 :is(.settings, .modal, .onboarding) .segmented button[aria-checked="true"] {
-  background: var(--selected); color: var(--text); box-shadow: var(--specular), 0 1px 2px rgb(0 0 0 / 0.18);
+  background: var(--selected); color: var(--text); box-shadow: var(--specular), 0 1px 2px rgb(0 0 0 / 0.18), 0 4px 10px -6px rgb(0 0 0 / 0.4);
 }
-.segmented button:hover:not([aria-checked="true"]):not(:disabled) { color: var(--text); }
+.segmented button:hover:not([aria-checked="true"]):not(:disabled) { color: var(--text); background: color-mix(in srgb, var(--text) 4%, transparent); }
+.segmented button:active:not([aria-checked="true"]):not(:disabled) { transform: scale(0.97); }
 .segmented button:disabled { cursor: default; opacity: 0.5; }
 
-/* Toggle: a switch, the accent when on. */
+/* Toggle: a switch, the accent when on, with a little glow. */
 .switch {
   position: relative; flex: 0 0 36px; width: 36px; height: 20px; padding: 0;
   border-radius: 999px; border: 1px solid var(--border); background: var(--track); box-shadow: var(--field-inset);
@@ -163,10 +217,10 @@
   background: var(--muted); box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
 }
 .switch[aria-checked="true"] {
-  background: var(--accent); border-color: transparent;
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.2), 0 3px 10px -4px color-mix(in srgb, var(--accent) 80%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 82%, white), var(--accent)); border-color: transparent;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22), 0 3px 12px -3px color-mix(in srgb, var(--accent) 85%, transparent);
 }
-.switch[aria-checked="true"] .switch-thumb { transform: translateX(16px); background: #fff; }
+.switch[aria-checked="true"] .switch-thumb { transform: translateX(16px); background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 0.3); }
 /* A press stretches the thumb toward where it's going. */
 .switch:active:not(:disabled) .switch-thumb { width: 17px; }
 .switch[aria-checked="true"]:active:not(:disabled) .switch-thumb { transform: translateX(13px); }
@@ -196,21 +250,23 @@
 }
 .slider-input:active:not(:disabled)::-webkit-slider-thumb { transform: scale(1.05); }
 .slider-input:focus-visible { outline: none; }
-.slider-input:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--accent); outline-offset: 2px; }
 .slider-input:disabled { opacity: 0.5; cursor: default; }
 
 .status-dot { display: inline-block; width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--faint); }
-.status-dot[data-status="ok"] { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent); }
-.status-dot[data-status="warn"] { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent); }
-.status-dot[data-status="fail"] { background: var(--bad); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 18%, transparent); }
+.status-dot[data-status="ok"] { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent), 0 0 8px color-mix(in srgb, var(--ok) 45%, transparent); }
+.status-dot[data-status="warn"] { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent), 0 0 8px color-mix(in srgb, var(--warn) 45%, transparent); }
+.status-dot[data-status="fail"] { background: var(--bad); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 18%, transparent), 0 0 8px color-mix(in srgb, var(--bad) 45%, transparent); }
 
+/* Badges: quiet tags for facts (a plan, a version, "Read-only"); a tone for state. */
 .badge {
   display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: 6px; flex: 0 0 auto;
-  border: 1px solid var(--border); background: var(--selected); color: var(--muted);
-  font-size: 11px; font-weight: 500; line-height: 1; white-space: nowrap;
+  border: 1px solid transparent; background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--muted);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 5%, transparent);
+  font-size: 11px; font-weight: 500; line-height: 1; letter-spacing: 0.01em; white-space: nowrap;
 }
 .badge svg { width: 11px; height: 11px; }
-.badge[data-mono] { font-family: var(--font-mono); font-size: 10.5px; font-weight: 400; }
+.badge[data-mono] { font-family: var(--font-mono); font-size: 10.5px; font-weight: 400; letter-spacing: 0; }
+.badge:is([data-tone="accent"], [data-tone="ok"], [data-tone="warn"], [data-tone="fail"]) { box-shadow: none; }
 .badge[data-tone="accent"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 36%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .badge[data-tone="ok"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 34%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
 .badge[data-tone="warn"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
@@ -226,10 +282,15 @@
 :is(.settings, .modal, .onboarding, .popover-panel) .btn:active:not(:disabled) { transform: translateY(1px); }
 :is(.settings, .modal, .onboarding, .popover-panel) .btn.primary {
   color: var(--on-accent, #04121a);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 86%, white), var(--accent));
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22), 0 6px 18px -8px color-mix(in srgb, var(--accent) 85%, transparent);
 }
 [data-mode="light"] :is(.settings, .modal, .onboarding, .popover-panel) .btn.primary { color: var(--on-accent, #fff); }
-:is(.settings, .modal, .onboarding, .popover-panel) .btn.primary:hover:not(:disabled) { border-color: transparent; filter: brightness(1.07); }
+:is(.settings, .modal, .onboarding, .popover-panel) .btn.primary:hover:not(:disabled) {
+  border-color: transparent; filter: brightness(1.07);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.26), 0 8px 26px -8px color-mix(in srgb, var(--accent) 95%, transparent);
+}
+:is(.settings, .modal, .onboarding, .popover-panel) .btn.primary:active:not(:disabled) { filter: brightness(0.97); }
 .btn.danger { color: var(--bad); }
 .btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--bad) 12%, transparent); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
 /* A button whose label is a quiet link: "Reset to theme", "Skip setup". */
@@ -255,7 +316,7 @@
 :is(.field, .roles-input, .acct-input):hover:not(:disabled):not(:focus) { border-color: color-mix(in srgb, var(--text) 16%, var(--border)); }
 :is(.field, .roles-input, .acct-input):focus { border-color: color-mix(in srgb, var(--accent) 70%, var(--border)); box-shadow: var(--field-inset), var(--ring); }
 :is(.field, .roles-input, .acct-input)[aria-invalid="true"] { border-color: color-mix(in srgb, var(--bad) 60%, var(--border)); }
-:is(.field, .roles-input, .acct-input)[aria-invalid="true"]:focus { box-shadow: var(--field-inset), 0 0 0 3px color-mix(in srgb, var(--bad) 22%, transparent); }
+:is(.field, .roles-input, .acct-input)[aria-invalid="true"]:focus { box-shadow: var(--field-inset), 0 0 0 3px color-mix(in srgb, var(--bad) 22%, transparent), 0 0 18px -4px color-mix(in srgb, var(--bad) 50%, transparent); }
 :is(.field, .roles-input, .acct-input):disabled { opacity: 0.55; }
 :is(.field, .roles-input)[data-mono] { font-family: var(--font-mono); font-size: 12.5px; }
 textarea.field { height: auto; min-height: 76px; padding: 8px 11px; line-height: 1.5; resize: vertical; font-family: inherit; }
@@ -281,7 +342,7 @@ textarea.field { height: auto; min-height: 76px; padding: 8px 11px; line-height:
   transform: rotate(-45deg) scale(0.4); opacity: 0;
 }
 [data-mode="light"] .check input::after { border-color: var(--on-accent, #fff); }
-.check input:checked { background: var(--accent); border-color: transparent; }
+.check input:checked { background: var(--accent); border-color: transparent; box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--accent) 80%, transparent); }
 .check input:checked::after { opacity: 1; transform: rotate(-45deg) scale(1); }
 .check:hover { color: var(--text); }
 
@@ -289,25 +350,34 @@ textarea.field { height: auto; min-height: 76px; padding: 8px 11px; line-height:
 
 .popover-panel, .model-popover {
   position: fixed; z-index: 60; border-radius: 12px; padding: 6px; overflow-y: auto;
-  box-shadow: var(--specular-strong), var(--lift-2);
+  box-shadow: var(--rim), var(--lift-2);
 }
 :is(.popover-panel, .model-popover).menu-surface { backdrop-filter: blur(32px) saturate(180%); }
 [data-transparency="reduced"] :is(.popover-panel, .model-popover).menu-surface { backdrop-filter: none; }
 
 /* ── dialogs ── */
 
+/* No blur on the scrim: the dialog's own glass blurs the window behind it,
+   and a blurred parent would leave it only the scrim to blur. */
 .modal-scrim {
   position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 24px;
-  background: var(--scrim);
+  background: radial-gradient(120% 90% at 50% 42%, color-mix(in srgb, var(--scrim) 60%, transparent), var(--scrim));
   /* Over the title bar too, so the window doesn't drag from under a dialog. */
   -webkit-app-region: no-drag;
 }
 .modal {
+  position: relative;
   width: min(460px, 100%); max-height: calc(100vh - 48px); overflow-y: auto;
   padding: 22px 22px 18px; border-radius: 18px; display: flex; flex-direction: column; gap: 14px;
 }
-.modal.menu-surface { backdrop-filter: blur(32px) saturate(180%); box-shadow: var(--specular-strong), var(--lift-2); }
+.modal.menu-surface { backdrop-filter: blur(32px) saturate(180%); box-shadow: var(--rim), var(--lift-2); }
 [data-transparency="reduced"] .modal.menu-surface { backdrop-filter: none; }
+/* The dialog's top edge catches the accent. */
+.modal::before {
+  content: ""; position: absolute; top: 0; left: 14%; right: 14%; height: 1px; pointer-events: none;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 65%, transparent), transparent);
+  box-shadow: 0 0 14px 1px color-mix(in srgb, var(--accent) 30%, transparent);
+}
 .modal[data-size="md"] { width: min(560px, 100%); }
 .modal[data-size="lg"] { width: min(720px, 100%); }
 .modal:focus { outline: none; }
@@ -317,32 +387,48 @@ textarea.field { height: auto; min-height: 76px; padding: 8px 11px; line-height:
 .modal-body p { margin: 0; }
 .modal-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 6px; }
 
-/* ── motion: one sliding pill, pages that settle into focus, sheets that rise ── */
+/* ── motion: one sliding pill, pages that rise in by section, dialogs that land ── */
 
 @media (prefers-reduced-motion: no-preference) {
   .settings { animation: settings-in 260ms var(--ease-out); }
-  .settings-page { animation: settings-page-in 300ms var(--ease-out); }
+  /* Backwards only: a fill that outlived the animation would leave each section
+     its own stacking context, and a tooltip could slip under the next one. */
+  .settings-page > * { animation: settings-rise 420ms var(--ease-out) backwards; }
+  .settings-page > :nth-child(2) { animation-delay: 35ms; }
+  .settings-page > :nth-child(3) { animation-delay: 70ms; }
+  .settings-page > :nth-child(4) { animation-delay: 105ms; }
+  .settings-page > :nth-child(5) { animation-delay: 140ms; }
+  .settings-page > :nth-child(n + 6) { animation-delay: 175ms; }
   .settings-rail-tabs::before { transition: transform 340ms var(--ease-out); }
+  .settings-rail-tabs::after { transition: transform 460ms var(--ease-out); }
   .switch, .switch-thumb { transition: background-color 160ms ease, border-color 160ms ease, box-shadow 200ms ease, width 160ms var(--ease-out), transform 220ms var(--ease-out); }
-  .settings-tab, .segmented button { transition: background-color 120ms ease, color 120ms ease, box-shadow 160ms ease; }
+  .settings-tab, .segmented button { transition: background-color 120ms ease, color 120ms ease, box-shadow 160ms ease, transform 120ms ease; }
+  .settings-tab svg { transition: color 120ms ease, filter 200ms ease; }
   .slider-input::-webkit-slider-thumb { transition: transform 160ms var(--ease-out), box-shadow 160ms ease; }
-  :is(.settings, .modal, .onboarding, .popover-panel) .btn { transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, filter 140ms ease, transform 90ms ease; }
+  :is(.settings, .modal, .onboarding, .popover-panel) .btn { transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, filter 140ms ease, box-shadow 180ms ease, transform 90ms ease; }
   :is(.field, .roles-input, .acct-input) { transition: border-color 140ms ease, box-shadow 180ms ease; }
-  .check input, .check input::after { transition: background-color 140ms ease, opacity 140ms ease, transform 180ms var(--ease-out); }
-  .modal-scrim { animation: scrim-in 160ms ease; }
-  .modal { animation: modal-in 280ms var(--ease-out); }
-  .popover-panel, .model-popover { animation: popover-in 180ms var(--ease-out); transform-origin: top center; }
-  :is(.popover-panel, .model-popover)[data-placement="above"] { transform-origin: bottom center; }
+  .check input, .check input::after { transition: background-color 140ms ease, box-shadow 160ms ease, opacity 140ms ease, transform 220ms var(--ease-spring); }
+  .modal-scrim { animation: scrim-in 200ms ease; }
+  .modal { animation: modal-in 380ms var(--ease-spring) backwards; }
+  .modal > * { animation: modal-part-in 320ms var(--ease-out) 50ms backwards; }
+  .modal > :nth-child(n + 3) { animation-delay: 90ms; }
+  .modal > .modal-actions { animation-delay: 130ms; }
+  .popover-panel, .model-popover { animation: popover-in 200ms var(--ease-out); transform-origin: top center; }
+  :is(.popover-panel, .model-popover)[data-placement="above"] { animation-name: popover-in-above; transform-origin: bottom center; }
 }
-:root[data-motion="reduced"] :is(.settings, .settings-page, .modal-scrim, .modal, .popover-panel, .model-popover) { animation: none; }
-:root[data-motion="reduced"] :is(.switch, .switch-thumb, .settings-tab, .segmented button, .btn, .field, .roles-input, .acct-input) { transition: none; }
-:root[data-motion="reduced"] .settings-rail-tabs::before { transition: none; }
+:root[data-motion="reduced"] :is(.settings, .settings-page > *, .modal-scrim, .modal, .modal > *, .popover-panel, .model-popover) { animation: none; }
+:root[data-motion="reduced"] :is(.switch, .switch-thumb, .settings-tab, .settings-tab svg, .segmented button, .btn, .field, .roles-input, .acct-input, .check input) { transition: none; }
+:root[data-motion="reduced"] .settings-rail-tabs::before,
+:root[data-motion="reduced"] .settings-rail-tabs::after,
+:root[data-motion="reduced"] .check input::after { transition: none; }
 
 @keyframes settings-in { from { opacity: 0; transform: translateY(6px) scale(0.995); } }
-@keyframes settings-page-in { from { opacity: 0; transform: translateY(6px); filter: blur(3px); } }
+@keyframes settings-rise { from { opacity: 0; transform: translateY(10px); } }
 @keyframes scrim-in { from { opacity: 0; } }
-@keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(0.97); } }
-@keyframes popover-in { from { opacity: 0; transform: scale(0.97); } }
+@keyframes modal-in { from { opacity: 0; transform: translateY(16px) scale(0.955); } }
+@keyframes modal-part-in { from { opacity: 0; transform: translateY(5px); } }
+@keyframes popover-in { from { opacity: 0; transform: translateY(-4px) scale(0.97); } }
+@keyframes popover-in-above { from { opacity: 0; transform: translateY(4px) scale(0.97); } }
 @keyframes settings-spin { to { transform: rotate(360deg); } }
 
 /* ── Appearance: accent swatches and the color popover ── */
@@ -357,7 +443,10 @@ textarea.field { height: auto; min-height: 76px; padding: 8px 11px; line-height:
 }
 .accent-swatch svg { width: 12px; height: 12px; opacity: 0; transform: scale(0.6); }
 .accent-swatch:hover { transform: scale(1.1); }
-.accent-swatch[aria-checked="true"] { box-shadow: 0 0 0 2px rgb(var(--glass-strong-rgb)), 0 0 0 3.5px var(--swatch); }
+.accent-swatch:active { transform: scale(0.94); }
+.accent-swatch[aria-checked="true"] {
+  box-shadow: 0 0 0 2px rgb(var(--glass-strong-rgb)), 0 0 0 3.5px var(--swatch), 0 0 14px -2px var(--swatch);
+}
 .accent-swatch[aria-checked="true"] svg { opacity: 1; transform: none; }
 .accent-divider { width: 1px; height: 22px; background: var(--border); }
 /* The custom color: its swatch and hex, the trigger for the popover. */
@@ -379,9 +468,11 @@ textarea.field { height: auto; min-height: 76px; padding: 8px 11px; line-height:
 }
 .accent-custom svg { color: var(--faint); }
 @media (prefers-reduced-motion: no-preference) {
-  .accent-swatch { transition: transform 180ms var(--ease-out), box-shadow 180ms ease; }
-  .accent-swatch svg { transition: opacity 140ms ease, transform 200ms var(--ease-out); }
+  :root:not([data-motion="reduced"]) .accent-swatch { transition: transform 220ms var(--ease-spring), box-shadow 180ms ease; }
+  :root:not([data-motion="reduced"]) .accent-swatch svg { transition: opacity 140ms ease, transform 260ms var(--ease-spring); }
+  :root:not([data-motion="reduced"]) .accent-custom svg { transition: transform 220ms var(--ease-out); }
 }
+.accent-custom[aria-expanded="true"] svg { transform: rotate(180deg); }
 
 .color-popover { width: 256px; padding: 12px; display: flex; flex-direction: column; gap: 12px; overflow: visible; }
 .color-plane {
@@ -396,7 +487,6 @@ textarea.field { height: auto; min-height: 76px; padding: 8px 11px; line-height:
   background: linear-gradient(to right, #f00, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00);
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.08);
 }
-.color-plane:focus-visible, .color-hue:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .color-thumb {
   position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; pointer-events: none;
   background: var(--swatch); border: 2px solid #fff;
@@ -407,7 +497,7 @@ textarea.field { height: auto; min-height: 76px; padding: 8px 11px; line-height:
 .color-popover-row .field { flex: 1; height: 32px; }
 .color-preview {
   width: 32px; height: 32px; flex: 0 0 32px; border-radius: 9px; background: var(--swatch);
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.16);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.16), 0 4px 14px -6px var(--swatch);
 }
 .color-popover-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
@@ -415,59 +505,189 @@ textarea.field { height: auto; min-height: 76px; padding: 8px 11px; line-height:
 
 .tier-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
 .tier-card {
-  display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 14px 16px 16px; min-height: 108px;
-  border-radius: 14px; border: 1px solid var(--border); background: var(--chip); box-shadow: var(--specular);
+  position: relative; display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 14px 16px 16px; min-height: 108px;
+  border-radius: 14px; border: 1px solid var(--border); background: var(--card); box-shadow: var(--specular), var(--lift-1);
   text-align: left; color: var(--text);
 }
-.tier-card:hover:not([aria-checked="true"]) { border-color: color-mix(in srgb, var(--text) 16%, var(--border)); background: var(--selected); }
+.tier-card:hover:not([aria-checked="true"]) { border-color: var(--card-border-hover); transform: translateY(-1px); box-shadow: var(--specular), var(--lift-hover); }
+.tier-card:active { transform: scale(0.99); }
 .tier-card[aria-checked="true"] {
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 12%, transparent), color-mix(in srgb, var(--accent) 4%, transparent)), var(--chip);
-  box-shadow: var(--specular-strong), 0 8px 24px -14px color-mix(in srgb, var(--accent) 80%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 13%, transparent), color-mix(in srgb, var(--accent) 4%, transparent)), var(--card);
+  box-shadow: var(--specular-strong), 0 10px 28px -14px color-mix(in srgb, var(--accent) 85%, transparent);
 }
 .tier-card-head { display: flex; align-items: center; gap: 10px; }
 .tier-card-icon {
   width: 28px; height: 28px; flex: 0 0 28px; border-radius: 8px; display: grid; place-items: center;
   background: var(--selected); color: var(--muted); box-shadow: var(--specular);
 }
-.tier-card[aria-checked="true"] .tier-card-icon { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.tier-card[aria-checked="true"] .tier-card-icon {
+  background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent);
+  box-shadow: var(--specular), 0 0 14px -4px color-mix(in srgb, var(--accent) 70%, transparent);
+}
 .tier-card-name { flex: 1; font-size: 14.5px; font-weight: 600; letter-spacing: -0.005em; }
 .tier-card-check {
   width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
   background: var(--accent); color: var(--on-accent, #04121a); opacity: 0; transform: scale(0.6);
+  box-shadow: 0 0 10px -2px color-mix(in srgb, var(--accent) 80%, transparent);
 }
 [data-mode="light"] .tier-card-check { color: var(--on-accent, #fff); }
 .tier-card-check svg { width: 11px; height: 11px; }
 .tier-card[aria-checked="true"] .tier-card-check { opacity: 1; transform: none; }
 .tier-card-desc { font-size: 12.5px; line-height: 1.5; color: var(--muted); }
 @media (prefers-reduced-motion: no-preference) {
-  :root:not([data-motion="reduced"]) .tier-card { transition: border-color 160ms ease, background-color 160ms ease, box-shadow 220ms ease; }
-  :root:not([data-motion="reduced"]) .tier-card-check { transition: opacity 160ms ease, transform 240ms var(--ease-out); }
+  :root:not([data-motion="reduced"]) .tier-card { transition: border-color 160ms ease, background-color 160ms ease, box-shadow 220ms ease, transform 220ms var(--ease-out); }
+  :root:not([data-motion="reduced"]) .tier-card-check { transition: opacity 160ms ease, transform 320ms var(--ease-spring); }
+  :root:not([data-motion="reduced"]) .tier-card-icon { transition: background-color 160ms ease, color 160ms ease, box-shadow 220ms ease; }
 }
 
 /* ── Doctor: the overall state, then the checks by group ── */
 
 .doctor-summary {
   display: flex; align-items: center; gap: 14px; min-height: 64px; padding: 14px 18px; margin-top: -8px;
-  border-radius: 14px; border: 1px solid var(--border); background: var(--chip); box-shadow: var(--specular);
+  border-radius: 14px; border: 1px solid var(--border); background: var(--card); box-shadow: var(--specular), var(--lift-1);
 }
-.doctor-summary .status-dot { width: 10px; height: 10px; flex-basis: 10px; }
-.doctor-summary[data-status="ok"] { border-color: color-mix(in srgb, var(--ok) 30%, var(--border)); background: linear-gradient(90deg, color-mix(in srgb, var(--ok) 8%, transparent), transparent 55%), var(--chip); }
-.doctor-summary[data-status="warn"] { border-color: color-mix(in srgb, var(--warn) 34%, var(--border)); background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 9%, transparent), transparent 55%), var(--chip); }
-.doctor-summary[data-status="fail"] { border-color: color-mix(in srgb, var(--bad) 38%, var(--border)); background: linear-gradient(90deg, color-mix(in srgb, var(--bad) 10%, transparent), transparent 55%), var(--chip); }
+.doctor-summary .status-dot { position: relative; width: 10px; height: 10px; flex-basis: 10px; }
+.doctor-summary[data-status="ok"] { border-color: color-mix(in srgb, var(--ok) 30%, var(--border)); background: linear-gradient(90deg, color-mix(in srgb, var(--ok) 9%, transparent), transparent 55%), var(--card); }
+.doctor-summary[data-status="warn"] { border-color: color-mix(in srgb, var(--warn) 34%, var(--border)); background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 10%, transparent), transparent 55%), var(--card); }
+.doctor-summary[data-status="fail"] { border-color: color-mix(in srgb, var(--bad) 38%, var(--border)); background: linear-gradient(90deg, color-mix(in srgb, var(--bad) 11%, transparent), transparent 55%), var(--card); }
 .doctor-summary-text { flex: 1; min-width: 0; }
 .doctor-summary-head { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .doctor-summary-sub { margin-top: 2px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .doctor-summary-note { font-size: 12px; color: var(--muted); }
 .doctor-summary[aria-busy="true"] ~ .settings-section { opacity: 0.6; }
+/* While the checks run again, the dot sends out a ring. */
+.doctor-summary .status-dot::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; background: inherit; opacity: 0; pointer-events: none;
+}
 @media (prefers-reduced-motion: no-preference) {
   :root:not([data-motion="reduced"]) .doctor-summary ~ .settings-section { transition: opacity 200ms ease; }
+  :root:not([data-motion="reduced"]) .doctor-summary[aria-busy="true"] .status-dot::after { animation: doctor-ping 1.4s var(--ease-out) infinite; }
 }
+@keyframes doctor-ping { from { opacity: 0.55; transform: scale(1); } to { opacity: 0; transform: scale(3.2); } }
 
-/* ── Appearance: the scene picker ── */
+/* ── Appearance: the scene gallery ── */
 
-.scene-option-file { margin-left: auto; padding-left: 10px; font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
-.model-option[aria-selected="true"] .scene-option-file { color: color-mix(in srgb, var(--accent) 70%, transparent); }
-.scene-option-error { margin-left: auto; color: var(--bad); font-size: 11px; }
-.scene-files { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+/* The Scene row puts its gallery under the label, across the card. One line:
+   a wrapping column would size the gallery at its narrowest, a card per row. */
+.settings-row[data-part="scene"] { flex-flow: column nowrap; align-items: stretch; row-gap: 14px; padding-bottom: 16px; }
+.settings-row[data-part="scene"] :is(.settings-row-text, .settings-row-control) { flex: 0 0 auto; }
+.settings-row[data-part="scene"] .settings-row-control { display: block; margin-left: 0; }
+
+.scene-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 12px; }
+/* Each scene's poster colors: the theme's accent for the built-in ones, a hue of its own for the user's files. */
+.scene-card {
+  --poster-bg: radial-gradient(120% 95% at 28% 18%, color-mix(in srgb, var(--accent) 24%, #0b1424), #050912 78%);
+  --poster-ink: color-mix(in srgb, var(--accent) 72%, white);
+  position: relative; display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 6px 6px 11px;
+  border-radius: 14px; border: 1px solid var(--border); background: var(--card); color: var(--text); text-align: left;
+  box-shadow: var(--specular), var(--lift-1);
+}
+.scene-card[data-scene="stars"] { --poster-bg: radial-gradient(110% 90% at 72% 8%, #17214a, #04060e 72%); --poster-ink: #dce6ff; }
+.scene-card[data-scene="none"] {
+  --poster-bg:
+    linear-gradient(color-mix(in srgb, var(--border) 70%, transparent) 1px, transparent 1px) -1px -1px / 14px 14px,
+    linear-gradient(90deg, color-mix(in srgb, var(--border) 70%, transparent) 1px, transparent 1px) -1px -1px / 14px 14px,
+    var(--bg);
+}
+.scene-card[data-group="user"] {
+  --poster-bg: radial-gradient(120% 95% at 28% 18%, hsl(var(--scene-hue, 200) 46% 17%), hsl(var(--scene-hue, 200) 40% 5%) 78%);
+  --poster-ink: hsl(var(--scene-hue, 200) 85% 78%);
+}
+[data-mode="light"] .scene-card { --poster-bg: linear-gradient(180deg, color-mix(in srgb, var(--accent) 16%, #f3f6fb), #fbfcfe); --poster-ink: color-mix(in srgb, var(--accent) 78%, #0e1626); }
+[data-mode="light"] .scene-card[data-scene="stars"] { --poster-bg: radial-gradient(110% 90% at 72% 8%, #24316a, #0a0f24 72%); --poster-ink: #e4ebff; }
+[data-mode="light"] .scene-card[data-scene="none"] {
+  --poster-bg:
+    linear-gradient(var(--border) 1px, transparent 1px) -1px -1px / 14px 14px,
+    linear-gradient(90deg, var(--border) 1px, transparent 1px) -1px -1px / 14px 14px,
+    var(--bg);
+}
+[data-mode="light"] .scene-card[data-group="user"] {
+  --poster-bg: linear-gradient(180deg, hsl(var(--scene-hue, 200) 70% 93%), hsl(var(--scene-hue, 200) 60% 97%));
+  --poster-ink: hsl(var(--scene-hue, 200) 50% 36%);
+}
+.scene-card:hover:not([aria-checked="true"]):not([aria-disabled="true"]) { border-color: var(--card-border-hover); transform: translateY(-2px); box-shadow: var(--specular), var(--lift-hover); }
+.scene-card:active:not([aria-disabled="true"]) { transform: scale(0.985); }
+.scene-card[aria-checked="true"] {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 13%, transparent), color-mix(in srgb, var(--accent) 3%, transparent)), var(--card);
+  box-shadow: var(--specular-strong), 0 10px 28px -14px color-mix(in srgb, var(--accent) 85%, transparent);
+}
+.scene-card[aria-disabled="true"] { cursor: default; border-style: dashed; background: transparent; box-shadow: none; }
+
+/* The thumbnail: the scene's poster, drawn in the scenes' own ASCII. */
+.scene-thumb {
+  position: relative; display: block; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 9px;
+  background: var(--poster-bg); color: var(--poster-ink);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.06), inset 0 1px 8px rgb(0 0 0 / 0.28);
+}
+[data-mode="light"] .scene-thumb { box-shadow: inset 0 0 0 1px rgb(14 30 60 / 0.07), inset 0 1px 6px rgb(14 22 38 / 0.06); }
+.scene-card[aria-checked="true"] .scene-thumb { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent), inset 0 1px 8px rgb(0 0 0 / 0.28); }
+.scene-card[aria-disabled="true"] .scene-thumb { background: var(--well); box-shadow: var(--well-inset); }
+.scene-card[aria-disabled="true"] .scene-poster { color: var(--faint); opacity: 0.35; }
+.scene-poster {
+  position: absolute; inset: -6px -16px; margin: 0; display: grid; place-content: center;
+  font-family: var(--font-mono); font-size: 9px; line-height: 10px; white-space: pre;
+  color: inherit; opacity: 0.85; user-select: none; pointer-events: none;
+}
+.scene-thumb-ext {
+  position: absolute; top: 7px; left: 7px; height: 16px; padding: 0 5px; border-radius: 5px; display: inline-flex; align-items: center;
+  background: rgb(4 8 16 / 0.5); color: rgb(255 255 255 / 0.85);
+  font-family: var(--font-mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.scene-thumb-error {
+  position: absolute; inset: 0; margin: auto; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--bad); color: #fff; font-size: 14px; font-weight: 700; box-shadow: 0 0 18px -2px var(--bad);
+}
+/* On the scene that's running: a "Live" chip with a beating dot. */
+.scene-live {
+  position: absolute; left: 7px; bottom: 7px; display: inline-flex; align-items: center; gap: 5px; height: 18px; padding: 0 7px 0 6px;
+  border-radius: 999px; background: rgb(4 8 16 / 0.58); color: #fff; box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.1);
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase;
+}
+.scene-live i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.scene-card-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 0 6px; }
+.scene-card-name { font-size: 13.5px; font-weight: 600; letter-spacing: -0.005em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scene-card-sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scene-card[data-group="user"] .scene-card-sub { font-family: var(--font-mono); font-size: 11px; }
+.scene-card[aria-disabled="true"] .scene-card-sub { color: var(--bad); font-family: inherit; }
+.scene-card-check {
+  position: absolute; top: 12px; right: 12px; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent); color: var(--on-accent, #04121a); opacity: 0; transform: scale(0.5);
+  box-shadow: 0 0 0 2px rgb(var(--glass-strong-rgb) / 0.7), 0 0 12px -2px color-mix(in srgb, var(--accent) 85%, transparent);
+}
+[data-mode="light"] .scene-card-check { color: var(--on-accent, #fff); }
+.scene-card-check svg { width: 12px; height: 12px; }
+.scene-card[aria-checked="true"] .scene-card-check { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-motion="reduced"]) .scene-card { transition: border-color 160ms ease, background-color 160ms ease, box-shadow 220ms ease, transform 220ms var(--ease-out); }
+  :root:not([data-motion="reduced"]) .scene-card-check { transition: opacity 160ms ease, transform 340ms var(--ease-spring); }
+  /* A hovered poster drifts, the way its scene would. */
+  :root:not([data-motion="reduced"]) .scene-poster { transition: transform 1.6s var(--ease-out); }
+  :root:not([data-motion="reduced"]) .scene-card:hover:not([aria-disabled="true"]) .scene-poster { transform: translateX(-12px); }
+  :root:not([data-motion="reduced"]) .scene-live i { animation: scene-live 1.8s ease-in-out infinite; }
+}
+@keyframes scene-live { 50% { opacity: 0.35; box-shadow: 0 0 2px var(--accent); } }
+
 .settings-path { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+
+/* ── keyboard focus: one glow for everything you can tab to on the sheet ──
+   The outline stays, transparent: a contrast theme drops every shadow and
+   paints the outline instead, so focus never disappears. */
+
+:is(.settings, .modal, .onboarding, .popover-panel, .model-popover)
+  :is(.btn, .settings-tab, .switch, .segmented button, .tier-card, .scene-card, .accent-custom, .model-trigger, .onboarding-folder):focus-visible {
+  outline: 2px solid transparent;
+  box-shadow: var(--specular), var(--focus-glow);
+}
+/* Still lit under the pointer, where a hover's shadow would otherwise win. */
+.scene-card:focus-visible:hover:not([aria-checked="true"]):not([aria-disabled="true"]) { box-shadow: var(--specular), var(--lift-hover), var(--focus-glow); }
+:is(.settings, .modal, .onboarding, .popover-panel) .btn.primary:focus-visible:hover:not(:disabled) { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.26), var(--focus-glow); }
+.accent-swatch:focus-visible { outline: 2px solid transparent; box-shadow: 0 0 0 2px rgb(var(--glass-strong-rgb)), 0 0 0 3.5px var(--swatch), 0 0 18px -1px var(--swatch); }
+.slider-input:focus-visible::-webkit-slider-thumb { box-shadow: 0 1px 3px rgb(0 0 0 / 0.3), var(--focus-glow); }
+.check input:focus-visible { outline: 2px solid transparent; box-shadow: var(--field-inset), var(--focus-glow); }
+:is(.color-plane, .color-hue):focus-visible { outline: 2px solid transparent; box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.08), var(--focus-glow); }
+@media (forced-colors: active) {
+  :is(.settings, .modal, .onboarding, .popover-panel, .model-popover) :focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
+  .slider-input:focus-visible { outline: 2px solid Highlight; }
+}

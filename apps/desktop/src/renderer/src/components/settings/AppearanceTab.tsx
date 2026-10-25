@@ -7,6 +7,7 @@
 import {
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -18,8 +19,8 @@ import { createPortal } from "react-dom";
 import { previewPrefs, savePrefs, toast, useStore } from "../../store";
 import { contrastRatio, hexToRgb, normalizeHex, rgbToHex, themeDefaults, useAppliedTheme } from "../../theme";
 import type { Prefs, SceneFile } from "../../types";
-import { IconCheck, IconChevronDown, IconChevronRight, IconFolder, IconRefresh } from "../icons";
-import { Badge, PageHeader, Row, Section, Segmented, Slider, Toggle, useEscape, usePopoverPlacement, useRowLabel } from "./controls";
+import { IconCheck, IconChevronDown, IconFolder, IconRefresh } from "../icons";
+import { PageHeader, Row, Section, Segmented, Slider, Toggle, useEscape, usePopoverPlacement, useRowLabel } from "./controls";
 
 const save = (patch: Partial<Prefs>) => savePrefs(patch).catch((err: Error) => toast("error", err.message));
 
@@ -348,135 +349,180 @@ const BUILT_IN = [
   { id: "stars", name: "Night sky" },
 ];
 
-const sceneSub = (o: SceneOption | undefined): string =>
-  !o ? "Not found" : o.group === "user" ? (o.file ?? "Your scene") : o.id === "none" ? "Plain background" : "Built in";
+const sceneSub = (o: SceneOption): string =>
+  o.error ? "Has an error" : o.group === "user" ? (o.file ?? "Your scene") : o.id === "none" ? "Plain background" : "Built in";
 
-/** The scene, as a list like the model picker's: arrows, Home/End, Enter, Esc. */
-function ScenePicker({ value, options, onChange }: { value: string; options: SceneOption[]; onChange: (id: string) => void }) {
+/** A small, stable number from a string: a user scene's hue, and the shape of its poster. */
+const hashOf = (s: string): number => {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return h >>> 0;
+};
+
+const RAMP = " .:-=+*#%@";
+const POSTER_COLS = 40;
+const POSTER_ROWS = 12;
+
+/**
+ * A scene's poster, in the scenes' own ASCII: a scatter of stars for Night
+ * sky, soft clouds for the rest (shaped by the scene's id, so each of the
+ * user's files has its own). Not live: one running scene is enough.
+ */
+function posterOf(id: string): string {
+  if (id === "none") return "";
+  let seed = hashOf(id);
+  const rand = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  const lines: string[] = [];
+  if (id === "stars") {
+    for (let y = 0; y < POSTER_ROWS; y++) {
+      let line = "";
+      for (let x = 0; x < POSTER_COLS; x++) {
+        const r = rand();
+        line += r > 0.988 ? "*" : r > 0.965 ? "+" : r > 0.915 ? "." : " ";
+      }
+      lines.push(line);
+    }
+    return lines.join("\n");
+  }
+  // Clouds gets a drawn sky: a bank across the middle, two wisps above it.
+  const blobs =
+    id === "clouds"
+      ? [
+          { x: 9, y: 7, r: 5 },
+          { x: 17, y: 6.5, r: 6.5 },
+          { x: 25, y: 7.5, r: 5 },
+          { x: 31, y: 3, r: 3.5 },
+          { x: 13, y: 3.5, r: 2.5 },
+        ]
+      : // Kept off the edges, which the thumbnail crops.
+        Array.from({ length: 3 }, () => ({ x: 10 + rand() * (POSTER_COLS - 20), y: 4 + rand() * (POSTER_ROWS - 8), r: 3.5 + rand() * 4 }));
+  for (let y = 0; y < POSTER_ROWS; y++) {
+    let line = "";
+    for (let x = 0; x < POSTER_COLS; x++) {
+      // A character is about twice as tall as it is wide.
+      let d = 0;
+      for (const b of blobs) d += Math.exp(-(((x - b.x) / b.r) ** 2 + ((y - b.y) / (b.r * 0.45)) ** 2));
+      line += RAMP[Math.min(RAMP.length - 1, Math.floor(d * (RAMP.length - 1) * 0.7))];
+    }
+    lines.push(line);
+  }
+  return lines.join("\n");
+}
+
+function SceneCard({
+  option: o,
+  checked,
+  tabbable,
+  cardRef,
+  onPick,
+  onKeyDown,
+}: {
+  option: SceneOption;
+  checked: boolean;
+  tabbable: boolean;
+  cardRef: (el: HTMLButtonElement | null) => void;
+  onPick: () => void;
+  onKeyDown: (e: ReactKeyboardEvent<HTMLButtonElement>) => void;
+}) {
+  const id = useId();
+  const poster = useMemo(() => posterOf(o.id), [o.id]);
+  const ext = o.file?.split(".").pop();
+  return (
+    <button
+      ref={cardRef}
+      type="button"
+      role="radio"
+      className="scene-card"
+      aria-checked={checked}
+      aria-disabled={o.error ? true : undefined}
+      aria-labelledby={`${id}-name`}
+      aria-describedby={`${id}-sub`}
+      tabIndex={tabbable ? 0 : -1}
+      data-scene={o.id}
+      data-group={o.group}
+      title={o.error ? `This scene has an error: ${o.error}` : undefined}
+      style={o.group === "user" ? ({ "--scene-hue": hashOf(o.id) % 360 } as CSSProperties) : undefined}
+      onClick={onPick}
+      onKeyDown={onKeyDown}
+    >
+      <span className="scene-thumb" aria-hidden="true">
+        {poster && <pre className="scene-poster">{poster}</pre>}
+        {ext && <span className="scene-thumb-ext">{ext}</span>}
+        {o.error && <span className="scene-thumb-error">!</span>}
+        {checked && o.id !== "none" && (
+          <span className="scene-live">
+            <i />
+            Live
+          </span>
+        )}
+      </span>
+      <span className="scene-card-text">
+        <span className="scene-card-name" id={`${id}-name`}>
+          {o.name}
+        </span>
+        <span className="scene-card-sub" id={`${id}-sub`}>
+          {sceneSub(o)}
+          {/* The tooltip has the error for the pointer; this is it for a screen reader. */}
+          {o.error && <span className="sr-only">: {o.error}</span>}
+        </span>
+      </span>
+      <span className="scene-card-check" aria-hidden="true">
+        <IconCheck />
+      </span>
+    </button>
+  );
+}
+
+/** The scenes as a gallery of cards, one radio group: arrows move the choice (past scenes with errors), Home/End. */
+function SceneGallery({ value, options, onChange }: { value: string; options: SceneOption[]; onChange: (id: string) => void }) {
   const row = useRowLabel();
-  const base = useId();
-  const listId = `${base}-list`;
-  const optId = (i: number) => `${base}-opt-${i}`;
-  const trigger = useRef<HTMLButtonElement>(null);
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(-1);
-  const box = usePopoverPlacement(trigger, open, (r) => Math.max(r.width, 260));
-
-  useEscape(open, () => setOpen(false));
-
-  useEffect(() => {
-    if (open && active >= 0) document.getElementById(optId(active))?.scrollIntoView({ block: "nearest" });
-  }, [open, active]);
-
-  const selected = options.findIndex((o) => o.id === value);
+  const cards = useRef<Array<HTMLButtonElement | null>>([]);
   const usable = (i: number) => Boolean(options[i]) && !options[i].error;
+  /** The first usable scene from `from`, stepping and wrapping; -1 when none is. */
   const seek = (from: number, step: 1 | -1): number => {
-    for (let i = from; i >= 0 && i < options.length; i += step) if (usable(i)) return i;
+    const n = options.length;
+    for (let k = 0, i = from; k < n; k++, i = (((i + step) % n) + n) % n) if (usable(i)) return i;
     return -1;
   };
+  const selected = options.findIndex((o) => o.id === value);
+  const tabbable = selected !== -1 && usable(selected) ? selected : seek(0, 1);
 
-  const show = () => {
-    setActive(selected !== -1 ? selected : seek(0, 1));
-    setOpen(true);
-  };
   const choose = (i: number) => {
-    if (!usable(i)) return;
-    setOpen(false);
-    if (options[i].id !== value) onChange(options[i].id);
+    if (usable(i) && options[i].id !== value) onChange(options[i].id);
   };
 
-  const onKeyDown = (e: ReactKeyboardEvent<HTMLButtonElement>) => {
-    if (!open) {
-      if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        show();
-      }
-      return;
-    }
-    const to = (i: number) => {
-      e.preventDefault();
-      if (i !== -1) setActive(i);
-    };
-    if (e.key === "ArrowDown") to(seek(active + 1, 1));
-    else if (e.key === "ArrowUp") to(seek(active - 1, -1));
-    else if (e.key === "Home") to(seek(0, 1));
-    else if (e.key === "End") to(seek(options.length - 1, -1));
-    else if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      choose(active);
-    } else if (e.key === "Tab") setOpen(false);
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLButtonElement>, at: number) => {
+    const n = options.length;
+    const next =
+      e.key === "ArrowRight" || e.key === "ArrowDown" ? seek((at + 1) % n, 1)
+      : e.key === "ArrowLeft" || e.key === "ArrowUp" ? seek((at - 1 + n) % n, -1)
+      : e.key === "Home" ? seek(0, 1)
+      : e.key === "End" ? seek(n - 1, -1)
+      : -1;
+    if (next === -1) return;
+    e.preventDefault();
+    choose(next);
+    cards.current[next]?.focus();
   };
-
-  const current = options[selected];
-  const groups = [
-    { key: "builtin", label: "Built in", items: options.map((o, i) => [o, i] as const).filter(([o]) => o.group === "builtin") },
-    { key: "user", label: "Your scenes", items: options.map((o, i) => [o, i] as const).filter(([o]) => o.group === "user") },
-  ].filter((g) => g.items.length > 0);
 
   return (
-    <div className="model-picker">
-      <button
-        ref={trigger}
-        type="button"
-        role="combobox"
-        className="model-trigger"
-        data-part="scene-picker"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls={open ? listId : undefined}
-        aria-activedescendant={open && active >= 0 ? optId(active) : undefined}
-        aria-labelledby={row?.labelId}
-        aria-describedby={row?.hintId}
-        onClick={() => (open ? setOpen(false) : show())}
-        onKeyDown={onKeyDown}
-        onBlur={() => setOpen(false)}
-      >
-        <span className="model-trigger-text">
-          <span className="model-trigger-name">{current?.name ?? value}</span>
-          <span className="model-trigger-sub">{sceneSub(current)}</span>
-        </span>
-        <IconChevronRight className="model-trigger-chevron" />
-      </button>
-      {open &&
-        box &&
-        createPortal(
-          <div
-            className="model-popover menu-surface"
-            style={{ top: box.top, bottom: box.bottom, left: box.left, width: box.width, maxHeight: box.maxHeight }}
-            data-placement={box.top !== undefined ? "below" : "above"}
-            // Clicks inside keep the focus on the trigger.
-            onMouseDown={(e) => e.preventDefault()}
-          >
-            <div className="model-list" role="listbox" id={listId} aria-labelledby={row?.labelId}>
-              {groups.map((g) => (
-                <div key={g.key} className="model-group" role="group" aria-labelledby={`${base}-${g.key}`}>
-                  <div className="model-group-head" id={`${base}-${g.key}`}>
-                    {g.label}
-                  </div>
-                  {g.items.map(([o, i]) => (
-                    <div
-                      key={o.id}
-                      id={optId(i)}
-                      role="option"
-                      className="model-option"
-                      aria-selected={i === selected}
-                      aria-disabled={o.error ? true : undefined}
-                      data-active={i === active || undefined}
-                      title={o.error ? `This scene has an error: ${o.error}` : undefined}
-                      onMouseEnter={() => usable(i) && setActive(i)}
-                      onClick={() => choose(i)}
-                    >
-                      <span className="model-option-mark">{i === selected && <IconCheck />}</span>
-                      <span className="model-option-name">{o.name}</span>
-                      {o.error ? <span className="scene-option-error">Error</span> : o.file && <span className="scene-option-file">{o.file}</span>}
-                    </div>
-                  ))}
-                </div>
-              ))}
-            </div>
-          </div>,
-          document.body
-        )}
+    <div className="scene-gallery" role="radiogroup" data-part="scene-picker" aria-labelledby={row?.labelId} aria-describedby={row?.hintId}>
+      {options.map((o, i) => (
+        <SceneCard
+          key={o.id}
+          option={o}
+          checked={i === selected}
+          tabbable={i === tabbable}
+          cardRef={(el) => {
+            cards.current[i] = el;
+          }}
+          onPick={() => choose(i)}
+          onKeyDown={(e) => onKeyDown(e, i)}
+        />
+      ))}
     </div>
   );
 }
@@ -551,8 +597,8 @@ export function AppearanceTab() {
       </Section>
 
       <Section label="Background scene">
-        <Row label="Scene" hint="Built in, or your own .ts and .js files from the scenes folder.">
-          <ScenePicker value={scene} options={options} onChange={(id) => void save({ scene: id })} />
+        <Row label="Scene" part="scene" hint="Built in, or your own .ts and .js files from the scenes folder.">
+          <SceneGallery value={scene} options={options} onChange={(id) => void save({ scene: id })} />
         </Row>
         <Row label="Frame rate" hint="A lower cap saves battery and GPU time.">
           <Slider
@@ -584,15 +630,6 @@ export function AppearanceTab() {
             )
           }
         >
-          {user.length > 0 && (
-            <span className="scene-files">
-              {user.map((u) => (
-                <Badge key={u.file} mono tone={u.error ? "fail" : u.id === scene ? "accent" : "neutral"} title={u.error ?? undefined}>
-                  {u.file}
-                </Badge>
-              ))}
-            </span>
-          )}
           <button
             type="button"
             className="btn sm icon"
