@@ -4,7 +4,15 @@ import { openChat, openWorkspace, pickAndOpenFolder, toast, useStore } from "../
 import type { Quotas, SessionSettings } from "../types";
 import { IconFolder } from "./icons";
 
-type Meter = { label: string; left: number; detail: string | null };
+/** One usage window: the share left (0-100) and when it resets. */
+export type MeterWindow = { left: number; reset: string | null };
+/** One bar per provider or Antigravity pool, with its 5-hour and weekly windows layered on the same track. */
+export type Meter = { label: string; fiveHour: MeterWindow | null; weekly: MeterWindow | null };
+type WindowKey = "fiveHour" | "weekly";
+
+const WINDOW_KEYS: WindowKey[] = ["fiveHour", "weekly"];
+const WINDOW_NAME: Record<WindowKey, string> = { fiveHour: "5-hour", weekly: "Weekly" };
+const WINDOW_SHORT: Record<WindowKey, string> = { fiveHour: "5h", weekly: "weekly" };
 
 const BUILTIN_ROLE_KEYS = ["scout", "builder", "tester", "researcher", "reviewer", "designer"] as const;
 
@@ -37,11 +45,23 @@ function activeTargets(settings: SessionSettings | undefined): Array<{ provider:
   return out;
 }
 
-function windowSuffix(windowMinutes: unknown): string {
+/** Windows up to 6 hours are the 5-hour limit; anything longer sits in the weekly slot. */
+function windowKey(windowMinutes: unknown, fallback: WindowKey): WindowKey {
   const mins = num(windowMinutes);
-  if (mins === null || mins <= 360) return "5h";
-  if (mins <= 11520) return "weekly";
-  return "monthly";
+  if (!mins) return fallback;
+  return mins <= 360 ? "fiveHour" : "weekly";
+}
+
+/** Two windows that land in the same slot keep the tighter one. */
+function place(meter: Meter, key: WindowKey, win: MeterWindow): void {
+  const current = meter[key];
+  if (!current || win.left < current.left) meter[key] = win;
+}
+
+/** An Antigravity window, which already reports the share left. */
+function remaining(percent: unknown, reset: unknown): MeterWindow | null {
+  const left = num(percent);
+  return left === null ? null : { left: clamp(left), reset: str(reset) };
 }
 
 /** Orchestrator/provider limits report the share used; Antigravity reports what's left. */
@@ -64,67 +84,157 @@ export function meters(quotas: Quotas, settings: SessionSettings | undefined): M
       (p === leadProvider || p === "lead" ? quotas.orchestrator : null);
     const used = num(limits?.usedPercent);
     if (!limits || used === null) continue;
-    const name = (p === "lead" ? "" : providerLabel(p)) || "Lead";
-    const primarySuffix = windowSuffix(limits.windowMinutes);
-    out.push({
-      label: `${name} ${primarySuffix}`,
+    const meter: Meter = { label: (p === "lead" ? "" : providerLabel(p)) || "Lead", fiveHour: null, weekly: null };
+    place(meter, windowKey(limits.windowMinutes, "fiveHour"), {
       left: clamp(100 - used),
-      detail: str(limits.resetFormatted),
+      reset: str(limits.resetFormatted),
     });
     const secondary = limits.secondary as Record<string, unknown> | null | undefined;
     const usedLater = num(secondary?.usedPercent);
     if (secondary && usedLater !== null) {
-      const secondarySuffix = secondary.windowMinutes ? windowSuffix(secondary.windowMinutes) : "weekly";
-      out.push({
-        label: `${name} ${secondarySuffix}`,
+      place(meter, windowKey(secondary.windowMinutes, "weekly"), {
         left: clamp(100 - usedLater),
-        detail: str(secondary.resetFormatted),
+        reset: str(secondary.resetFormatted),
       });
     }
+    out.push(meter);
   }
 
   const a = quotas.antigravity;
   const agyTargets = targets.filter((t) => t.provider === "antigravity");
   const usesAgy = agyTargets.length > 0 || (!settings && Boolean(a));
   if (a && usesAgy) {
+    const pool = (label: string, fiveHour: MeterWindow | null, weekly: MeterWindow | null) => {
+      if (fiveHour || weekly) out.push({ label, fiveHour, weekly });
+    };
     const usesGeminiFamily = agyTargets.length === 0 || agyTargets.some((t) => !isClaudeOrGpt(t.model));
-    const gemini = num(a.geminiWeeklyPercent);
-    if (usesGeminiFamily && gemini !== null) {
-      out.push({ label: "Gemini weekly", left: clamp(gemini), detail: str(a.geminiWeeklyResetFormatted) });
+    if (usesGeminiFamily) {
+      pool(
+        "Gemini",
+        remaining(a.gemini5HourPercent, a.gemini5HourResetFormatted),
+        remaining(a.geminiWeeklyPercent, a.geminiWeeklyResetFormatted)
+      );
     }
-    const argon = num(a.geminiArgonWeeklyPercent);
-    if (argon !== null) {
-      out.push({ label: "Gemini 4 Argon", left: clamp(argon), detail: str(a.geminiArgonWeeklyResetFormatted) });
-    }
-    const usesAgyClaudeGpt = agyTargets.some((t) => isClaudeOrGpt(t.model));
-    const claudeGpt = num(a.claudeGptWeeklyPercent);
-    if (usesAgyClaudeGpt && claudeGpt !== null) {
-      out.push({ label: "Claude/GPT weekly", left: clamp(claudeGpt), detail: str(a.claudeGptWeeklyResetFormatted) });
+    pool(
+      "Gemini 4 Argon",
+      remaining(a.geminiArgon5HourPercent, a.geminiArgon5HourResetFormatted),
+      remaining(a.geminiArgonWeeklyPercent, a.geminiArgonWeeklyResetFormatted)
+    );
+    if (agyTargets.some((t) => isClaudeOrGpt(t.model))) {
+      pool(
+        "Claude/GPT",
+        remaining(a.claudeGpt5HourPercent, a.claudeGpt5HourResetFormatted),
+        remaining(a.claudeGptWeeklyPercent, a.claudeGptWeeklyResetFormatted)
+      );
     }
   }
   return out;
+}
+
+const windowsOf = (row: Meter): Array<[WindowKey, MeterWindow]> =>
+  WINDOW_KEYS.flatMap((key): Array<[WindowKey, MeterWindow]> => {
+    const win = row[key];
+    return win ? [[key, win]] : [];
+  });
+
+/** "5-hour: 75% left, resets in 3h · Weekly: 41% left, resets Thu 09:00" */
+const describe = (row: Meter): string =>
+  windowsOf(row)
+    .map(([key, win]) => `${WINDOW_NAME[key]}: ${win.left}% left${win.reset ? `, resets ${win.reset}` : ""}`)
+    .join(" · ");
+
+/** The shorter fill draws on top so both stay visible; on a tie the weekly one does. */
+function topWindow(row: Meter): WindowKey | null {
+  if (!row.fiveHour || !row.weekly) return null;
+  return row.fiveHour.left < row.weekly.left ? "fiveHour" : "weekly";
+}
+
+/**
+ * A reset short enough for the line under the bar. Providers report "in 3h 40m (Oct 25, 03:40 PM)":
+ * the 5-hour window keeps the countdown, the weekly one the date. Other shapes show as given.
+ */
+function shortReset(key: WindowKey, reset: string): string {
+  const both = /^in (.+?) \((.+)\)$/.exec(reset);
+  if (both) return key === "fiveHour" ? `in ${both[1]}` : both[2];
+  if (/^reset due now\b/i.test(reset)) return "due now";
+  return reset;
+}
+
+function MeterRow({ row }: { row: Meter }) {
+  const windows = windowsOf(row);
+  const top = topWindow(row);
+  const resets = windows.filter((entry): entry is [WindowKey, MeterWindow & { reset: string }] => Boolean(entry[1].reset));
+  return (
+    <div className="meter" data-part="meter" title={describe(row)}>
+      <div className="meter-row">
+        <span className="meter-label">{row.label}</span>
+        <span className="meter-values" aria-hidden="true">
+          {windows.map(([key, win]) => (
+            <span key={key} className="meter-value" data-window={key}>
+              {win.left}%
+            </span>
+          ))}
+        </span>
+      </div>
+      <div className="meter-track">
+        {windows.map(([key, win]) => (
+          <div
+            key={key}
+            className="meter-fill"
+            data-window={key}
+            data-top={key === top || undefined}
+            role="meter"
+            aria-label={`${row.label} ${WINDOW_NAME[key].toLowerCase()} usage left`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={win.left}
+            aria-valuetext={`${win.left}% left${win.reset ? `, resets ${win.reset}` : ""}`}
+            style={{ width: `${win.left}%` }}
+          />
+        ))}
+      </div>
+      {resets.length > 0 && (
+        <div className="meter-detail" aria-hidden="true">
+          {resets.map(([key, win]) => (
+            <span key={key} className="meter-reset" data-window={key}>
+              {shortReset(key, win.reset)}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Meters() {
   const quotas = useStore((s) => s.quotas);
   const settings = useStore((s) => s.session?.settings);
   const rows = meters(quotas, settings);
-  if (rows.length === 0) return <div className="meter small">Usage shows here after the first turn.</div>;
+  const shown = WINDOW_KEYS.filter((key) => rows.some((row) => row[key]));
   return (
-    <div className="meters" data-part="meters">
-      {rows.map((row) => (
-        <div className="meter" key={row.label}>
-          <div className="meter-row">
-            <span>{row.label}</span>
-            <span>{row.left}% left</span>
-          </div>
-          <div className="meter-track">
-            <div className="meter-fill" style={{ width: `${row.left}%` }} />
-          </div>
-          {row.detail && <div className="meter-detail">resets {row.detail}</div>}
+    <>
+      <div className="sidebar-section usage-head">
+        <span>Usage</span>
+        {shown.length > 0 && (
+          <span className="meter-legend" aria-hidden="true">
+            {shown.map((key) => (
+              <span key={key} className="meter-key" data-window={key}>
+                {WINDOW_SHORT[key]}
+              </span>
+            ))}
+          </span>
+        )}
+      </div>
+      {rows.length === 0 ? (
+        <div className="meter small">Usage shows here after the first turn.</div>
+      ) : (
+        <div className="meters" data-part="meters">
+          {rows.map((row, i) => (
+            <MeterRow key={`${i}:${row.label}`} row={row} />
+          ))}
         </div>
-      ))}
-    </div>
+      )}
+    </>
   );
 }
 
@@ -185,7 +295,6 @@ export function Sidebar() {
         </button>
       </div>
       <div className="hr" />
-      <div className="sidebar-section">Usage</div>
       <Meters />
     </nav>
   );

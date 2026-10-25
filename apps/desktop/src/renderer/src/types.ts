@@ -49,6 +49,8 @@ export interface ToolView {
   toolId: string;
   turnId: string | null;
   name: string;
+  /** The role the tool belongs to (scout, builder, …, or a custom role's id); null for other tools. */
+  role: string | null;
   task: string;
   model: string | null;
   effort: string | null;

@@ -12,6 +12,9 @@
   --border: rgb(160 190 240 / 0.14);
   --track: rgb(160 190 240 / 0.14);
   --accent: #5fd4f4;
+  /* Usage meters, from the accent: a pale 5-hour fill under a deeper weekly one. */
+  --meter-5h: color-mix(in oklab, var(--accent) 50%, white);
+  --meter-week: color-mix(in oklab, var(--accent) 72%, black);
   --ok: #9ece6a;
   --bad: #f7768e;
   --warn: #f2b866;
@@ -38,6 +41,9 @@
   --border: rgb(14 30 60 / 0.1);
   --track: rgb(14 30 60 / 0.1);
   --accent: #2f6feb;
+  /* The light track is pale, so the 5-hour fill keeps more of the accent. */
+  --meter-5h: color-mix(in oklab, var(--accent) 72%, white);
+  --meter-week: color-mix(in oklab, var(--accent) 66%, black);
   --ok: #2e7d32;
   --bad: #c62828;
   --warn: #8a5a12;

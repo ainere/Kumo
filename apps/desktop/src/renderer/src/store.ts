@@ -267,6 +267,7 @@ export function handleEvent(event: KumoEvent): void {
             toolId: event.toolId,
             turnId: event.turnId,
             name: event.name,
+            role: event.role ?? null,
             task: event.task,
             model: event.model,
             effort: event.effort,

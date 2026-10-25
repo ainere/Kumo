@@ -20,6 +20,16 @@ const PROVIDERS: Record<string, string> = {
 export const providerLabel = (provider: string | null | undefined): string =>
   provider ? (PROVIDERS[provider] ?? provider) : "";
 
+/** The built-in worker roles, in the order Kumo lists them. */
+export const BUILTIN_ROLES = ["scout", "builder", "tester", "researcher", "reviewer", "designer"] as const;
+
+/** "builder" → "Builder"; a custom role's own name; null (a tool outside any role) → "Other". */
+export function roleLabel(role: string | null, custom?: ReadonlyArray<{ id: string; name?: string }>): string {
+  if (role === null) return "Other";
+  if ((BUILTIN_ROLES as readonly string[]).includes(role)) return role[0].toUpperCase() + role.slice(1);
+  return custom?.find((c) => c.id === role)?.name || role;
+}
+
 /** "mcp__kumo-bridge__worker_implement" → "implement". */
 export const toolLabel = (name: string): string => name.replace(/^.*(__|\.)/, "").replace(/^worker_/, "");
 
