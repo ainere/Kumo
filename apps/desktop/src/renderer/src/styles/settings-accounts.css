@@ -1,0 +1,73 @@
+/* Settings › Accounts: a card per provider, its usage bars, and the endpoint fields. */
+
+.acct-list { display: flex; flex-direction: column; gap: 10px; }
+
+.acct-card {
+  border-radius: 14px; border: 1px solid var(--border); background: var(--chip);
+  box-shadow: var(--specular);
+  padding: 16px 18px; display: flex; flex-direction: column; gap: 14px;
+}
+.acct-card:hover { border-color: color-mix(in srgb, var(--text) 14%, var(--border)); }
+/* Signed in: the card is lit a little, from the accent. */
+.acct-card[data-signed-in="true"] {
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, transparent), transparent 60%), var(--chip);
+}
+.acct-card[data-installed="false"] { background: transparent; box-shadow: none; border-style: dashed; }
+.acct-card[data-installed="false"] .acct-name { color: var(--muted); }
+
+.acct-main { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.acct-id { display: flex; flex-direction: column; gap: 6px; flex: 1 1 240px; min-width: 0; }
+.acct-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.acct-name { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.3; letter-spacing: -0.005em; color: var(--text); }
+.acct-state { display: inline-flex; align-items: center; gap: 9px; font-size: 13px; color: var(--muted); }
+.acct-state[data-status="ok"] { color: var(--text); }
+.acct-detail { font-size: 12.5px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
+.acct-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; margin-top: 1px; }
+.acct-modal-account { font-weight: 500; }
+
+.acct-meters { border-top: 1px solid var(--border); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+
+.acct-code {
+  font-family: var(--font-mono); font-size: 11.5px; padding: 1px 6px; border-radius: 5px;
+  background: var(--field); border: 1px solid var(--border); color: var(--text);
+}
+
+.acct-legend { display: inline-flex; align-items: center; gap: 14px; font-size: 11px; font-family: var(--font-mono); color: var(--faint); }
+.meter-key { display: inline-flex; align-items: center; gap: 6px; }
+.meter-key::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.meter-key[data-window="fiveHour"]::before { background: var(--meter-5h); }
+.meter-key[data-window="weekly"]::before { background: var(--meter-week); }
+.meter-key[data-window="monthly"]::before { background: var(--meter-month); }
+
+/* Endpoint configuration for compat-api and Ollama, under a hairline. */
+.acct-extra { border-top: 1px solid var(--border); padding-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+.acct-field-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.acct-field-label { font-size: 12.5px; font-weight: 500; color: var(--text); }
+.acct-field-hint { font-size: 12px; line-height: 1.45; color: var(--muted); }
+.acct-field-hint[data-tone="warn"] { color: var(--warn); }
+.acct-field-hint[data-tone="ok"] { color: var(--ok); }
+.acct-input { flex: 1 1 260px; font-family: var(--font-mono); font-size: 12.5px; }
+.acct-host { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.acct-host-url { font-family: var(--font-mono); font-size: 12.5px; color: var(--text); overflow-wrap: anywhere; }
+
+.acct-test { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.acct-test[data-phase="idle"] { display: none; }
+.acct-test-line { display: inline-flex; align-items: center; gap: 9px; }
+.acct-test-models { display: flex; flex-wrap: wrap; gap: 6px; }
+.acct-test-more { font-size: 11px; color: var(--muted); align-self: center; }
+
+/* "Waiting for the terminal…": the Workers panel's waving dots, a touch larger. */
+.acct-state .wave { height: 14px; gap: 3px; }
+.acct-state .wave i { width: 4px; height: 4px; }
+
+/* Skeleton while the accounts are read. */
+.acct-skeleton { display: flex; flex-direction: column; gap: 10px; }
+.acct-skel-label { height: 12px; width: 120px; margin: 6px 2px 4px; border-radius: 6px; background: var(--border); opacity: 0.5; }
+.acct-skel-card { min-height: 84px; justify-content: center; gap: 10px; }
+.acct-skel { height: 12px; border-radius: 6px; background: var(--border); opacity: 0.45; }
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-motion="reduced"]) .acct-skel { animation: acct-pulse 1.6s ease-in-out infinite; }
+  .acct-card { transition: border-color 160ms ease, background-color 160ms ease; }
+}
+@keyframes acct-pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 0.6; } }

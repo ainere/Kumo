@@ -4,13 +4,13 @@ How the desktop app is put together, and how to run your own background scenes. 
 
 ## What's in it
 
-`apps/desktop` is an Electron app on the same engine as the CLI, Windows first. The shell and chat are done. Next come a Settings page with accounts, first-run onboarding and the roles sheet, then a tabbed workbench on the right (files, diff, terminal, browser), then theme packages and project management.
+`apps/desktop` is an Electron app on the same engine as the CLI, Windows first. The shell, the chat, the Settings page and first-run onboarding are done. Next come a tabbed workbench on the right (files, diff, terminal, browser), then theme packages and project management.
 
 - **Studio layout:** a glass title bar with the window buttons inside it, a sidebar with projects, chats and usage, the conversation, a glass composer, and a Workers panel that docks right, bottom, floating or hidden. A new chat opens on the "what should we build?" screen.
 - **Usage:** one bar per subscription (Claude, Codex, and each Antigravity pool: Gemini, Gemini 4 Argon, Claude/GPT). The light fill is what's left of the 5-hour window, the darker fill is the weekly window, and the shorter of the two is drawn on top so both stay visible. The reset times are under the bar, and the full detail is in its tooltip. Both colors are mixed from the accent (`--meter-5h` and `--meter-week` in `tokens.css`).
 - **Workers panel:** an "All" tab, then one tab per role that ran in this chat, then "Other" for worker calls with no role. A role with a worker still running shows a timer and three waving dots (still dots under reduced motion). Each run is a card that opens to its task and live output: running cards start open, and finished ones close unless you opened them yourself.
 - **Glass over a live scene:** panels, messages and the composer are translucent and blurred over a background scene. The built-in scenes are **Clouds**, **Night sky** and **None** (grid only). They drift on their own, gather toward the Workers panel while workers run, and ripple when one finishes.
-- **Light and dark** follow the system unless you pick one. Blur, glass opacity, scene, dock and grid are in the Appearance menu (the sliders button) and saved to `~/.kumo/desktop.json`. The OS "reduce transparency" and "reduce motion" settings are honored.
+- **Light and dark** follow the system unless you pick one. The accent, scene, frame rate, grid, Workers dock, blur and glass opacity are in Settings › Appearance (the gear, or Ctrl+,) and saved to `~/.kumo/desktop.json`. The OS "reduce transparency" and "reduce motion" settings are honored.
 - **Window buttons** are round, in the title bar, and colored by the theme: `--win-close`, `--win-min` and `--win-max` in [`tokens.css`](../apps/desktop/src/renderer/src/styles/tokens.css), with their own values for light and dark. On macOS the native traffic lights move into the same spot.
 - **Chat:** answers stream as Markdown, with each worker call shown where it happened, as a card with its model and time. Its live output streams into the Workers panel. Approvals appear as cards with a fixed amber strip that themes can't restyle. Chats resume with their provider conversation.
 
@@ -24,7 +24,7 @@ npm run start -w @kumo/desktop      # run the build
 
 ## Your own scenes
 
-Every `.js` file in `~/.kumo/scenes/` (or `$KUMO_HOME/scenes/`) is loaded as a scene script when the app starts, and shows up in the Appearance menu next to the built-in ones. That's also the place for scenes you can't redistribute: they never enter the app or the repository.
+Every `.js` or `.ts` file in `~/.kumo/scenes/` (or `$KUMO_HOME/scenes/`) is loaded as a scene script, and shows up in Settings › Appearance next to the built-in ones. A `.ts` file has its types stripped, nothing more: one file, no imports. That's also the place for scenes you can't redistribute: they never enter the app or the repository.
 
 A scene is one `defineScene` call. The runtime owns the canvas and the loop; the scene draws and reacts:
 
@@ -51,7 +51,7 @@ defineScene({
 });
 ```
 
-The full API (`resize`, `update` at a fixed 60 Hz step, `frame`, `render`, `onEvent`, `dispose`, and the context's theme, layout and activity) is typed in [`packages/scene-sdk`](../packages/scene-sdk/index.d.ts). To build a scene from TypeScript or several files, bundle it into one IIFE script first (for example `npx rolldown scene.ts --format iife --file ~/.kumo/scenes/scene.js`). Restart the app to pick up a new or changed file; hot reload comes with theme packages.
+The full API (`resize`, `update` at a fixed 60 Hz step, `frame`, `render`, `onEvent`, `dispose`, and the context's theme, layout and activity) is typed in [`packages/scene-sdk`](../packages/scene-sdk/index.d.ts). To build a scene from TypeScript or several files, bundle it into one IIFE script first (for example `npx rolldown scene.ts --format iife --file ~/.kumo/scenes/scene.js`). The app reloads the scene page when a file in the folder is added, changed or removed.
 
 ## How it fits together
 

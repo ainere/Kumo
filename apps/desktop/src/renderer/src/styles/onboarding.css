@@ -1,0 +1,106 @@
+/* Onboarding: the first-run wizard, a sheet of deep glass over the live scene.
+   Built from the Settings primitives (settings.css): fields, buttons, badges, callouts. */
+
+.onboarding-stage { flex: 1; min-height: 0; display: grid; place-items: center; padding: 24px; overflow-y: auto; }
+
+.onboarding.glass-strong {
+  width: min(640px, 100%); display: flex; flex-direction: column; gap: 22px; padding: 28px 32px 24px;
+  border-radius: 22px;
+  backdrop-filter: blur(var(--glass-blur-deep)) saturate(180%);
+  box-shadow: var(--specular-strong), var(--lift-2);
+}
+[data-transparency="reduced"] .onboarding.glass-strong { backdrop-filter: none; }
+
+.onboarding-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.onboarding-head-text { min-width: 0; }
+.onboarding-title { margin: 0; font-size: 30px; font-weight: 300; letter-spacing: -0.02em; line-height: 1.15; }
+.onboarding-lede { margin: 6px 0 0; font-size: 13.5px; line-height: 1.5; color: var(--muted); }
+
+/* The stepper: numbered because the order is the point. A hairline joins the steps. */
+.onboarding-steps { list-style: none; margin: 0; padding: 0; display: flex; align-items: center; gap: 10px; counter-reset: none; }
+.onboarding-step { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--faint); white-space: nowrap; }
+.onboarding-step + .onboarding-step::before { content: ""; width: 28px; height: 1px; margin-right: 2px; background: var(--border); }
+.onboarding-step-dot {
+  width: 22px; height: 22px; flex: 0 0 22px; border-radius: 50%; display: grid; place-items: center;
+  border: 1px solid var(--border); background: var(--chip);
+  font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted);
+}
+.onboarding-step-dot svg { width: 12px; height: 12px; }
+.onboarding-step[data-state="current"] { color: var(--text); font-weight: 500; }
+.onboarding-step[data-state="current"] .onboarding-step-dot {
+  border-color: transparent; background: var(--accent); color: var(--on-accent, #04121a);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+[data-mode="light"] .onboarding-step[data-state="current"] .onboarding-step-dot { color: var(--on-accent, #fff); }
+.onboarding-step[data-state="done"] { color: var(--muted); }
+.onboarding-step[data-state="done"] .onboarding-step-dot { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.onboarding-step[data-state="done"] + .onboarding-step::before { background: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+
+.onboarding-body { display: flex; flex-direction: column; gap: 14px; min-height: 280px; }
+.onboarding-step-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.onboarding-h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.3; }
+.onboarding-h2:focus { outline: none; }
+.onboarding-p { margin: 4px 0 0; max-width: 60ch; font-size: 13px; line-height: 1.5; color: var(--muted); }
+
+/* Step 1: one row per CLI. */
+.onboarding-list {
+  list-style: none; margin: 0; padding: 4px; display: flex; flex-direction: column; gap: 2px;
+  max-height: 290px; overflow-y: auto;
+  border-radius: 14px; border: 1px solid var(--border); background: var(--chip); box-shadow: var(--specular);
+}
+.onboarding-row { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 10px 8px 12px; border-radius: 10px; }
+.onboarding-row + .onboarding-row { box-shadow: inset 0 1px 0 var(--border); }
+.onboarding-row[data-installed="false"] { opacity: 0.7; }
+.onboarding-row-text { flex: 1; min-width: 0; }
+.onboarding-row-name { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 500; }
+.onboarding-row-detail { margin-top: 1px; font-size: 12px; line-height: 1.4; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.onboarding-row-state { font-size: 12px; color: var(--faint); white-space: nowrap; }
+.onboarding-row-skel { gap: 16px; justify-content: space-between; }
+.onboarding-waiting { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--accent); }
+.onboarding-note { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.onboarding-note[data-tone="warn"] { color: var(--warn); }
+
+/* Step 2: the two pickers, label beside picker. */
+.onboarding-fields { display: flex; flex-direction: column; border-radius: 14px; border: 1px solid var(--border); background: var(--chip); box-shadow: var(--specular); }
+.onboarding-field { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 20px; padding: 14px 16px; }
+.onboarding-field + .onboarding-field { border-top: 1px solid var(--border); }
+.onboarding-field-text { display: flex; flex-direction: column; gap: 3px; flex: 1 1 200px; min-width: 0; }
+
+/* Step 3: the folder, as one large target. */
+.onboarding-folder {
+  display: flex; align-items: center; gap: 14px; width: 100%; padding: 16px 16px 16px 14px; text-align: left;
+  border-radius: 14px; border: 1px dashed color-mix(in srgb, var(--text) 22%, var(--border)); background: var(--chip); color: var(--text);
+}
+.onboarding-folder:hover:not(:disabled) { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); background: var(--selected); }
+.onboarding-folder[data-chosen] { border-style: solid; border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); box-shadow: var(--specular); }
+.onboarding-folder:disabled { opacity: 0.6; cursor: default; }
+.onboarding-folder-icon {
+  width: 40px; height: 40px; flex: 0 0 40px; border-radius: 11px; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent);
+}
+.onboarding-folder-icon svg { width: 18px; height: 18px; }
+.onboarding-folder-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.onboarding-folder-title { font-size: 14px; font-weight: 500; }
+.onboarding-folder-path { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.onboarding-folder[data-chosen] .onboarding-folder-path { font-family: var(--font-mono); font-size: 12px; color: var(--text); }
+.onboarding-folder-action { font-size: 12.5px; font-weight: 500; color: var(--accent); }
+
+.onboarding-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+/* Motion: the sheet rises once; each step slides in from the side it comes from. */
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-motion="reduced"]) .onboarding { animation: onboarding-in 520ms var(--ease-out) both; }
+  :root:not([data-motion="reduced"]) .onboarding-body[data-dir="forward"] { animation: onboarding-step-forward 320ms var(--ease-out); }
+  :root:not([data-motion="reduced"]) .onboarding-body[data-dir="back"] { animation: onboarding-step-back 320ms var(--ease-out); }
+  :root:not([data-motion="reduced"]) .onboarding-step-dot { transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease, box-shadow 260ms var(--ease-out); }
+  :root:not([data-motion="reduced"]) .onboarding-folder { transition: border-color 160ms ease, background-color 160ms ease; }
+}
+@keyframes onboarding-in { from { opacity: 0; transform: translateY(14px) scale(0.985); } }
+@keyframes onboarding-step-forward { from { opacity: 0; transform: translateX(18px); filter: blur(2px); } }
+@keyframes onboarding-step-back { from { opacity: 0; transform: translateX(-18px); filter: blur(2px); } }
+
+@media (max-width: 620px) {
+  .onboarding.glass-strong { padding: 22px 20px 18px; }
+  .onboarding-step-label { display: none; }
+  .onboarding-step[data-state="current"] .onboarding-step-label { display: inline; }
+}

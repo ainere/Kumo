@@ -18,7 +18,7 @@
 /**
  * The Electron main process: the window, the engine's utility process, and
  * the few app-level actions the renderer may ask for (folder picker, native
- * theme). Everything else — sessions, turns, approvals — goes straight from
+ * theme, the scenes folder). Everything else — sessions, turns, approvals — goes straight from
  * the renderer to the engine over a MessagePort this process hands out.
  */
 
@@ -27,6 +27,7 @@ import type { UtilityProcess } from "electron";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SCENE_SCHEME, handleSceneScheme, registerSceneScheme } from "./scene-protocol";
+import { ensureUserScenesDir, listUserScenes, watchUserScenes } from "./user-scenes";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // In development the engine is the repository's src/. Packaging (Phase 6)
@@ -38,6 +39,7 @@ const GROUND = { dark: "#05070D", light: "#F5F6F8" } as const;
 let win: BrowserWindow | null = null;
 let engine: UtilityProcess | null = null;
 let quitting = false;
+let stopWatchingScenes: (() => void) | null = null;
 
 registerSceneScheme();
 
@@ -123,18 +125,22 @@ function createWindow(): void {
 }
 
 type WindowOp = "minimize" | "toggleMaximize" | "close" | "state";
+type SceneOp = "list" | "openFolder";
 type AppRequest =
   | { action: "pickFolder" }
   | { action: "setTheme"; mode: "system" | "light" | "dark" }
-  | { action: "window"; op: WindowOp };
+  | { action: "window"; op: WindowOp }
+  | { action: "scenes"; op: SceneOp };
 
 const WINDOW_OPS: readonly string[] = ["minimize", "toggleMaximize", "close", "state"];
+const SCENE_OPS: readonly string[] = ["list", "openFolder"];
 
 function isAppRequest(value: unknown): value is AppRequest {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   if (v.action === "pickFolder") return true;
   if (v.action === "window") return typeof v.op === "string" && WINDOW_OPS.includes(v.op);
+  if (v.action === "scenes") return typeof v.op === "string" && SCENE_OPS.includes(v.op);
   return v.action === "setTheme" && (v.mode === "system" || v.mode === "light" || v.mode === "dark");
 }
 
@@ -156,6 +162,13 @@ ipcMain.handle("kumo:app", async (event, request: unknown) => {
     } else if (request.op === "close") win.close();
     return { maximized: win.isMaximized(), focused: win.isFocused() };
   }
+  if (request.action === "scenes") {
+    if (request.op === "list") return listUserScenes();
+    // openPath answers with an error message, or "" when it worked.
+    const failure = await shell.openPath(ensureUserScenesDir());
+    if (failure) throw new Error(failure);
+    return;
+  }
   nativeTheme.themeSource = request.mode;
   win.setBackgroundColor(GROUND[effectiveMode()]);
   return effectiveMode();
@@ -172,6 +185,9 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => callback(allowed(permission)));
   session.defaultSession.setPermissionCheckHandler((_contents, permission) => allowed(permission));
   handleSceneScheme();
+  stopWatchingScenes = watchUserScenes(() => {
+    if (win && !win.isDestroyed()) win.webContents.send("kumo:scenes-changed");
+  });
   startEngine();
   createWindow();
   app.on("activate", () => {
@@ -182,6 +198,8 @@ app.whenReady().then(() => {
 // Let the engine close its sessions (and their provider CLIs) before quitting;
 // a hard kill skips that on Windows.
 app.on("before-quit", (event) => {
+  stopWatchingScenes?.();
+  stopWatchingScenes = null;
   if (quitting || !engine) {
     quitting = true;
     return;

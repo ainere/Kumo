@@ -24,16 +24,21 @@
  * scheme only), which a srcdoc frame couldn't have: it would inherit the
  * window's CSP and its inline scripts would be blocked.
  *
- * Besides the built-in scenes, every `<KUMO_HOME>/scenes/*.js` file is loaded
- * as a scene script, so people can run scenes of their own (or ones they
- * aren't allowed to redistribute) without them ever entering the app.
- * Phase 3c adds theme packages with TypeScript and hot reload on top.
+ * Besides the built-in scenes, every `<KUMO_HOME>/scenes/*.js` and `*.ts` file
+ * is loaded as a scene script (see user-scenes.ts), so people can run scenes
+ * of their own (or ones they aren't allowed to redistribute) without them ever
+ * entering the app.
+ *
+ *   /                      every scene: the runtime, the built-ins, the user's
+ *   /thumb?src=&mode=&accent=
+ *                          the runtime and one scene, for gallery thumbnails;
+ *                          the runtime reads mode and accent from the query
+ *   /runtime.js, /scenes/*.js, /user/<file>
+ *                          the scripts (a .ts scene is served compiled)
  */
 
 import { protocol } from "electron";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { readUserScene, scanUserScenes } from "./user-scenes";
 import runtime from "./scenes/runtime.js?raw";
 import clouds from "./scenes/clouds.js?raw";
 import nightSky from "./scenes/night-sky.js?raw";
@@ -41,36 +46,28 @@ import nightSky from "./scenes/night-sky.js?raw";
 export const SCENE_SCHEME = "kumo-scene";
 export const SCENE_URL = `${SCENE_SCHEME}://scene/`;
 
+const RUNTIME = "/runtime.js";
+
 // The runtime first: it defines defineScene() for the scene files after it.
 const BUILT_IN: Record<string, string> = {
-  "/runtime.js": runtime,
+  [RUNTIME]: runtime,
   "/scenes/clouds.js": clouds,
   "/scenes/night-sky.js": nightSky,
 };
 
-const USER_SCENE_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*\.js$/;
-const MAX_USER_SCENE_BYTES = 4 * 1024 * 1024;
-
-/** The same directory as src/config/paths.js kumoHome(). */
-function userScenesDir(): string {
-  const override = process.env.KUMO_HOME;
-  const home = override && override.trim() !== "" ? path.resolve(override) : path.join(os.homedir(), ".kumo");
-  return path.join(home, "scenes");
-}
-
-function userSceneFiles(): string[] {
+/** User scene scripts that can run; a broken one is left out so it can't take the page down. */
+function userScripts(): string[] {
   try {
-    return fs
-      .readdirSync(userScenesDir())
-      .filter((name) => USER_SCENE_FILE.test(name))
-      .sort();
-  } catch {
+    return scanUserScenes()
+      .filter((scene) => !scene.error)
+      .map((scene) => scene.src);
+  } catch (err) {
+    console.error("kumo: can't read the scenes folder:", err);
     return [];
   }
 }
 
-function page(): string {
-  const scripts = [...Object.keys(BUILT_IN), ...userSceneFiles().map((name) => `/user/${name}`)];
+function pageFor(scripts: string[]): string {
   return [
     "<!doctype html><html><head><meta charset=\"utf-8\">",
     "<style>html,body{margin:0;height:100%;overflow:hidden;background:transparent}</style>",
@@ -80,16 +77,15 @@ function page(): string {
   ].join("");
 }
 
-function readUserScene(name: string): string | undefined {
-  if (!USER_SCENE_FILE.test(name)) return undefined;
-  const file = path.join(userScenesDir(), name);
-  try {
-    const stat = fs.statSync(file);
-    if (!stat.isFile() || stat.size > MAX_USER_SCENE_BYTES) return undefined;
-    return fs.readFileSync(file, "utf-8");
-  } catch {
-    return undefined;
-  }
+function page(): string {
+  return pageFor([...Object.keys(BUILT_IN), ...userScripts()]);
+}
+
+/** The runtime and one scene. `src` must be a scene the full page would load, never the runtime. */
+function thumbPage(src: string | null): string | undefined {
+  if (src === null || src === RUNTIME) return undefined;
+  const known = Object.hasOwn(BUILT_IN, src) || userScripts().includes(src);
+  return known ? pageFor([RUNTIME, src]) : undefined;
 }
 
 const BASE_HEADERS = {
@@ -105,9 +101,14 @@ export function registerSceneScheme(): void {
 
 export function handleSceneScheme(): void {
   protocol.handle(SCENE_SCHEME, (request) => {
-    const { pathname } = new URL(request.url);
-    if (pathname === "/" || pathname === "/index.html") {
-      return new Response(page(), { headers: { ...BASE_HEADERS, "Content-Type": "text/html; charset=utf-8" } });
+    const url = new URL(request.url);
+    const { pathname } = url;
+    const html = (body: string) =>
+      new Response(body, { headers: { ...BASE_HEADERS, "Content-Type": "text/html; charset=utf-8" } });
+    if (pathname === "/" || pathname === "/index.html") return html(page());
+    if (pathname === "/thumb") {
+      const thumb = thumbPage(url.searchParams.get("src"));
+      if (thumb !== undefined) return html(thumb);
     }
     const script = Object.hasOwn(BUILT_IN, pathname)
       ? BUILT_IN[pathname]

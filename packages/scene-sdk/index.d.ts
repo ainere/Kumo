@@ -33,7 +33,25 @@
  *
  * Each frame the runtime clears the canvas (and draws the grid when it's on)
  * before calling the scene. It pauses while the window is hidden and draws a
- * single frame when the OS asks for reduced motion.
+ * single frame when reduced motion is on (the OS setting, or the app's own).
+ * The app may cap the frame rate (10-60 fps): update() still gets the same
+ * fixed 60 Hz steps, frame() and render() just run less often. The gallery
+ * mounts scenes at thumbnail size, at 24 fps at most and with the grid off, so
+ * size everything from ctx.width and ctx.height.
+ *
+ * Put a scene in `<KUMO_HOME>/scenes/` (`~/.kumo/scenes/`) as a `.js` or `.ts`
+ * file; the app reloads it when you save. A scene is ONE CLASSIC SCRIPT:
+ *
+ *   - There is no bundler and no module loading, so no `import` or `export`.
+ *     The only imports allowed are type-only ones, which are removed before
+ *     the scene runs: `import type { SceneContext } from "@kumo/scene-sdk";`.
+ *     (`import { type X } from ...` is not removed entirely; use `import type`.)
+ *   - TypeScript is compiled by stripping types, nothing more: no `enum`
+ *     (use a const object), no `namespace`, no constructor parameter
+ *     properties. A syntax or unsupported-syntax error is shown on the scene's
+ *     card in Settings and the scene isn't loaded.
+ *   - All scene files share one global scope, so wrap yours in a function
+ *     (an IIFE) to keep a top-level `const` from clashing with another file's.
  */
 
 export interface Rect {
@@ -54,6 +72,8 @@ export interface SceneTheme {
   grid: boolean;
   /** The accent color as a CSS color string. */
   accent: string;
+  /** The app's own reduced-motion setting; on, the scene gets one still frame, as with the OS setting. */
+  reducedMotion?: boolean;
 }
 
 export type SceneEvent =
@@ -78,6 +98,7 @@ export interface SceneContext {
   readonly layout: SceneLayout;
   /** Workers running right now. */
   readonly running: number;
+  /** True when the OS or the app asks for reduced motion: the runtime draws a single frame. */
   readonly reducedMotion: boolean;
   /** The point activity gathers toward: the Workers panel, else the composer, else the middle. */
   target(): [x: number, y: number];

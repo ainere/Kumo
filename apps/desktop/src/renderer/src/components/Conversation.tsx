@@ -1,4 +1,4 @@
-import { memo, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, memo, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatElapsed, providerLabel, toolLabel, useNow } from "../lib";
@@ -23,8 +23,10 @@ export function ToolCard({ toolId }: { toolId: string }) {
   const tool = useStore((s) => s.tools[toolId]);
   const now = useNow(tool?.status === "running");
   if (!tool) return null;
+  // A restored call that never reported its time has 0: leave the time out.
+  const known = tool.status === "running" || Boolean(tool.elapsedMs);
   const elapsed = formatElapsed(tool.elapsedMs ?? now - tool.startedAt);
-  const status = tool.status === "running" ? `running · ${elapsed}` : tool.status === "done" ? `done · ${elapsed}` : `failed · ${elapsed}`;
+  const status = known ? `${tool.status} · ${elapsed}` : tool.status;
   return (
     <div className="tool-card" data-part="tool-card" data-status={tool.status} title={tool.task}>
       <span className={tool.status === "running" ? "dot pulse" : "dot"} />
@@ -46,7 +48,13 @@ const UserMessage = memo(function UserMessage({ message }: { message: Message })
 
 const LeadMessage = memo(function LeadMessage({ message }: { message: Message }) {
   const settings = useStore((s) => s.session?.settings);
-  const lead = settings ? `${providerLabel(settings.orchestratorProvider)} · ${settings.orchestratorModel}` : "lead";
+  // A restored turn names the lead it ran on; a live one, the current lead.
+  const ran = useStore((s) => (message.turnId ? s.turnMeta[message.turnId] : undefined));
+  const lead = ran?.provider
+    ? [providerLabel(ran.provider), ran.model].filter(Boolean).join(" · ")
+    : settings
+      ? `${providerLabel(settings.orchestratorProvider)} · ${settings.orchestratorModel}`
+      : "lead";
   return (
     <article className="msg-lead glass" data-part="message-lead" aria-busy={message.streaming}>
       <div className="msg-meta">
@@ -64,6 +72,16 @@ const LeadMessage = memo(function LeadMessage({ message }: { message: Message })
     </article>
   );
 });
+
+/** Above a restored turn that began on another provider, with the earlier turns replayed into it. */
+function ReplayDivider({ provider }: { provider: string | null }) {
+  const name = providerLabel(provider) || "another provider";
+  return (
+    <div className="turn-divider" data-part="turn-divider">
+      <span className="glass">Continued on {name} · earlier turns replayed into its context</span>
+    </div>
+  );
+}
 
 function Diff({ text }: { text: string }) {
   return (
@@ -123,6 +141,7 @@ export function ApprovalCard({ approval }: { approval: Approval }) {
 
 export function Conversation() {
   const messages = useStore((s) => s.messages);
+  const turnMeta = useStore((s) => s.turnMeta);
   const approvals = useStore((s) => s.approvals);
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -143,7 +162,15 @@ export function Conversation() {
       }}
     >
       <div className="column">
-        {messages.map((m) => (m.kind === "user" ? <UserMessage key={m.id} message={m} /> : <LeadMessage key={m.id} message={m} />))}
+        {messages.map((m) => {
+          const meta = m.kind === "user" && m.turnId ? turnMeta[m.turnId] : undefined;
+          return (
+            <Fragment key={m.id}>
+              {meta?.replayed && <ReplayDivider key="divider" provider={meta.provider} />}
+              {m.kind === "user" ? <UserMessage key="message" message={m} /> : <LeadMessage key="message" message={m} />}
+            </Fragment>
+          );
+        })}
         {approvals.map((a) => (
           <ApprovalCard key={a.approvalId} approval={a} />
         ))}

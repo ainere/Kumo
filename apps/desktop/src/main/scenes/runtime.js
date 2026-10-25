@@ -24,15 +24,22 @@
  * The runtime owns the canvas and the loop: it clears and draws the grid
  * each frame, runs update() at a fixed 60 Hz step (at most 4 per frame) and
  * frame()/render() once, pauses while the window is hidden, and draws a
- * single still frame when reduced motion is on.
+ * single still frame when reduced motion is on (the OS setting, or the host's
+ * theme.reducedMotion). The host can cap the frame rate (fps, 10-60); the
+ * fixed-step update still advances by real elapsed time.
  *
  * The host sends theme, layout (where the Workers panel and composer are)
  * and a filtered activity feed — no prompt or response text.
+ *
+ * On the page /thumb?src=&mode=&accent= (gallery cards) only one scene script
+ * is loaded: the runtime mounts it by itself, grid off, at 24 fps at most.
  */
 (function () {
   "use strict";
   var STEP = 1 / 60;
+  var THUMB_FPS = 24;
   var registry = new Map();
+  var thumb = location.pathname === "/thumb";
 
   self.defineScene = function (def) {
     if (def && typeof def.id === "string" && typeof def.mount === "function") registry.set(def.id, def);
@@ -44,6 +51,8 @@
   document.body.appendChild(canvas);
   var g = canvas.getContext("2d");
   var motionQuery = matchMedia("(prefers-reduced-motion: reduce)");
+  // Reduced motion is on when either the OS or the host asks for it.
+  var motion = { os: motionQuery.matches, host: false };
 
   var state = {
     theme: { mode: "dark", grid: true, accent: "#5FD4F4" },
@@ -54,6 +63,8 @@
   var inst = null;
   var raf = 0;
   var last = 0;
+  var fps = 0; // 0: not capped, render on every animation frame
+  var lastRender = 0;
   var acc = 0;
   var W = 0;
   var H = 0;
@@ -99,6 +110,18 @@
     post({ type: "error", message: String((err && err.message) || err) });
   }
 
+  /** Returns whether the effective reduced-motion setting changed. */
+  function setReducedMotion() {
+    var next = motion.os || motion.host;
+    if (next === state.reducedMotion) return false;
+    state.reducedMotion = next;
+    return true;
+  }
+
+  function setFps(value) {
+    if (typeof value === "number" && isFinite(value)) fps = Math.min(60, Math.max(10, Math.round(value)));
+  }
+
   function resize() {
     dpr = Math.min(2, self.devicePixelRatio || 1);
     W = self.innerWidth;
@@ -132,8 +155,10 @@
         if (inst.update) {
           acc += dt;
           var n = 0;
-          while (acc >= STEP && n < 4) { inst.update(STEP); acc -= STEP; n++; }
-          if (n === 4) acc = 0;
+          // A low fps cap makes dt (at most 0.1 s) cover more steps than 4.
+          var most = Math.max(4, Math.ceil(1 / ((fps || 60) * STEP)) + 1);
+          while (acc >= STEP && n < most) { inst.update(STEP); acc -= STEP; n++; }
+          if (n === most) acc = 0;
         }
         if (inst.frame) inst.frame(dt);
         if (inst.render) inst.render();
@@ -148,6 +173,14 @@
 
   function loop(ts) {
     raf = requestAnimationFrame(loop);
+    if (fps) {
+      // Skip frames until one fps-th of a second has passed (1 ms of slack for
+      // timer jitter). Snapping to the frame grid keeps the average at the cap.
+      var gap = 1000 / fps;
+      var since = ts - lastRender;
+      if (lastRender && since < gap - 1) return;
+      lastRender = !lastRender || since < gap ? ts : ts - (since % gap);
+    }
     var dt = last ? Math.min(0.1, (ts - last) / 1000) : STEP;
     last = ts;
     render(dt);
@@ -162,6 +195,7 @@
   function start() {
     cancelAnimationFrame(raf);
     last = 0;
+    lastRender = 0;
     if (state.reducedMotion || document.hidden) {
       render(0);
       return;
@@ -195,8 +229,8 @@
   self.addEventListener("resize", resize);
   document.addEventListener("visibilitychange", start);
   motionQuery.addEventListener("change", function (e) {
-    state.reducedMotion = e.matches;
-    start();
+    motion.os = e.matches;
+    if (setReducedMotion()) start();
   });
 
   self.addEventListener("message", function (e) {
@@ -204,15 +238,25 @@
     var m = e.data;
     if (!m || m.kumo !== 1) return;
     if (m.type === "init") {
-      if (m.theme) state.theme = m.theme;
+      if (m.theme) {
+        state.theme = m.theme;
+        motion.host = m.theme.reducedMotion === true;
+        setReducedMotion();
+      }
       if (m.layout) state.layout = m.layout;
+      setFps(m.fps);
       mount(m.scene);
     } else if (m.type === "scene") {
       mount(m.scene);
     } else if (m.type === "theme") {
       state.theme = m.theme;
+      motion.host = !!m.theme && m.theme.reducedMotion === true;
+      var motionChanged = setReducedMotion();
       deliver({ type: "theme", theme: m.theme });
-      if (state.reducedMotion || document.hidden) render(0);
+      if (motionChanged) start();
+      else if (state.reducedMotion || document.hidden) render(0);
+    } else if (m.type === "fps") {
+      setFps(m.fps);
     } else if (m.type === "layout") {
       state.layout = m.layout;
       deliver({ type: "layout", layout: m.layout });
@@ -221,12 +265,27 @@
     }
   });
 
+  /** Gallery card: the one scene this page loaded, themed by the query string. */
+  function mountThumb() {
+    var query = new URLSearchParams(location.search);
+    var accent = query.get("accent");
+    state.theme = {
+      mode: query.get("mode") === "light" ? "light" : "dark",
+      grid: false,
+      accent: /^[0-9a-fA-F]{3,8}$/.test(accent || "") ? "#" + accent : state.theme.accent,
+    };
+    fps = THUMB_FPS;
+    var first = registry.values().next();
+    if (!first.done) mount(first.value.id);
+  }
+
   // Every scene script has run by now: they're classic scripts after this one.
   document.addEventListener("DOMContentLoaded", function () {
     var scenes = [];
     registry.forEach(function (def) {
       scenes.push({ id: def.id, name: typeof def.name === "string" && def.name ? def.name : def.id });
     });
+    if (thumb) mountThumb();
     post({ type: "ready", scenes: scenes });
   });
 })();

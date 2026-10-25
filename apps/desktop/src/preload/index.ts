@@ -18,11 +18,13 @@
 /**
  * The renderer's only door to the rest of the app. It exposes two things:
  * `kumo.invoke(command, args)` / `kumo.onEvent(cb)` over the engine's
- * MessagePort, and `kumo.app.*` for the folder picker and native theme.
+ * MessagePort, and `kumo.app.*` for the folder picker, native theme, window
+ * controls and the scenes folder.
  * The engine validates every command; nothing else is reachable from the page.
  */
 
 import { contextBridge, ipcRenderer } from "electron";
+import type { SceneList } from "../main/user-scenes";
 
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void };
 type Request = { id: number; command: string; args: unknown };
@@ -82,6 +84,11 @@ ipcRenderer.on("kumo:window-state", (_event, state: WindowState) => {
   for (const listener of windowListeners) listener(state);
 });
 
+const sceneListeners = new Set<() => void>();
+ipcRenderer.on("kumo:scenes-changed", () => {
+  for (const listener of sceneListeners) listener();
+});
+
 contextBridge.exposeInMainWorld("kumo", {
   invoke(command: string, args?: unknown): Promise<unknown> {
     const request = { id: nextId++, command: String(command), args: args ?? {} };
@@ -108,6 +115,14 @@ contextBridge.exposeInMainWorld("kumo", {
     onWindowState(listener: (state: WindowState) => void): () => void {
       windowListeners.add(listener);
       return () => windowListeners.delete(listener);
+    },
+    scenes: {
+      list: (): Promise<SceneList> => ipcRenderer.invoke("kumo:app", { action: "scenes", op: "list" }),
+      openFolder: (): Promise<void> => ipcRenderer.invoke("kumo:app", { action: "scenes", op: "openFolder" }),
+      onChanged(listener: () => void): () => void {
+        sceneListeners.add(listener);
+        return () => sceneListeners.delete(listener);
+      },
     },
   },
 });

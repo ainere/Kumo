@@ -189,7 +189,8 @@ function WorkerCard({ toolId, chat, open, roleChip }: { toolId: string; chat: st
   }, [tool?.output, tool?.status, expanded]);
 
   if (!tool) return null;
-  const elapsed = formatElapsed(tool.elapsedMs ?? now - tool.startedAt);
+  // A run restored from an older turn log has no recorded time: show none rather than "0s".
+  const elapsed = tool.status !== "running" && !tool.elapsedMs ? "" : formatElapsed(tool.elapsedMs ?? now - tool.startedAt);
   return (
     <div className="worker-card" data-part="worker-card" data-status={tool.status} data-open={expanded}>
       <button
@@ -206,7 +207,7 @@ function WorkerCard({ toolId, chat, open, roleChip }: { toolId: string; chat: st
           {(!roleChip || tool.role === null) && <span className="tool-name">{toolLabel(tool.name)}</span>}
           <span className="tool-model">{tool.model ?? ""}</span>
           <span className="spacer" />
-          <span className="tool-status">{tool.status === "failed" ? `failed · ${elapsed}` : elapsed}</span>
+          <span className="tool-status">{tool.status === "failed" ? (elapsed ? `failed · ${elapsed}` : "failed") : elapsed}</span>
           <Chevron />
         </span>
         {!expanded && tool.task && <span className="worker-task-line">{tool.task}</span>}

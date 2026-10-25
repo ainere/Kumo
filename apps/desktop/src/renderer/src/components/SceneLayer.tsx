@@ -1,20 +1,21 @@
 /**
  * The background scene: a sandboxed iframe on kumo-scene:// behind the glass
- * (see src/main/scene-protocol.ts). It's told the theme, where the Workers
- * panel and composer sit, and a filtered activity feed: event types, tool
- * names and models, never prompt or response text.
+ * (see src/main/scene-protocol.ts). It's told the theme (reduced motion
+ * included), the frame rate cap, where the Workers panel and composer sit,
+ * and a filtered activity feed: event types, tool names and models, never
+ * prompt or response text. It reloads when the user's scenes folder changes.
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { setState, toast, useStore } from "../store";
-import { useResolvedMode } from "../theme";
+import { useAppliedTheme } from "../theme";
 import type { KumoEvent } from "../types";
 
 const SCENE_URL = "kumo-scene://scene/";
 
 type Rect = { x: number; y: number; w: number; h: number };
 type Layout = { workers: Rect | null; composer: Rect | null };
-type Theme = { mode: "dark" | "light"; grid: boolean; accent: string };
+type Theme = { mode: "dark" | "light"; grid: boolean; accent: string; reducedMotion: boolean };
 
 function feedEvent(e: KumoEvent): Record<string, unknown> | null {
   switch (e.type) {
@@ -49,15 +50,14 @@ export function SceneLayer() {
   const ready = useRef(false);
   const scene = useStore((s) => s.prefs?.scene ?? "clouds");
   const grid = useStore((s) => s.prefs?.grid ?? true);
-  const mode = useResolvedMode();
+  const fps = useStore((s) => s.prefs?.sceneFps ?? 60);
+  const { mode, accent, reducedMotion } = useAppliedTheme();
+  // A new page each time the scenes folder changes, so an added or edited scene registers.
+  const [generation, setGeneration] = useState(0);
 
-  const theme = (): Theme => ({
-    mode,
-    grid,
-    accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
-  });
-  const latest = useRef({ scene, theme });
-  latest.current = { scene, theme };
+  const theme = (): Theme => ({ mode, grid, accent, reducedMotion });
+  const latest = useRef({ scene, theme, fps });
+  latest.current = { scene, theme, fps };
 
   const post = (message: Record<string, unknown>) => {
     if (ready.current) frame.current?.contentWindow?.postMessage({ ...message, kumo: 1 }, "*");
@@ -77,7 +77,7 @@ export function SceneLayer() {
             .filter((s): s is { id: string; name: string } => typeof s?.id === "string" && typeof s?.name === "string")
             .map((s) => ({ id: s.id.slice(0, 64), name: s.name.slice(0, 40) })),
         });
-        post({ type: "init", scene: latest.current.scene, theme: latest.current.theme(), layout: measure() });
+        post({ type: "init", scene: latest.current.scene, theme: latest.current.theme(), fps: latest.current.fps, layout: measure() });
         document.documentElement.dataset.scene = "ready";
       } else if (m.type === "error" && Date.now() - lastError > 10_000) {
         lastError = Date.now();
@@ -91,7 +91,18 @@ export function SceneLayer() {
   }, []);
 
   useEffect(() => post({ type: "scene", scene }), [scene]);
-  useEffect(() => post({ type: "theme", theme: theme() }), [mode, grid]);
+  useEffect(() => post({ type: "theme", theme: theme() }), [mode, grid, accent, reducedMotion]);
+  useEffect(() => post({ type: "fps", fps }), [fps]);
+
+  // Hot reload: the folder watcher says a scene file was added, changed or removed.
+  useEffect(
+    () =>
+      window.kumo.app.scenes.onChanged(() => {
+        ready.current = false;
+        setGeneration((n) => n + 1);
+      }),
+    []
+  );
 
   // Panels appear, dock and resize; a cheap poll catches all of it.
   useEffect(() => {
@@ -118,6 +129,7 @@ export function SceneLayer() {
 
   return (
     <iframe
+      key={generation}
       ref={frame}
       className="scene-layer"
       data-part="scene"

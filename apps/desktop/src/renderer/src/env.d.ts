@@ -10,6 +10,14 @@ interface KumoBridge {
     platform: string;
     window(op: "minimize" | "toggleMaximize" | "close" | "state"): Promise<{ maximized: boolean; focused: boolean }>;
     onWindowState(listener: (state: { maximized: boolean; focused: boolean }) => void): () => void;
+    scenes: {
+      /** The user's scenes folder (created if missing) and the scene files in it. */
+      list(): Promise<{ dir: string; files: import("./types").SceneFile[] }>;
+      /** Opens the scenes folder in the system file manager. */
+      openFolder(): Promise<void>;
+      /** A scene file was added, changed or removed; the scene page serves the new set. */
+      onChanged(listener: () => void): () => void;
+    };
   };
 }
 

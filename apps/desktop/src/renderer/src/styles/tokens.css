@@ -15,17 +15,18 @@
   /* Usage meters, from the accent: a pale 5-hour fill under a deeper weekly one. */
   --meter-5h: color-mix(in oklab, var(--accent) 50%, white);
   --meter-week: color-mix(in oklab, var(--accent) 72%, black);
+  --meter-month: color-mix(in oklab, var(--accent) 86%, black);
   --ok: #9ece6a;
   --bad: #f7768e;
   --warn: #f2b866;
   --halo: transparent;
   --menu-opacity: 0.92;
-  /* Window buttons in the Night sky hues: rose, lavender, the cyan accent. */
+  /* Window buttons matching theme status tokens */
   --win-close: #f7768e;
-  --win-min: #bb9af7;
-  --win-max: #5fd4f4;
-  --win-idle: rgb(160 190 240 / 0.2);
-  --win-glyph: rgb(5 7 13 / 0.72);
+  --win-min: #f2b866;
+  --win-max: #9ece6a;
+  --win-idle: rgb(160 190 240 / 0.18);
+  --win-glyph: rgb(5 7 13 / 0.85);
   color-scheme: dark;
 }
 
@@ -44,16 +45,17 @@
   /* The light track is pale, so the 5-hour fill keeps more of the accent. */
   --meter-5h: color-mix(in oklab, var(--accent) 72%, white);
   --meter-week: color-mix(in oklab, var(--accent) 66%, black);
+  --meter-month: color-mix(in oklab, var(--accent) 82%, black);
   --ok: #2e7d32;
   --bad: #c62828;
   --warn: #8a5a12;
   --halo: radial-gradient(closest-side, rgb(245 246 248 / 0.92), rgb(245 246 248 / 0));
   --menu-opacity: 0.94;
-  --win-close: #e5677f;
-  --win-min: #9a7be6;
-  --win-max: #35a6d8;
+  --win-close: #ef4444;
+  --win-min: #f59e0b;
+  --win-max: #10b981;
   --win-idle: rgb(14 30 60 / 0.16);
-  --win-glyph: rgb(255 255 255 / 0.92);
+  --win-glyph: rgb(255 255 255 / 0.95);
   color-scheme: light;
 }
 
