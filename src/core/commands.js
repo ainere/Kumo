@@ -50,6 +50,7 @@ import { listAccounts, signIn, signOut, testEndpoint } from "./accounts.js";
 import { getCatalog } from "./catalog.js";
 import { runDoctor, repairDoctor, doctorReport } from "./doctor.js";
 import { SESSION_SETTING_KEYS, snapshotSettings } from "./settings.js";
+import { QuotaMonitor } from "./quota-monitor.js";
 import { loadConfig, setConfigValue, normalizeConfigValue, ALLOWED_PROVIDERS } from "../config/settings.js";
 import { modelBelongsElsewhere, resolveModel } from "../config/models.js";
 import { KNOWN_ORCHESTRATORS, orchestratorDelegates } from "../providers/orchestrators/registry.js";
@@ -185,6 +186,7 @@ export const CommandSchemas = {
   "session.exportMarkdown": z.object({ sessionId: id, filename: exportFilename.optional() }).strict(),
   "session.refreshQuotas": sessionOnly,
   "session.stop": sessionOnly,
+  "quotas.refresh": z.object({}).strict(),
   "accounts.list": refreshOnly,
   "accounts.signIn": z.object({ provider: providerArg }).strict(),
   "accounts.signOut": z.object({ provider: providerArg }).strict(),
@@ -219,9 +221,11 @@ export function sessionSnapshot(s) {
 
 /**
  * @param {import("./session-manager.js").SessionManager} manager
+ * @param {{ quotaOptions?: Partial<ConstructorParameters<typeof QuotaMonitor>[0]> }} [opts]
+ *   quotaOptions: how the engine's own quota monitor reads usage (tests stub the probes)
  * @returns {(name: string, args?: unknown) => Promise<unknown>}
  */
-export function createCommandRouter(manager) {
+export function createCommandRouter(manager, opts = {}) {
   /** @param {string} sessionId */
   const session = (sessionId) => {
     const s = manager.get(sessionId);
@@ -236,6 +240,21 @@ export function createCommandRouter(manager) {
    * @returns {string[]}
    */
   const openWorkspaces = () => manager.list().map((s) => s.workspace);
+
+  /**
+   * The engine's own quota monitor, for when no session is open. It has no
+   * lead client (so no lead probe) and never polls; it reads the saved
+   * defaults and shares the quota cache with the sessions.
+   *
+   * @type {QuotaMonitor|null}
+   */
+  let engineQuotas = null;
+  const sessionlessQuotas = () =>
+    (engineQuotas ??= new QuotaMonitor({
+      getClient: () => null,
+      getSettings: () => snapshotSettings(loadConfig()),
+      ...opts.quotaOptions,
+    }));
 
   /** @type {Record<CommandName, (args: any) => unknown>} */
   const handlers = {
@@ -284,6 +303,12 @@ export function createCommandRouter(manager) {
     "session.stop": async ({ sessionId }) => {
       await manager.close(sessionId);
       return null;
+    },
+    // An open session's monitor stays the one source (its cache writes and `quota.updated`); with none, the engine's reads the same accounts.
+    // Callers that ask while a probe runs share it (the monitor's own dedupe).
+    "quotas.refresh": () => {
+      const open = manager.list().find((s) => !s.closed);
+      return open ? open.refreshQuotas() : sessionlessQuotas().probeAll();
     },
     "accounts.list": ({ refresh }) => listAccounts({ refresh }),
     "accounts.signIn": ({ provider }) => signIn(provider),

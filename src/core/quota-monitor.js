@@ -31,7 +31,11 @@
  *
  * Every event carries every account's figures (snapshotAll): Settings ›
  * Accounts shows them all, and the sidebar keeps the providers the crew
- * draws on. The CLI header reads snapshot(), the crew's alone.
+ * draws on, named in `active`. The CLI header reads snapshot(), the crew's
+ * alone. Every figure carries `checkedAt`, when it was last read.
+ *
+ * With no session open the engine runs one of these on its own (no lead
+ * client, no polling) so Settings can still refresh the accounts' usage.
  */
 
 import { EventEmitter } from "node:events";
@@ -44,9 +48,12 @@ import { accountStatus, cachedAccountStatus, getClaudeUsage, onSignedOut } from 
 /**
  * `providers` holds the account limits of every active provider other than
  * Antigravity (whose usage is `antigravity`): the orchestrator's live ones and
- * the last cached ones for providers that only roles run on.
+ * the last cached ones for providers that only roles run on. `active` names
+ * the providers in use (the lead, the shared worker, every built-in and custom
+ * role), including those with no figures yet. Each figure's `checkedAt` is
+ * the epoch ms it was last read successfully.
  *
- * @typedef {{ orchestrator: Limits, antigravity: Limits, providers: Record<string, Limits> }} QuotaSnapshot
+ * @typedef {{ orchestrator: Limits, antigravity: Limits, providers: Record<string, Limits>, active: string[] }} QuotaSnapshot
  */
 
 /**
@@ -65,6 +72,19 @@ export const ANTIGRAVITY_REFRESH_MS = 5 * 60 * 1000;
 export const POLL_MS = 10 * 1000;
 /** However slow its parts are, a full probe is answered by then, and what it still runs is stopped. */
 export const PROBE_TIMEOUT_MS = 20 * 1000;
+
+/**
+ * Mark limits as read just now. Stamped in place: the monitor files the very
+ * object the client returned (callers compare it by identity), and the quota
+ * cache then keeps the stamp across restarts.
+ *
+ * @param {NonNullable<Limits>} limits
+ * @returns {NonNullable<Limits>}
+ */
+function stamped(limits) {
+  limits.checkedAt = Date.now();
+  return limits;
+}
 
 export class QuotaMonitor extends EventEmitter {
   /**
@@ -159,7 +179,12 @@ export class QuotaMonitor extends EventEmitter {
       const limits = provider === settings.orchestratorProvider ? this.orchestrator ?? this.known[provider] : this.known[provider];
       if (limits) providers[provider] = limits;
     }
-    return { orchestrator: this.orchestrator, antigravity: this.usesAntigravity() ? this.antigravity : null, providers };
+    return {
+      orchestrator: this.orchestrator,
+      antigravity: this.usesAntigravity() ? this.antigravity : null,
+      providers,
+      active: this.activeProviders(),
+    };
   }
 
   /**
@@ -179,7 +204,7 @@ export class QuotaMonitor extends EventEmitter {
     if (this.orchestrator) {
       providers[settings.orchestratorProvider] = this.orchestrator;
     }
-    return { orchestrator: this.orchestrator, antigravity: this.antigravity, providers };
+    return { orchestrator: this.orchestrator, antigravity: this.antigravity, providers, active: this.activeProviders() };
   }
 
   /**
@@ -269,7 +294,7 @@ export class QuotaMonitor extends EventEmitter {
     try {
       const agy = await this.fetchAntigravityUsage().catch(() => null);
       if (agy && !signal.aborted) {
-        this.antigravity = agy;
+        this.antigravity = stamped(agy);
         fresh.agy = true;
       }
     } catch {
@@ -278,16 +303,18 @@ export class QuotaMonitor extends EventEmitter {
   }
 
   /**
-   * 3. Codex's limits through an app-server of its own, when Codex is not the
-   * orchestrator (whose client reports them) and its account is usable. The
-   * app-server is stopped however this ends, including when the probe's time
-   * is up.
+   * 3. Codex's limits through an app-server of its own, unless Codex leads
+   * through a client that reports them, and when its account is usable. With
+   * no such client (the engine's own monitor, or a session whose lead is not
+   * up) Codex is probed even as the lead. The app-server is stopped however
+   * this ends, including when the probe's time is up.
    *
    * @param {Fresh} fresh
    * @param {AbortSignal} signal
    */
   async _probeCodex(fresh, signal) {
-    if (this.getSettings().orchestratorProvider === "codex") return;
+    const lead = this.getClient();
+    if (this.getSettings().orchestratorProvider === "codex" && typeof lead?.getRateLimits === "function") return;
     if (!this._accountUsable(await accountStatus("codex")) || signal.aborted) return;
     try {
       const { CodexAppClient } = await import("../providers/orchestrators/codex-client.js");
@@ -301,8 +328,10 @@ export class QuotaMonitor extends EventEmitter {
         await codexClient.start();
         const limits = await codexClient.getRateLimits();
         if (limits && !signal.aborted && (this._forgotten["codex"] ?? 0) === forgotten) {
+          stamped(limits);
           this.known["codex"] = limits;
           fresh.limits["codex"] = limits;
+          if (this.getSettings().orchestratorProvider === "codex") this.orchestrator = limits;
         }
       } finally {
         signal.removeEventListener("abort", stopClient);
@@ -326,6 +355,7 @@ export class QuotaMonitor extends EventEmitter {
     const forgotten = this._forgotten["claude"] ?? 0;
     const limits = await this.fetchClaudeUsage().catch(() => null);
     if (!limits || signal.aborted || (this._forgotten["claude"] ?? 0) !== forgotten) return;
+    stamped(limits);
     this.known["claude"] = limits;
     fresh.limits["claude"] = limits;
     if (this.getSettings().orchestratorProvider === "claude") this.orchestrator = limits;
@@ -357,7 +387,7 @@ export class QuotaMonitor extends EventEmitter {
     const forgotten = this._forgotten[provider] ?? 0;
     const limits = await client.getRateLimits().catch(() => null);
     if (!limits || this.getSettings().orchestratorProvider !== provider || (this._forgotten[provider] ?? 0) !== forgotten) return null;
-    return { provider, limits };
+    return { provider, limits: stamped(limits) };
   }
 
   /**
@@ -409,7 +439,7 @@ export class QuotaMonitor extends EventEmitter {
       this._antigravityAt = now;
       const usage = await this.fetchAntigravityUsage().catch(() => null);
       if (usage) {
-        this.antigravity = usage;
+        this.antigravity = stamped(usage);
         fresh.agy = true;
         changed = true;
       }

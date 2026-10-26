@@ -168,6 +168,8 @@ export const EventSchemas = {
     // Every signed-in provider's account limits (e.g. claude, codex), whether
     // the crew uses it or not; Antigravity's stay in `antigravity`.
     providers: z.record(z.string(), limits).optional(),
+    // The providers in use (the lead, the shared worker, any role), with or without figures yet.
+    active: z.array(z.string()),
   }),
 };
 

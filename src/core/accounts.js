@@ -48,7 +48,7 @@ import { findCursorBinary } from "../providers/workers/cursor.js";
 import { findOllamaBinary } from "../providers/workers/ollama.js";
 import { findOpencodeBinary } from "../providers/workers/opencode.js";
 import { findCommandcodeBinary } from "../providers/workers/commandcode.js";
-import { getCachedQuotas, saveProviderQuotas, dropProviderQuotas } from "../utils/quota-cache.js";
+import { getCachedQuotas, dropProviderQuotas } from "../utils/quota-cache.js";
 import { formatPlanType, formatResetTime } from "../utils/ui.js";
 import { readBoundedText } from "../providers/api/api-transport.js";
 import { launchTerminalCommand } from "../utils/window-launcher.js";
@@ -519,9 +519,7 @@ async function readAntigravity() {
   if (!health.authenticated) {
     return { signedIn: false, detail: "Not signed in, or agy returned no usage. Run agy and sign in." };
   }
-  if (health.usage) {
-    saveProviderQuotas("antigravity", null, health.usage);
-  }
+  // The usage this read is not kept: the quota monitors own it (`quotas.refresh`), so there is one source with one `checkedAt`.
   return { signedIn: true, plan: "Google AI Pro", detail: "Signed in. agy has no sign-out command; sign out from inside agy." };
 }
 
