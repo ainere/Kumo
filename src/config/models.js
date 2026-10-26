@@ -148,7 +148,7 @@ export const LEGACY_MODEL_IDS = {
   "claude-opus-4-6-thinking": "claude-opus-5-5",
 };
 
-/** `agy models` lists each of these with -low/-medium/-high variants; Kumo keeps the base id and passes effort separately. */
+/** `agy models` lists each of these once per effort it has (-low/-medium/-high); Kumo keeps the base id and passes the effort separately. */
 const ANTIGRAVITY_MODELS = [
   { id: "gemini-4-argon", name: "Gemini 4 Argon", alias: "argon", desc: "Google's frontier model" },
   { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", alias: "flash", desc: "High-throughput worker model" },
@@ -156,6 +156,34 @@ const ANTIGRAVITY_MODELS = [
   { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", desc: "Claude via Google AI Pro" },
   { id: "gpt-oss-120b", name: "GPT-OSS 120B", alias: "oss", desc: "Open-weights model" },
 ];
+
+/** The effort variants `agy models` lists, lowest first. A model has some or all of them. */
+export const AGY_EFFORTS = ["low", "medium", "high"];
+
+/**
+ * The variants `agy models` listed for each model above (agy 1.4.7): the table
+ * used while agy cannot be asked (signed out, timed out). Gemini and Claude
+ * have all three; GPT-OSS only Medium.
+ */
+const ANTIGRAVITY_EFFORTS = new Map([
+  ["gemini-4-argon", AGY_EFFORTS],
+  ["gemini-3.8-flash", AGY_EFFORTS],
+  ["claude-opus-5-5", AGY_EFFORTS],
+  ["claude-sonnet-5-5", AGY_EFFORTS],
+  ["gpt-oss-120b", ["medium"]],
+]);
+
+/**
+ * The efforts agy lists for a catalogued Antigravity model, as Kumo last knew
+ * them; null for a model the table does not have.
+ *
+ * @param {string} model
+ * @returns {string[] | null}
+ */
+export function antigravityEfforts(model) {
+  const levels = ANTIGRAVITY_EFFORTS.get(String(model ?? "").toLowerCase().trim());
+  return levels ? [...levels] : null;
+}
 
 /** @type {Record<string, ModelEntry[]>} */
 export const MODEL_CATALOG = {
@@ -345,30 +373,62 @@ export function isCodexModel(model, provider = null) {
 }
 
 /**
- * Whether Antigravity takes `--effort` for this model. Its Gemini and
- * open-weights models do; for Claude models agy picks the effort itself.
+ * Whether Antigravity takes `--effort` for a model that neither `agy models`
+ * nor Kumo's table (antigravityEfforts) can say anything about: its Gemini,
+ * Claude and open-weights models do (agy lists low/medium/high variants for
+ * each), an id that already names a variant does not.
  *
  * @param {string} model
  */
 export function supportsEffort(model) {
   if (!model) return false;
   const norm = model.toLowerCase().trim();
-  if (norm.startsWith("gpt-oss")) return true;
-  if (norm.startsWith("claude-") || /\b(opus|sonnet|haiku|fable)\b/.test(norm)) return false;
   if (/-(low|medium|high)$/.test(norm)) return false;
+  if (norm.startsWith("gpt-oss")) return true;
+  if (norm.startsWith("claude-") || /\b(opus|sonnet|haiku|fable)\b/.test(norm)) return true;
   return norm.startsWith("gemini-") || norm.startsWith("chatgpt-") || /^gpt-\d/.test(norm);
 }
 
 /**
- * The effort to pass agy for a level Kumo accepts: agy has a model at low,
- * medium and high (`agy models` lists those variants), so Extra and Max run
- * as High. A saved level stays as it is; a Gemini model just runs it at High.
+ * The effort to pass agy for a level Kumo accepts when nothing says which
+ * levels the model has: agy's variants stop at high, so Extra and Max run as
+ * High. A saved level stays as it is.
  *
  * @param {string} effort
  * @returns {string}
  */
 export function agyEffort(effort) {
   return effort === "xhigh" || effort === "max" ? "high" : effort;
+}
+
+/**
+ * The level among the `levels` a model has that is nearest to `effort`, ties
+ * going down: Extra and Max land on the highest the model has, and a model
+ * with one level always gets that one. A level Kumo does not know is returned
+ * as it is, for agy to refuse.
+ *
+ * @param {string} effort
+ * @param {string[]} levels - the model's levels, any order; at least one
+ * @returns {string}
+ */
+export function clampEffort(effort, levels) {
+  const want = EFFORT_LEVELS.indexOf(String(effort).toLowerCase());
+  if (want < 0) return effort;
+  let best = null;
+  let bestRank = -1;
+  for (const level of levels) {
+    const rank = EFFORT_LEVELS.indexOf(level);
+    if (rank < 0) continue;
+    const better =
+      best === null ||
+      Math.abs(rank - want) < Math.abs(bestRank - want) ||
+      (Math.abs(rank - want) === Math.abs(bestRank - want) && rank < bestRank);
+    if (better) {
+      best = level;
+      bestRank = rank;
+    }
+  }
+  return best ?? effort;
 }
 
 /** Claude models that Claude Code runs at its own effort, whatever their version says. */

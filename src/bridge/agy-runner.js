@@ -28,8 +28,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, supportsEffort } from "../config/settings.js";
-import { agyEffort } from "../config/models.js";
-import { MODEL_CATALOG } from "../config/models.js";
+import { agyEffort, antigravityEfforts, clampEffort, AGY_EFFORTS, MODEL_CATALOG } from "../config/models.js";
 import { formatIsoResetTime } from "../utils/ui.js";
 import { loadProjectRegistry, hashWorkspace } from "../data/sessions.js";
 import {
@@ -235,8 +234,9 @@ export async function runAgy(opts) {
   if (model) {
     args.push("--model", model);
   }
-  if (effort && supportsEffort(model)) {
-    args.push("--effort", agyEffort(effort));
+  const effortArg = agyEffortArg(model, effort);
+  if (effortArg) {
+    args.push("--effort", effortArg);
   }
   if (canWrite) {
     args.push("--dangerously-skip-permissions");
@@ -533,16 +533,51 @@ export async function checkAgyHealth(opts = {}) {
   };
 }
 
-/** The effort variants `agy models` lists, lowest first. */
-const AGY_EFFORT_ORDER = ["low", "medium", "high"];
+/** Default fallback worker models, with the efforts Kumo's table has for each. */
+export const DEFAULT_WORKER_MODELS = MODEL_CATALOG.antigravity.map(({ id, name }) => ({
+  id,
+  name,
+  efforts: antigravityEfforts(id) ?? [],
+}));
 
-/** Default fallback worker models */
-export const DEFAULT_WORKER_MODELS = MODEL_CATALOG.antigravity.map(({ id, name }) => ({ id, name }));
+/**
+ * The efforts the last successful `agy models` listed, by base model id; null
+ * until one has. Runs read it instead of asking agy each time.
+ *
+ * @type {Map<string, string[]> | null}
+ */
+let listedEfforts = null;
+
+/** Forget the efforts `agy models` listed (tests). */
+export function clearAgyModelsCache() {
+  listedEfforts = null;
+}
+
+/**
+ * The `--effort` value for agy to run `model` at, or null for none.
+ *
+ * Where the model's levels are known (the last `agy models`, else Kumo's table
+ * of what it listed) the level is the nearest one the model has, so GPT-OSS,
+ * which has only Medium, runs at Medium whatever was asked. A model with no
+ * levels listed gets none. A model neither knows keeps the older rule:
+ * `supportsEffort` says whether it takes one, passed through agyEffort.
+ *
+ * @param {string|null|undefined} model
+ * @param {string|null|undefined} effort
+ * @returns {string|null}
+ */
+export function agyEffortArg(model, effort) {
+  if (!model || !effort) return null;
+  const levels = listedEfforts?.get(String(model).toLowerCase().trim()) ?? antigravityEfforts(model);
+  if (levels) return levels.length > 0 ? clampEffort(effort, levels) : null;
+  return supportsEffort(model) ? agyEffort(effort) : null;
+}
 
 /**
  * Discover available worker models via `agy models`. agy lists a model once
  * per effort it takes (`gemini-3.8-flash-low`, `-medium`, `-high`); each comes
  * back once, with those efforts in `efforts` (empty when it has no variants).
+ * An answer agy gave is remembered for runs (agyEffortArg); the fallback list is not.
  * @returns {Promise<Array<{id: string, name: string, efforts?: string[]}>>}
  */
 export async function getAgyModels() {
@@ -596,9 +631,11 @@ export async function getAgyModels() {
         }
         if (variant && !model.efforts.includes(variant)) model.efforts.push(variant);
       }
-      for (const model of models) model.efforts.sort((a, b) => AGY_EFFORT_ORDER.indexOf(a) - AGY_EFFORT_ORDER.indexOf(b));
+      for (const model of models) model.efforts.sort((a, b) => AGY_EFFORTS.indexOf(a) - AGY_EFFORTS.indexOf(b));
 
-      resolve(models.length > 0 ? models : DEFAULT_WORKER_MODELS);
+      if (models.length === 0) return resolve(DEFAULT_WORKER_MODELS);
+      listedEfforts = new Map(models.map((m) => [m.id, m.efforts]));
+      resolve(models);
     });
 
     proc.on("error", () => {

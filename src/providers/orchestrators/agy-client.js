@@ -22,17 +22,15 @@
  * translating line-delimited JSON stream events into standard Orchestrator client events:
  * `delta`, `reasoning`, `item_started`, `item_completed`, `turn_completed`.
  *
- * Supports all Antigravity models including Claude Opus 4.6 Thinking, Claude Sonnet 4.6,
- * Gemini 3.8 Flash, Gemini 3.7 Flash, and GPT-OSS 120B under Google AI Pro subscription.
+ * Runs any model `agy models` lists (Gemini, Claude and GPT-OSS on a Google AI Pro
+ * subscription), at the reasoning level that model offers.
  */
 
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { getCliBinary, getAgyUsage, isArgonModel } from "../../bridge/agy-runner.js";
+import { getCliBinary, getAgyUsage, isArgonModel, agyEffortArg } from "../../bridge/agy-runner.js";
 import { safeSpawn, childEnvFor, stopProcessTree } from "../../utils/process.js";
-import { supportsEffort } from "../../config/settings.js";
-import { agyEffort } from "../../config/models.js";
 import { ensureAntigravityBridgeConfig } from "../../config/sync.js";
 
 function getTaskSignature(raw) {
@@ -96,8 +94,9 @@ export class AgyAppClient extends EventEmitter {
         args.push("--model", this.activeModel);
       }
 
-      if (this.activeEffort && supportsEffort(this.activeModel)) {
-        args.push("--effort", agyEffort(this.activeEffort));
+      const effort = agyEffortArg(this.activeModel, this.activeEffort);
+      if (effort) {
+        args.push("--effort", effort);
       }
 
       // Reopen the conversation this client is on (a resumed chat, or a
