@@ -22,9 +22,9 @@
  * (`worker_explore`), builder (`worker_implement`), tester (`worker_test`),
  * researcher (`worker_research`), reviewer (`worker_review`), designer
  * (`worker_design`) and each custom role (`worker_<id>`) — and routes every
- * call to the model assigned to that role, on one of the 13 supported worker
+ * call to the model assigned to that role, on one of the 12 supported worker
  * providers: subscription CLIs (Antigravity, Codex, Claude Code, OpenCode,
- * CommandCode, Copilot, Cursor, Gemini CLI, Ollama) or direct HTTP APIs
+ * CommandCode, Copilot, Cursor, Ollama) or direct HTTP APIs
  * (openai/anthropic/gemini/compat). A role with no assignment runs on the
  * shared worker (`workerProvider` / `workerModel` / `workerEffort`).
  *

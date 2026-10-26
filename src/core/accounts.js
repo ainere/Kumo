@@ -30,8 +30,8 @@
  * outside is checked against it, and no text from outside reaches a command
  * line. Only commands verified with `--help` on a real install are listed
  * (2026-10-25: Claude Code 2.1.310, Codex 0.153.4, agy 1.4.7, gh 2.91.0,
- * Gemini CLI 0.59.0, Ollama 0.32.15); a CLI that offers no way to read or
- * change its login gets `null` and an honest detail instead.
+ * Ollama 0.32.15); a CLI that offers no way to read or change its login
+ * gets `null` and an honest detail instead.
  */
 
 import fs from "node:fs";
@@ -45,7 +45,6 @@ import { findCodexBinary } from "../providers/orchestrators/codex.js";
 import { findClaudeBinary } from "../providers/workers/claude.js";
 import { findCopilotBinary } from "../providers/workers/copilot.js";
 import { findCursorBinary } from "../providers/workers/cursor.js";
-import { findGeminiCliBinary } from "../providers/workers/gemini-cli.js";
 import { findOllamaBinary } from "../providers/workers/ollama.js";
 import { findOpencodeBinary } from "../providers/workers/opencode.js";
 import { findCommandcodeBinary } from "../providers/workers/commandcode.js";
@@ -589,16 +588,6 @@ const CLI_PROVIDERS = {
     noSignOut: "Signing out of Copilot means signing out of GitHub CLI entirely, so Kumo does not offer it. Run `gh auth logout` yourself if you mean to.",
     noSignInFor: (bin) => (isGitHubCli(bin) ? null : "COPILOT_BIN is a custom command; Kumo does not know its sign-in command."),
     read: readCopilot,
-  },
-  "gemini-cli": {
-    command: "gemini",
-    binary: findGeminiCliBinary,
-    // `gemini --help` lists no login, logout or status command.
-    signIn: null,
-    signOut: null,
-    noSignIn: "Gemini CLI has no sign-in command Kumo can run.",
-    noSignOut: "Gemini CLI has no sign-out command.",
-    read: async () => unreadable("Gemini CLI"),
   },
   cursor: {
     command: "cursor-agent",

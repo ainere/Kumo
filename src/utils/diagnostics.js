@@ -1,6 +1,6 @@
 /**
  * diagnostics.js — System health, subscription login, and direct-API doctor.
- * Verifies Node.js, Codex CLI, Antigravity/Gemini CLI, new subscription CLIs,
+ * Verifies Node.js, Codex CLI, Antigravity CLI, new subscription CLIs,
  * direct-API key presence, and MCP bridge.
  */
 
@@ -149,7 +149,6 @@ export async function runDiagnostics() {
     claude: { ok: false, installed: false, details: "" },
     copilot: { ok: false, installed: false, details: "" },
     cursor: { ok: false, installed: false, details: "" },
-    geminiCli: { ok: false, installed: false, details: "" },
     ollama: { ok: false, installed: false, details: "" },
     config: { ok: true, path: getConfigPath(), values: config },
     // Overall orchestrator-path health: any subscription login OR any API key present.
@@ -178,7 +177,7 @@ export async function runDiagnostics() {
     results.codex.details = "Not found. Ensure Codex is installed and authenticated via: codex login";
   }
 
-  // 3. Antigravity / Gemini CLI
+  // 3. Antigravity CLI (agy)
   const workerBin = getCliBinary();
   const workerCheck = await checkCommandFile(workerBin, ["--version"], { env: childEnvFor("antigravity") });
   if (workerCheck.ok) {
@@ -186,20 +185,18 @@ export async function runDiagnostics() {
     results.gemini.ok = true;
     results.gemini.details = `Installed '${workerBin}' (${workerCheck.output})`;
   } else {
-    // Check fallback
-    const fallback = workerBin === "agy" ? "gemini" : "agy";
-    const fallbackCheck = await checkCommandFile(fallback, ["--version"], { env: childEnvFor(fallback === "agy" ? "antigravity" : "gemini-cli") });
-    if (fallbackCheck.ok) {
+    // A resolved path that fails to run may still leave `agy` on PATH.
+    const fallbackCheck = workerBin === "agy"
+      ? null
+      : await checkCommandFile("agy", ["--version"], { env: childEnvFor("antigravity") });
+    if (fallbackCheck?.ok) {
       results.gemini.installed = true;
       results.gemini.ok = true;
-      results.gemini.details =
-        fallback === "agy"
-          ? `Found fallback 'agy' (${fallbackCheck.output}). Run: kumo config set cliBinary agy`
-          : `Found 'gemini' (${fallbackCheck.output}) but not 'agy'. Install Antigravity, or use the gemini-cli worker provider.`;
+      results.gemini.details = `Found fallback 'agy' (${fallbackCheck.output}). Run: kumo config set cliBinary agy`;
     } else {
       results.gemini.installed = false;
       results.gemini.ok = false;
-      results.gemini.details = `Neither 'agy' nor 'gemini' found in PATH.`;
+      results.gemini.details = `'agy' not found in PATH.`;
     }
   }
 
@@ -225,7 +222,6 @@ export async function runDiagnostics() {
     { key: "claude", provider: "claude", bin: process.env.CLAUDE_BIN || "claude", args: ["--version"], hint: "Install Claude Code: npm install -g @anthropic-ai/claude-code, then run 'claude' to log in" },
     { key: "copilot", provider: "copilot", bin: process.env.COPILOT_BIN || "gh", args: ["copilot", "--version"], hint: "Install GitHub CLI with copilot extension: gh extension install github/gh-copilot" },
     { key: "cursor", provider: "cursor", bin: process.env.CURSOR_BIN || "cursor-agent", args: ["--version"], hint: "Install Cursor Agent and ensure 'cursor-agent' is on PATH" },
-    { key: "geminiCli", provider: "gemini-cli", bin: process.env.GEMINI_BIN || "gemini", args: ["--version"], hint: "Install Gemini CLI: npm install -g @google/gemini-cli" },
     { key: "ollama", provider: "ollama", bin: process.env.OLLAMA_BIN || "ollama", args: ["--version"], hint: "Install Ollama from https://ollama.com and ensure 'ollama' is on PATH" },
   ];
   await Promise.all(
@@ -250,7 +246,6 @@ export async function runDiagnostics() {
     Boolean(results.claude?.ok) ||
     Boolean(results.copilot?.ok) ||
     Boolean(results.cursor?.ok) ||
-    Boolean(results.geminiCli?.ok) ||
     Boolean(results.ollama?.ok);
   const apiOk =
     Boolean(results.openaiApi?.ok) ||
@@ -265,7 +260,6 @@ export async function runDiagnostics() {
   if (results.claude?.ok) workerNames.push("claude");
   if (results.copilot?.ok) workerNames.push("copilot");
   if (results.cursor?.ok) workerNames.push("cursor");
-  if (results.geminiCli?.ok) workerNames.push("gemini-cli");
   if (results.ollama?.ok) workerNames.push("ollama");
   const workerOk = workerNames.length > 0 || apiOk;
   results.workerPath = {

@@ -16,7 +16,7 @@
  */
 
 /**
- * agy-runner.js — Subprocess runner for Antigravity / Gemini CLI.
+ * agy-runner.js — Subprocess runner for the Antigravity CLI (`agy`).
  *
  * Spawns the CLI in non-interactive mode targeting the specified workspace,
  * enforces timeouts, captures output with strict buffer caps, and exposes
@@ -67,15 +67,6 @@ export const MAX_OUTPUT_BYTES = 1024 * 1024;
 let detectedBin = null;
 
 /**
- * The value `cliBinary` defaulted to before Antigravity became the preferred
- * CLI. Every config written by an older Kumo stores it explicitly, so it cannot
- * be told apart from a deliberate choice; it is therefore treated as "no
- * preference" and only used when `agy` is absent. Users who want the Gemini CLI
- * as a worker select the `gemini-cli` provider instead.
- */
-const LEGACY_DEFAULT_CLI_BINARY = "gemini";
-
-/**
  * Resolve a configured binary to an existing absolute path, or null.
  *
  * @param {string} bin
@@ -91,18 +82,16 @@ function existingBinary(bin) {
 
 /**
  * Determine which binary the Antigravity provider invokes:
- * 1. Environment variable AGY_BIN or GEMINI_BIN
+ * 1. Environment variable AGY_BIN
  * 2. Cached detected binary
- * 3. A non-default `cliBinary` from ~/.kumo/config.json
+ * 3. `cliBinary` from ~/.kumo/config.json
  * 4. Local AppData agy.exe installation (standard Antigravity CLI path)
  * 5. `agy` on PATH
- * 6. The legacy default `gemini` on PATH
- * 7. Fallback "agy"
+ * 6. Fallback "agy"
  * @returns {string}
  */
 export function getCliBinary() {
   if (process.env.AGY_BIN) return existingBinary(process.env.AGY_BIN) || process.env.AGY_BIN;
-  if (process.env.GEMINI_BIN && fs.existsSync(process.env.GEMINI_BIN)) return process.env.GEMINI_BIN;
   if (detectedBin) return detectedBin;
 
   let configured = null;
@@ -112,7 +101,7 @@ export function getCliBinary() {
     /* fallback */
   }
 
-  if (configured && configured !== LEGACY_DEFAULT_CLI_BINARY) {
+  if (configured) {
     const found = existingBinary(configured);
     if (found) {
       detectedBin = found;
@@ -136,13 +125,7 @@ export function getCliBinary() {
     return detectedBin;
   }
 
-  const legacy = existingBinary(configured || LEGACY_DEFAULT_CLI_BINARY);
-  if (legacy) {
-    detectedBin = legacy;
-    return detectedBin;
-  }
-
-  detectedBin = process.env.GEMINI_BIN || "agy";
+  detectedBin = "agy";
   return detectedBin;
 }
 
@@ -161,7 +144,7 @@ export function clearCliBinaryCache() {
  */
 
 /**
- * Spawn an `agy` or `gemini` subprocess with the given options.
+ * Spawn an `agy` subprocess with the given options.
  *
  * @param {Object}   opts
  * @param {string}   opts.prompt         — Task prompt
@@ -199,19 +182,13 @@ export async function runAgy(opts) {
     workspace = opts.workspace || opts.cwd || process.env.KUMO_WORKSPACE || process.env.ORCHESTRATOR_WORKSPACE || process.cwd(),
     timeoutMs = clampTimeout(process.env.GEMINI_TIMEOUT_MS || String(config.timeoutMs || DEFAULT_TIMEOUT_MS)),
     safetyMode = opts.safetyMode || process.env.KUMO_SAFETY_MODE || config.safetyMode || "autonomous",
-    trustWorkspace = opts.trustWorkspace ?? (process.env.KUMO_TRUST_WORKSPACE !== "false" && process.env.KUMO_SKIP_TRUST !== "false" && (config.trustWorkspace !== false)),
     previewDiff = opts.previewDiff || false,
     systemPrompt,
     onChunk = opts.onChunk || null,
     liveLogPath = opts.liveLogPath || null,
   } = opts;
 
-  let bin = getCliBinary();
-  // If model is a Claude model, ensure agy is used as gemini CLI only supports Gemini models
-  if (model && model.toLowerCase().startsWith("claude-") && path.basename(bin).toLowerCase().startsWith("gemini")) {
-    bin = process.env.AGY_BIN || resolveBinary("agy");
-  }
-  const isGeminiCli = path.basename(bin).toLowerCase().startsWith("gemini");
+  const bin = getCliBinary();
   const canWrite = grantsWrite({ permission: opts.permission, mode, safetyMode });
   const args = [];
 
@@ -253,42 +230,23 @@ export async function runAgy(opts) {
   // embedded newlines as command separators and caps the line at ~8191 chars.
   const promptViaStdin = mustUseStdinPrompt(bin, compositePrompt);
 
-  if (isGeminiCli) {
-    args.push("-p");
-    if (!promptViaStdin) args.push(compositePrompt);
-    if (model) {
-      args.push("-m", model);
-    }
-    if (trustWorkspace) {
-      args.push("--skip-trust");
-    }
-    if (canWrite) {
-      args.push("-y");
-      args.push("--approval-mode", "yolo");
-    }
-  } else {
-    // agy CLI flags
-    args.push("-p");
-    if (!promptViaStdin) args.push(compositePrompt);
-    if (model) {
-      args.push("--model", model);
-    }
-    if (effort && supportsEffort(model)) {
-      args.push("--effort", agyEffort(effort));
-    }
-    if (canWrite) {
-      args.push("--dangerously-skip-permissions");
-      args.push("--mode", "accept-edits");
-    }
+  args.push("-p");
+  if (!promptViaStdin) args.push(compositePrompt);
+  if (model) {
+    args.push("--model", model);
+  }
+  if (effort && supportsEffort(model)) {
+    args.push("--effort", agyEffort(effort));
+  }
+  if (canWrite) {
+    args.push("--dangerously-skip-permissions");
+    args.push("--mode", "accept-edits");
   }
 
   // This child runs with permission-bypass flags, so it must not receive every
   // credential in the operator's shell. Antigravity authenticates from its own
   // on-disk session, not from environment keys.
-  const childEnv = childEnvFor(
-    "antigravity",
-    trustWorkspace ? { GEMINI_CLI_TRUST_WORKSPACE: "true" } : {}
-  );
+  const childEnv = childEnvFor("antigravity");
 
   const isTransientSocketError = (str) =>
     /wsarecv|connection was forcibly closed|connection reset|ECONNRESET|streamGenerateContent/i.test(str || "");
@@ -498,7 +456,7 @@ export function parseAgyUsage(stdout) {
 let usageRun = null;
 
 /**
- * Query live Antigravity / Gemini usage limits via `agy -p /usage`. Callers
+ * Query live Antigravity usage limits via `agy -p /usage`. Callers
  * that ask while a run is going get its answer: with Antigravity as the lead,
  * the lead's limits and the usage poll ask at the same moment.
  *

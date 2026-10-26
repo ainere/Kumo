@@ -57,7 +57,7 @@ import { listAccounts } from "./accounts.js";
  * @property {string} name
  * @property {"subscription" | "api" | "local"} kind
  * @property {boolean} available - installed, and not known to be signed out
- * @property {boolean | null} signedIn - null when the provider's CLI cannot say (Gemini CLI, Cursor Agent, OpenCode, CommandCode, a custom COPILOT_BIN)
+ * @property {boolean | null} signedIn - null when the provider's CLI cannot say (Cursor Agent, OpenCode, CommandCode, a custom COPILOT_BIN)
  * @property {boolean} canWrite
  * @property {boolean} canLead
  * @property {"live" | "catalog"} source

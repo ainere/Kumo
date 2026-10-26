@@ -13,14 +13,12 @@ Common issues and solutions when running the cross-provider harness.
 1. Check if the binary for your active provider is installed and in your system PATH:
    ```powershell
    Get-Command agy
-   # or: codex, claude, gh, cursor-agent, gemini, ollama, opencode, commandcode
+   # or: codex, claude, gh, cursor-agent, ollama, opencode, commandcode
    ```
    Run `kumo doctor` to probe every provider binary at once.
-2. Each provider honors a binary override env var: `AGY_BIN`, `CODEX_BIN`, `CLAUDE_BIN`, `COPILOT_BIN`, `CURSOR_BIN`, `GEMINI_BIN`, `OLLAMA_BIN`, `OPENCODE_BIN`, `COMMANDCODE_BIN`. Example:
+2. Each provider honors a binary override env var: `AGY_BIN`, `CODEX_BIN`, `CLAUDE_BIN`, `COPILOT_BIN`, `CURSOR_BIN`, `OLLAMA_BIN`, `OPENCODE_BIN`, `COMMANDCODE_BIN`. Example:
    ```powershell
-   $env:GEMINI_BIN = "gemini"
-   # Or set a full path:
-   $env:AGY_BIN = "C:\Users\<username>\AppData\Roaming\npm\agy.cmd"
+   $env:AGY_BIN = "C:\Users\<username>\AppData\Local\agy\bin\agy.exe"
    ```
 
 ---
@@ -42,20 +40,7 @@ Worker tool returns: `Error authenticating: IneligibleTierError` or `Session exp
 
 ---
 
-## 3. Trusted Workspace Warning in Gemini
-
-### Symptom:
-Tool warning: `Gemini CLI is not running in a trusted directory`.
-
-### Solution:
-The bridge runner automatically sets `GEMINI_CLI_TRUST_WORKSPACE=true` and passes `--skip-trust`. If running manually, trust the folder with:
-```bash
-gemini --skip-trust
-```
-
----
-
-## 4. Subprocess Timeout
+## 3. Subprocess Timeout
 
 ### Symptom:
 `⏱ worker_implement timed out after 300s.`
@@ -74,7 +59,7 @@ gemini --skip-trust
 
 ---
 
-## 5. Verifying MCP Server Health Manually
+## 4. Verifying MCP Server Health Manually
 
 You can check the MCP server in isolation anytime by running:
 ```bash

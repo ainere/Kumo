@@ -18,7 +18,7 @@
 /**
  * registry.js — Open-ended registry of worker providers.
  * Supports Gemini/Antigravity, Codex, Claude Code, OpenCode, CommandCode,
- * Copilot, Cursor, Gemini CLI, Ollama, direct APIs, and arbitrary CLI agents
+ * Copilot, Cursor, Ollama, direct APIs, and arbitrary CLI agents
  * via generic worker without hardcoding models.
  */
 
@@ -29,7 +29,6 @@ import * as opencodeWorker from "./opencode.js";
 import * as commandcodeWorker from "./commandcode.js";
 import * as copilotWorker from "./copilot.js";
 import * as cursorWorker from "./cursor.js";
-import * as geminiCliWorker from "./gemini-cli.js";
 import * as ollamaWorker from "./ollama.js";
 import * as openaiApiWorker from "./openai-api.js";
 import * as anthropicApiWorker from "./anthropic-api.js";
@@ -47,7 +46,6 @@ const WORKERS = {
   commandcode: commandcodeWorker,
   copilot: copilotWorker,
   cursor: cursorWorker,
-  "gemini-cli": geminiCliWorker,
   ollama: ollamaWorker,
   "openai-api": openaiApiWorker,
   "anthropic-api": anthropicApiWorker,

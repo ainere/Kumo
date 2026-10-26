@@ -40,7 +40,6 @@ export const ALLOWED_PROVIDERS = [
   "commandcode",
   "copilot",
   "cursor",
-  "gemini-cli",
   "ollama",
   "openai-api",
   "anthropic-api",
@@ -70,7 +69,6 @@ const PROVIDER_NAMES = {
   commandcode: "CommandCode",
   copilot: "Copilot CLI",
   cursor: "Cursor",
-  "gemini-cli": "Gemini CLI",
   ollama: "Ollama",
   "openai-api": "OpenAI API",
   "anthropic-api": "Anthropic API",
@@ -170,7 +168,7 @@ export const MODEL_CATALOG = {
 };
 
 /** Providers whose model id is whatever the user's local setup defines; any id is accepted. */
-export const OPEN_MODEL_PROVIDERS = ["ollama", "compat-api", "opencode", "commandcode", "copilot", "cursor", "gemini-cli"];
+export const OPEN_MODEL_PROVIDERS = ["ollama", "compat-api", "opencode", "commandcode", "copilot", "cursor"];
 
 /** Every catalogued model, once each. */
 export function allKnownModels() {
@@ -258,8 +256,6 @@ export function detectProviderForModel(model, preferredProvider = null) {
   const norm = model.toLowerCase().trim();
 
   if (CODEX_MODEL_RE.test(norm)) return "codex";
-  // gemini-cli-* also starts with gemini-, so it is checked first.
-  if (norm.startsWith("gemini-cli")) return "gemini-cli";
   if (norm.startsWith("gemini-") || norm.includes("gpt-oss")) return "antigravity";
   if (norm.startsWith("claude-") || /\b(opus|sonnet|haiku|fable)\b/.test(norm)) return "claude";
   if (norm.startsWith("opencode") || norm.startsWith("open-code")) return "opencode";

@@ -16,8 +16,8 @@ Every `kumo` command and the slash commands inside a session. Back to the [READM
 | `kumo usage [-d, --dir <path>]` | Display live orchestrator and worker quotas (alias for `status`) |
 | `kumo model` | Open interactive arrow-key selector (`/model` in session) |
 | `kumo model list` | Print complete list of available models and presets |
-| `kumo model orchestrator <model> [effort] [provider]` | Configure orchestrator model, effort, and explicit provider (13 ids) |
-| `kumo model worker <model> [effort] [provider]` | Configure worker model, effort, and explicit provider (13 ids) |
+| `kumo model orchestrator <model> [effort] [provider]` | Configure orchestrator model, effort, and explicit provider (12 ids) |
+| `kumo model worker <model> [effort] [provider]` | Configure worker model, effort, and explicit provider (12 ids) |
 | `kumo model use <preset>` | Apply configuration preset (`default`, `pro`, `speed`, `claude`, `claude-sonnet`, `claude-flash`, `opus-astra`, `opus-flash`, `argon`, `test`) |
 | `kumo role` (`kumo role list`) | Show the lead and each role, its tool, access and the model it runs on (`/role` in session) |
 | `kumo role set <role> <model> [effort] [provider]` | Assign a model to a role; `lead` sets the orchestrator, model `default` puts a role back on the shared worker |

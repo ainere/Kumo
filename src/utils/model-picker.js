@@ -34,7 +34,6 @@ export const SUBSCRIPTION_PROVIDERS = [
   "commandcode",
   "copilot",
   "cursor",
-  "gemini-cli",
   "ollama",
 ];
 
@@ -530,7 +529,6 @@ export async function openInteractiveModelPicker(opts = {}) {
         { label: "[Subscription] CommandCode", value: "commandcode", hint: "CommandCode subscription CLI", isCurrent: config.orchestratorProvider === "commandcode" },
         { label: "[Subscription] Copilot", value: "copilot", hint: "GitHub Copilot CLI subscription", isCurrent: config.orchestratorProvider === "copilot" },
         { label: "[Subscription] Cursor", value: "cursor", hint: "Cursor Agent subscription", isCurrent: config.orchestratorProvider === "cursor" },
-        { label: "[Subscription] Gemini CLI", value: "gemini-cli", hint: "Gemini CLI subscription", isCurrent: config.orchestratorProvider === "gemini-cli" },
         { label: "[Subscription] Ollama", value: "ollama", hint: "Ollama local runner", isCurrent: config.orchestratorProvider === "ollama" },
         { label: "[Direct API] OpenAI API", value: "openai-api", hint: "OPENAI_API_KEY (env only, never stored)", isCurrent: config.orchestratorProvider === "openai-api" },
         { label: "[Direct API] Anthropic API", value: "anthropic-api", hint: "ANTHROPIC_API_KEY (env only, never stored)", isCurrent: config.orchestratorProvider === "anthropic-api" },
@@ -599,7 +597,6 @@ export async function openInteractiveModelPicker(opts = {}) {
         { label: "[Subscription] CommandCode", value: "commandcode", hint: "CommandCode subscription CLI", isCurrent: config.workerProvider === "commandcode" },
         { label: "[Subscription] Copilot", value: "copilot", hint: "GitHub Copilot CLI subscription", isCurrent: config.workerProvider === "copilot" },
         { label: "[Subscription] Cursor", value: "cursor", hint: "Cursor Agent subscription", isCurrent: config.workerProvider === "cursor" },
-        { label: "[Subscription] Gemini CLI", value: "gemini-cli", hint: "Gemini CLI subscription", isCurrent: config.workerProvider === "gemini-cli" },
         { label: "[Subscription] Ollama", value: "ollama", hint: "Ollama local runner", isCurrent: config.workerProvider === "ollama" },
         { label: "[Direct API] OpenAI API", value: "openai-api", hint: "OPENAI_API_KEY (env only, never stored)", isCurrent: config.workerProvider === "openai-api" },
         { label: "[Direct API] Anthropic API", value: "anthropic-api", hint: "ANTHROPIC_API_KEY (env only, never stored)", isCurrent: config.workerProvider === "anthropic-api" },

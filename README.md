@@ -8,7 +8,7 @@
 <a href="https://github.com/ainere/Kumo/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ainere/Kumo/actions/workflows/ci.yml/badge.svg"></a>
 <img alt="Node 22+" src="https://img.shields.io/badge/node-22%2B-5fd4f4?labelColor=0b1220">
 <img alt="Windows" src="https://img.shields.io/badge/platform-Windows-7aa2f7?labelColor=0b1220">
-<img alt="13 providers" src="https://img.shields.io/badge/providers-13-bb9af7?labelColor=0b1220">
+<img alt="12 providers" src="https://img.shields.io/badge/providers-12-bb9af7?labelColor=0b1220">
 <a href="LICENSE"><img alt="GPLv3 license" src="https://img.shields.io/badge/license-GPLv3-9ece6a?labelColor=0b1220"></a>
 </p>
 
@@ -32,7 +32,7 @@
 
 Frontier models are at their best planning and reviewing, and every token they spend reading files costs you quota. Fast models are great at reading, editing and running tests. Kumo puts one model in charge and hands bounded tasks to workers over a local MCP bridge, so the lead's quota goes to decisions.
 
-Every role is a free pick: a Claude Opus lead with a Sonnet builder and a Haiku scout, a Codex lead with Gemini workers, or any mix of the 13 providers. Kumo drives the official CLIs on the subscriptions you're already logged in to, so there are no API keys on disk unless you choose a direct API.
+Every role is a free pick: a Claude Opus lead with a Sonnet builder and a Haiku scout, a Codex lead with Gemini workers, or any mix of the 12 providers. Kumo drives the official CLIs on the subscriptions you're already logged in to, so there are no API keys on disk unless you choose a direct API.
 
 <table>
 <tr>
@@ -140,7 +140,7 @@ Roles you leave alone share the worker model, so older configs keep working. Det
 | `codex` | Delegates; live quotas; approval prompts | Reads and writes files |
 | `claude` (Claude Code) | Delegates; streams; resumable; subscription limits | Reads and writes files |
 | `antigravity` | Delegates; resumable | Reads and writes files |
-| `cursor`, `gemini-cli`, `copilot`, `opencode`, `commandcode` | Answers on its own, can't call workers | Reads and writes files |
+| `cursor`, `copilot`, `opencode`, `commandcode` | Answers on its own, can't call workers | Reads and writes files |
 | `ollama` | Answers on its own, can't call workers | Text only |
 | `openai-api`, `anthropic-api`, `gemini-api`, `compat-api` | Single-shot chat | Text only |
 

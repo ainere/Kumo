@@ -39,7 +39,7 @@ import {
   MODEL_ID_PATTERN,
   canonicalizeProvider,
 } from "./models.js";
-import { emptyRoles, normalizeRoles, sanitizeRoles } from "./roles.js";
+import { BUILTIN_ROLE_IDS, emptyRoles, normalizeRoles, sanitizeRoles } from "./roles.js";
 
 // Legacy path for seamless migration. Deliberately anchored to the real home
 // directory: the migration must not follow KUMO_HOME.
@@ -136,7 +136,6 @@ export const DEFAULT_CONFIG = {
   approvalPolicy: "on-request",
   bannerStyle: "cloud",
   safetyMode: "autonomous",
-  trustWorkspace: true,
   obsidianVault: "",
   openaiBaseUrl: "",
   anthropicBaseUrl: "",
@@ -318,6 +317,78 @@ function defaultConfig() {
 /** Problems already reported, so a config read on every call warns once. */
 const reportedRoleProblems = new Set();
 
+/** The provider id of the standalone Gemini CLI, which Google replaced with Antigravity (`agy`). */
+const RETIRED_GEMINI_CLI = "gemini-cli";
+
+/** Retired-provider settings already reported, so a config read on every call warns once. */
+const reportedRetiredSettings = new Set();
+
+/**
+ * Read a config that still names the Gemini CLI, which Kumo no longer drives.
+ * The lead and the shared worker become Antigravity on its default model (a
+ * Gemini CLI model id means nothing to `agy`); a role assigned to it goes back
+ * to the shared worker and keeps its name and prompt; a `gemini` binary
+ * becomes the `agy` default. The file itself is left as it is; each change is
+ * reported once.
+ *
+ * @param {Record<string, any>} merged - the config being loaded; changed in place
+ * @param {string} file
+ */
+function retireGeminiCli(merged, file) {
+  const retired = (provider) => canonicalizeProvider(provider) === RETIRED_GEMINI_CLI;
+  const warn = (message) => {
+    const key = `${file}: ${message}`;
+    if (reportedRetiredSettings.has(key)) return;
+    reportedRetiredSettings.add(key);
+    console.warn(`[Warning] Gemini CLI was replaced by Antigravity: ${message} (${file}).`);
+  };
+
+  if (retired(merged.orchestratorProvider)) {
+    merged.orchestratorProvider = "antigravity";
+    merged.orchestratorModel = "";
+    warn("orchestratorProvider 'gemini-cli' is read as 'antigravity' on its default model");
+  }
+  if (retired(merged.workerProvider)) {
+    merged.workerProvider = "antigravity";
+    merged.workerModel = "";
+    warn("workerProvider 'gemini-cli' is read as 'antigravity' on its default model");
+  }
+
+  const roles = merged.roles;
+  if (roles && typeof roles === "object" && !Array.isArray(roles)) {
+    const next = { ...roles };
+    /** @type {string[]} */
+    const reset = [];
+    for (const id of BUILTIN_ROLE_IDS) {
+      if (!retired(next[id]?.provider)) continue;
+      delete next[id];
+      reset.push(id);
+    }
+    if (Array.isArray(next.custom)) {
+      next.custom = next.custom.map((role) => {
+        if (!retired(role?.provider)) return role;
+        const kept = { ...role };
+        delete kept.provider;
+        delete kept.model;
+        delete kept.effort;
+        reset.push(String(role.id));
+        return kept;
+      });
+    }
+    if (reset.length > 0) {
+      merged.roles = next;
+      warn(`the 'gemini-cli' assignment of ${reset.join(", ")} is dropped; ${reset.length === 1 ? "it runs" : "they run"} on the shared worker`);
+    }
+  }
+
+  const binary = path.basename(String(merged.cliBinary ?? "").trim()).replace(/\.(cmd|exe|bat|ps1)$/i, "");
+  if (binary.toLowerCase() === "gemini") {
+    // A bare `gemini` was older Kumo's own default, not a choice: switch it quietly.
+    if (String(merged.cliBinary).trim() !== "gemini") warn(`cliBinary '${binary}' is read as '${DEFAULT_CONFIG.cliBinary}'`);
+    merged.cliBinary = DEFAULT_CONFIG.cliBinary;
+  }
+}
+
 /**
  * Load settings from <KUMO_HOME>/config.json, merging with defaults.
  * Automatically migrates from ~/.orchestrator/config.json if present.
@@ -357,6 +428,7 @@ export function loadConfig() {
   const merged = { ...DEFAULT_CONFIG, ...parsed };
   // A hand-edited tier that is not a known one falls to diff-review, never to no gate at all.
   merged.safetyMode = normalizeSafetyMode(merged.safetyMode, file);
+  retireGeminiCli(merged, file);
   // Older configs stored the `gemini` alias; normalize on read so every
   // comparison against `antigravity` in the codebase has one spelling to match.
   merged.orchestratorProvider = canonicalizeProvider(merged.orchestratorProvider);

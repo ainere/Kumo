@@ -1,6 +1,6 @@
 # Providers
 
-What each of the 13 providers can do as the lead or as a worker, and notes verified against the installed CLIs. Back to the [README](../README.md).
+What each of the 12 providers can do as the lead or as a worker, and notes verified against the installed CLIs. Back to the [README](../README.md).
 
 ## What Each Provider Can Do
 
@@ -11,7 +11,7 @@ Every provider can be selected for either role, but not every pairing does real 
 | `codex` | Delegates (bridge passed per thread via `thread/start`); live quotas; approval prompts | Reads and writes files (`codex exec --sandbox …`) |
 | `claude` | Delegates (`--mcp-config` + `--allowedTools mcp__kumo-bridge`); streams answers and worker calls (`--output-format stream-json`); resumable conversations; Claude subscription limits | Reads and writes files; read-only tasks cannot edit (see below) |
 | `antigravity` | Delegates (via `.agents/mcp_config.json` in the workspace); resumable conversations | Reads and writes files |
-| `cursor`, `gemini-cli`, `copilot`, `opencode`, `commandcode` | Answers on its own — **cannot call worker tools** | Reads and writes files |
+| `cursor`, `copilot`, `opencode`, `commandcode` | Answers on its own — **cannot call worker tools** | Reads and writes files |
 | `ollama` | Answers on its own — **cannot call worker tools** | Text only: sees only the files you pass in `files` (contents are inlined); refused for writes |
 | `openai-api`, `anthropic-api`, `gemini-api`, `compat-api` | Single-shot chat, no tools, no memory between turns | Text only, like `ollama` |
 

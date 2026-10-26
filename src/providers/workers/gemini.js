@@ -6,7 +6,7 @@ import { runAgy } from "../../bridge/agy-runner.js";
 
 export const PROVIDER_INFO = {
   id: "gemini",
-  name: "Google Gemini (Antigravity / Gemini CLI)",
+  name: "Google Gemini (Antigravity)",
 };
 
 export async function executeTask(opts) {

@@ -1,6 +1,6 @@
 # Getting Started with the Kumo Orchestrator
 
-This guide walks you through setting up and running your first cross-provider orchestration task. Defaults below use **ChatGPT Plus** (Codex CLI) as orchestrator and **Google AI Pro** (Antigravity CLI) as worker; any of the 13 providers works for either role.
+This guide walks you through setting up and running your first cross-provider orchestration task. Defaults below use **ChatGPT Plus** (Codex CLI) as orchestrator and **Google AI Pro** (Antigravity CLI) as worker; any of the 12 providers works for either role.
 
 ---
 
@@ -26,7 +26,7 @@ Subscription CLIs below connect using your existing credentials (no keys). Alter
    ```bash
    agy --version
    ```
-   *(Note: If using `gemini` CLI or a custom binary location, you can set the `AGY_BIN` environment variable, e.g. `$env:AGY_BIN = "gemini"`)*.
+   *(Note: If `agy` lives in a custom location, you can set the `AGY_BIN` environment variable, e.g. `$env:AGY_BIN = "C:\Users\<username>\AppData\Local\agy\bin\agy.exe"`)*.
 2. Log in with your Google AI Pro account:
    ```bash
    agy auth login
@@ -34,12 +34,12 @@ Subscription CLIs below connect using your existing credentials (no keys). Alter
 
 ### C. Any Other Provider
 
-Log in to your chosen subscription CLI (`claude`, `gh copilot`, `cursor-agent`, `gemini`, `ollama`, `opencode`, or `commandcode`), then select it per-role:
+Log in to your chosen subscription CLI (`claude`, `gh copilot`, `cursor-agent`, `agy`, `ollama`, `opencode`, or `commandcode`), then select it per-role:
 ```powershell
 kumo model orchestrator <model> <effort> <provider>
 kumo model worker <model> <effort> <provider>
 ```
-Run `kumo model list` for all 13 provider ids.
+Run `kumo model list` for all 12 provider ids.
 ## 2. Setting Up the Bridge
 
 Inside the Kumo repository root:

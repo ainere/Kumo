@@ -25,7 +25,7 @@ The codebase implements a decoupled, unhardcoded provider and data persistence s
 - **Roles** ([`src/config/roles.js`](../src/config/roles.js)): the built-in roles and their tools, custom roles, validation of the `roles` config, and which provider, model and effort run a role's call (`resolveRoleTarget`). `kumo role` and `/role` live in [`src/commands/role.js`](../src/commands/role.js).
 - **Orchestrators** ([`src/providers/orchestrators/`](../src/providers/orchestrators/)):
   - `codex-client.js`: OpenAI Codex app-server client supporting streaming turns, live rate limits, turn status, and server→client approval requests (shapes follow `codex app-server generate-json-schema`).
-  - `agy-client.js`: Google Antigravity / Gemini CLI client supporting stream-json turns.
+  - `agy-client.js`: Google Antigravity client supporting stream-json turns.
   - `claude-client.js`: Anthropic Claude Code CLI client: print-mode stream-json turns with the bridge via `--mcp-config`, headless tool permission, resumable sessions and subscription rate limits.
   - `turn-wait.js`: `runTurn()` — attaches terminal-event listeners before submitting, interrupts on timeout or Ctrl+C.
   - `items.js`: provider-neutral helpers for recognizing tool-call items (`mcpToolCall`, `mcp_tool_call`, …).
@@ -33,23 +33,21 @@ The codebase implements a decoupled, unhardcoded provider and data persistence s
   - `commandcode-client.js`: CommandCode CLI client.
   - `copilot-client.js`: GitHub Copilot CLI client (`gh copilot`).
   - `cursor-client.js`: Cursor Agent CLI client (`cursor-agent`).
-  - `gemini-cli-client.js`: Standalone Gemini CLI client (`gemini`, distinct from `agy`).
   - `ollama-client.js`: Ollama local runner client (`ollama run <model>`).
   - `generic-client.js`: Universal CLI orchestrator adapter that can drive any arbitrary AI CLI tool without hardcoding.
-  - `registry.js`: Open-ended orchestrator provider registry and factory (13 providers incl. direct APIs), with `orchestratorDelegates()` reporting which can reach the worker tools.
+  - `registry.js`: Open-ended orchestrator provider registry and factory (12 providers incl. direct APIs), with `orchestratorDelegates()` reporting which can reach the worker tools.
 - **Direct-API transport** ([`src/providers/api/`](../src/providers/api/)):
   - `api-transport.js`: Zero-dependency native-fetch transport (`getApiKey`, `resolveBaseUrl`, `ApiError`, `chatComplete`); keys live only in env vars, never on disk.
   - `openai-api-client.js` (+ `compat-api` via `provider` option), `anthropic-api-client.js`, `gemini-api-client.js`: single-shot orchestrator clients behind the standard client surface (`getRateLimits()` always `null`).
   - `api-worker.js`: shared `executeApiTask` composing the standard composite-prompt blocks over `chatComplete`.
 - **Workers** ([`src/providers/workers/`](../src/providers/workers/)):
-  - `gemini.js`: Google Gemini adapter backed by Antigravity / Gemini CLI.
+  - `gemini.js`: Google Gemini adapter backed by Antigravity (`agy`).
   - `codex.js`: OpenAI Codex execution worker (`codex exec`).
   - `claude.js`: Anthropic Claude Code execution worker (`claude -p`).
   - `opencode.js`: OpenCode execution worker (`opencode -p`).
   - `commandcode.js`: CommandCode execution worker (`commandcode -p`).
   - `copilot.js`: GitHub Copilot CLI worker (`gh copilot -p`).
   - `cursor.js`: Cursor Agent worker (`cursor-agent -p`).
-  - `gemini-cli.js`: Standalone Gemini CLI worker (`gemini -p`, distinct from `agy`).
   - `ollama.js`: Ollama local worker (`ollama run <model||"llama3.1">`).
   - `openai-api.js`, `anthropic-api.js`, `gemini-api.js`, `compat-api.js`: thin direct-API adapters over `executeApiTask`.
   - `generic.js`: Universal worker adapter for any arbitrary CLI execution tool.

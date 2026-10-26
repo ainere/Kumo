@@ -16,7 +16,7 @@
  */
 
 /**
- * agy-client.js — Orchestrator client adapter for Google Antigravity / Gemini CLI (`agy`).
+ * agy-client.js — Orchestrator client adapter for Google Antigravity (`agy`).
  *
  * Runs `agy --input-format stream-json --output-format stream-json` in the background,
  * translating line-delimited JSON stream events into standard Orchestrator client events:

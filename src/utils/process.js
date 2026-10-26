@@ -288,7 +288,6 @@ const PROVIDER_ENV_KEEP = {
   copilot: ["GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"],
   // Cursor Agent's headless mode authenticates from its API key.
   cursor: ["CURSOR_API_KEY"],
-  "gemini-cli": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
   ollama: ["OLLAMA_API_KEY"],
 };
 
@@ -299,7 +298,6 @@ const PROVIDER_ENV_KEEP = {
  */
 export const BRIDGE_ENV_NAMES = new Set([
   "AGY_BIN",
-  "GEMINI_BIN",
   "CODEX_BIN",
   "CLAUDE_BIN",
   "OLLAMA_BIN",

@@ -18,7 +18,7 @@
 /**
  * registry.js — Registry of orchestrator providers and client factory.
  * Supports Codex, Antigravity/Gemini, Claude Code, OpenCode, CommandCode, Copilot,
- * Cursor, Gemini CLI, Ollama, and the four direct-API providers.
+ * Cursor, Ollama, and the four direct-API providers.
  *
  * An arbitrary CLI agent can still be driven through `GenericAppClient`, but only
  * when the caller explicitly opts in — an unknown provider id decides which
@@ -32,7 +32,6 @@ import { OpenCodeAppClient } from "./opencode-client.js";
 import { CommandCodeAppClient } from "./commandcode-client.js";
 import { CopilotAppClient } from "./copilot-client.js";
 import { CursorAppClient } from "./cursor-client.js";
-import { GeminiCliAppClient } from "./gemini-cli-client.js";
 import { OllamaAppClient } from "./ollama-client.js";
 import { OpenAIApiClient } from "../api/openai-api-client.js";
 import { AnthropicApiClient } from "../api/anthropic-api-client.js";
@@ -49,19 +48,19 @@ const ORCHESTRATORS = {
   },
   antigravity: {
     id: "antigravity",
-    name: "Google Antigravity / Gemini CLI",
+    name: "Google Antigravity",
     delegates: true,
     createClient: (opts) => new AgyAppClient(opts),
   },
   gemini: {
     id: "antigravity",
-    name: "Google Antigravity / Gemini CLI",
+    name: "Google Antigravity",
     delegates: true,
     createClient: (opts) => new AgyAppClient(opts),
   },
   agy: {
     id: "antigravity",
-    name: "Google Antigravity / Gemini CLI",
+    name: "Google Antigravity",
     delegates: true,
     createClient: (opts) => new AgyAppClient(opts),
   },
@@ -94,12 +93,6 @@ const ORCHESTRATORS = {
     name: "Cursor Agent",
     delegates: false,
     createClient: (opts) => new CursorAppClient(opts),
-  },
-  "gemini-cli": {
-    id: "gemini-cli",
-    name: "Gemini CLI",
-    delegates: false,
-    createClient: (opts) => new GeminiCliAppClient(opts),
   },
   ollama: {
     id: "ollama",

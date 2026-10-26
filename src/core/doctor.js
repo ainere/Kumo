@@ -144,13 +144,6 @@ const CLI_PROVIDERS = [
     hint: "Install the Antigravity CLI (agy) and sign in with your Google account.",
   },
   {
-    provider: "gemini-cli",
-    label: "Gemini CLI",
-    args: ["--version"],
-    bin: () => process.env.GEMINI_BIN || "gemini",
-    hint: "Install it with: npm install -g @google/gemini-cli",
-  },
-  {
     provider: "copilot",
     label: "GitHub Copilot CLI",
     args: ["copilot", "--version"],
