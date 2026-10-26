@@ -136,7 +136,24 @@ export function useStore<T>(select: (s: State) => T): T {
   );
 }
 
-const invoke = <T,>(command: string, args?: unknown) => window.kumo.invoke(command, args) as Promise<T>;
+/**
+ * The `name` a request's error takes when the engine restarted before it
+ * answered; the restart notice covers those, so they never toast.
+ */
+export const ENGINE_RESTARTED = "EngineRestarted";
+
+// Restarts seen so far: a request that sees this change was sent to an engine that is gone.
+let engineRuns = 0;
+window.kumo.onEngineRestart(() => engineRuns++);
+
+export const invoke = <T,>(command: string, args?: unknown): Promise<T> => {
+  const runs = engineRuns;
+  return (window.kumo.invoke(command, args) as Promise<T>).catch((err: unknown) => {
+    // contextBridge keeps only an error's message, so the mark is added here.
+    if (engineRuns !== runs && err instanceof Error) err.name = ENGINE_RESTARTED;
+    throw err;
+  });
+};
 
 const toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
@@ -172,6 +189,17 @@ export function toast(kind: Toast["kind"], text: string, options?: { always?: bo
       setTimeout(() => dismissToast(id), 6000)
     );
   }
+}
+
+const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/**
+ * The error toast for a request that failed. A request the engine never
+ * answered because it restarted stays quiet: the restart notice covers it.
+ */
+export function toastFailure(err: unknown, text = errorText(err), options?: { always?: boolean }): void {
+  if (err instanceof Error && err.name === ENGINE_RESTARTED) return;
+  toast("error", text, options);
 }
 
 export function dismissToast(id: number): void {
@@ -292,7 +320,7 @@ export function previewPrefs(patch: Partial<Prefs>): void {
     const pending = unsavedPreview;
     unsavedPreview = {};
     // Saved without reading the result back: the control may have moved on.
-    invoke("prefs.set", { patch: pending }).catch((err: Error) => toast("error", err.message));
+    invoke("prefs.set", { patch: pending }).catch((err) => toastFailure(err));
   }, 300);
 }
 
@@ -317,7 +345,7 @@ export async function boot(): Promise<void> {
   try {
     await openWorkspace(workspace);
   } catch (err) {
-    toast("error", `Couldn't open ${workspace}: ${(err as Error).message}`);
+    toastFailure(err, `Couldn't open ${workspace}: ${(err as Error).message}`);
     setState({ phase: "no-project" });
   }
 }
@@ -332,7 +360,7 @@ export async function send(prompt: string): Promise<void> {
     const outcome = await invoke<TurnOutcome>("session.send", { sessionId: session.id, prompt });
     if (!outcome.ok && outcome.interrupted) toast("notice", "Turn interrupted.");
   } catch (err) {
-    toast("error", (err as Error).message);
+    toastFailure(err);
   } finally {
     setState({ busy: false });
   }
@@ -408,7 +436,7 @@ export async function createProject(name: string, parentDir?: string): Promise<s
     toast("notice", `Created and opened project "${name}"`);
     return res.path;
   } catch (err) {
-    toast("error", (err as Error).message);
+    toastFailure(err);
     return null;
   }
 }
@@ -419,7 +447,7 @@ export async function addAccessibleFolder(workspace: string, folder: string): Pr
     setState({ projects: updated });
     toast("notice", `Added accessible folder "${basename(folder)}"`);
   } catch (err) {
-    toast("error", (err as Error).message);
+    toastFailure(err);
   }
 }
 
@@ -429,7 +457,7 @@ export async function removeAccessibleFolder(workspace: string, folder: string):
     setState({ projects: updated });
     toast("notice", `Removed accessible folder "${basename(folder)}"`);
   } catch (err) {
-    toast("error", (err as Error).message);
+    toastFailure(err);
   }
 }
 
@@ -530,7 +558,7 @@ export async function reorderProjects(order: string[]): Promise<void> {
     setState({ projects: updated });
   } catch (err) {
     setState({ projects: prevProjects });
-    toast("error", (err as Error).message);
+    toastFailure(err);
   }
 }
 
@@ -542,7 +570,7 @@ export async function renameChat(workspace: string, chatId: string, title: strin
     }
     toast("notice", `Chat renamed to "${title}"`);
   } catch (err) {
-    toast("error", (err as Error).message);
+    toastFailure(err);
   }
 }
 
@@ -588,7 +616,7 @@ export async function moveChat(fromWorkspace: string, toWorkspace: string, chatI
     }
     toast("notice", "Chat moved");
   } catch (err) {
-    toast("error", (err as Error).message);
+    toastFailure(err);
   }
 }
 
@@ -599,7 +627,7 @@ export async function reorderChats(workspace: string, order: string[]): Promise<
       setState({ chats: updated });
     }
   } catch (err) {
-    toast("error", (err as Error).message);
+    toastFailure(err);
   }
 }
 
@@ -624,11 +652,11 @@ export async function finishOnboarding(workspace: string | null): Promise<boolea
       try {
         await openWorkspace(workspace);
       } catch (err) {
-        toast("error", `Couldn't open ${workspace}: ${errorText(err)}`, { always: true });
+        toastFailure(err, `Couldn't open ${workspace}: ${errorText(err)}`, { always: true });
         return false;
       }
     }
-    await savePrefs({ onboarded: true }).catch((err: Error) => toast("error", err.message, { always: true }));
+    await savePrefs({ onboarded: true }).catch((err) => toastFailure(err, undefined, { always: true }));
     if (!workspace) setState({ phase: "no-project" });
     return true;
   } finally {
@@ -637,8 +665,6 @@ export async function finishOnboarding(workspace: string | null): Promise<boolea
 }
 
 // ── settings ──
-
-const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /** The element that had focus when Settings opened, focused again when it closes. */
 let settingsOpener: HTMLElement | null = null;
@@ -680,7 +706,7 @@ async function load<K extends "accounts" | "catalog" | "globalConfig">(key: K, c
   } catch (err) {
     const message = errorText(err);
     setState((s) => ({ loadErrors: { ...s.loadErrors, [key]: message } }));
-    toast("error", message, { always: true });
+    toastFailure(err, message, { always: true });
   }
 }
 
@@ -757,7 +783,7 @@ export async function signIn(provider: string): Promise<boolean> {
     result = await invoke<SignInResult>("accounts.signIn", { provider });
   } catch (err) {
     if (state.signingIn === provider) setState({ signingIn: null });
-    toast("error", errorText(err), { always: true });
+    toastFailure(err, undefined, { always: true });
     return false;
   }
   if (!result.launched) {
@@ -780,7 +806,7 @@ export async function signOut(provider: string): Promise<void> {
       return { accounts: known ? list.map((a) => (a.provider === fresh.provider ? fresh : a)) : [...list, fresh] };
     });
   } catch (err) {
-    toast("error", errorText(err), { always: true });
+    toastFailure(err, undefined, { always: true });
   }
 }
 
@@ -817,7 +843,7 @@ export function answerProviderSwitch(ok: boolean, dontAskAgain: boolean): void {
   const resolve = answerSwitch;
   answerSwitch = null;
   setState({ providerSwitch: null });
-  if (ok && dontAskAgain) savePrefs({ skipProviderSwitchWarning: true }).catch((err: Error) => toast("error", err.message));
+  if (ok && dontAskAgain) savePrefs({ skipProviderSwitchWarning: true }).catch((err) => toastFailure(err));
   resolve?.(ok);
 }
 
@@ -844,7 +870,7 @@ export async function updateSettings(patch: Record<string, unknown>): Promise<bo
     }
     return true;
   } catch (err) {
-    toast("error", errorText(err), { always: true });
+    toastFailure(err, undefined, { always: true });
     return false;
   }
 }

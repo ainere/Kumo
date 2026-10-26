@@ -1,4 +1,4 @@
-import { dismissToast, pickAndOpenFolder, toast, useStore } from "../store";
+import { dismissToast, pickAndOpenFolder, toastFailure, useStore } from "../store";
 import { IconClose, IconFolder } from "./icons";
 
 export function Toasts() {
@@ -34,7 +34,7 @@ export function Welcome() {
       <div className="welcome-card glass-strong">
         <h1>Open a project to start</h1>
         <p className="muted">Kumo works inside a folder: the lead and its workers read and change the files there.</p>
-        <button className="btn primary" onClick={() => void pickAndOpenFolder().catch((err: Error) => toast("error", err.message))}>
+        <button className="btn primary" onClick={() => void pickAndOpenFolder().catch((err) => toastFailure(err))}>
           <IconFolder /> Open folder…
         </button>
       </div>

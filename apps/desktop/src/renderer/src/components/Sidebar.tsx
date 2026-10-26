@@ -17,6 +17,7 @@ import {
   reorderProjects,
   saveProjectSettings,
   toast,
+  toastFailure,
   useStore,
 } from "../store";
 import type { Chat, Project, Quotas, SessionSettings } from "../types";
@@ -370,7 +371,7 @@ export function Sidebar() {
       const file = e.dataTransfer.files[0];
       const filePath = (file as unknown as { path?: string }).path;
       if (filePath) {
-        void openWorkspace(filePath).catch((err: Error) => toast("error", err.message));
+        void openWorkspace(filePath).catch((err) => toastFailure(err));
       }
     }
   };
@@ -439,7 +440,7 @@ export function Sidebar() {
   const open = (path: string) => {
     setOptimisticWorkspace(path);
     return openWorkspace(path)
-      .catch((err: Error) => toast("error", err.message))
+      .catch((err) => toastFailure(err))
       .finally(() => setOptimisticWorkspace(null));
   };
 
@@ -459,7 +460,7 @@ export function Sidebar() {
     setCollapsed((prev) => ({ ...prev, [path]: false }));
     if (!isCurrent) setOptimisticWorkspace(path);
     void newChatIn(path)
-      .catch((err: Error) => toast("error", err.message))
+      .catch((err) => toastFailure(err))
       .finally(() => setOptimisticWorkspace(null));
   };
 
@@ -819,9 +820,9 @@ export function Sidebar() {
                             onClick={() => {
                               if (isChatCurrent) return;
                               if (!isCurrent) {
-                                void openWorkspace(project.path, chat.id).catch((err: Error) => toast("error", err.message));
+                                void openWorkspace(project.path, chat.id).catch((err) => toastFailure(err));
                               } else {
-                                void openChat(chat.id).catch((err: Error) => toast("error", err.message));
+                                void openChat(chat.id).catch((err) => toastFailure(err));
                               }
                             }}
                           >

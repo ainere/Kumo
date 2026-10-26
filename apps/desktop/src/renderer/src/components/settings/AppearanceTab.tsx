@@ -16,13 +16,13 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { previewPrefs, savePrefs, toast, useStore } from "../../store";
+import { previewPrefs, savePrefs, toast, toastFailure, useStore } from "../../store";
 import { contrastRatio, hexToRgb, normalizeHex, rgbToHex, themeDefaults, useAppliedTheme } from "../../theme";
 import type { Prefs, SceneFile } from "../../types";
 import { IconCheck, IconChevronDown, IconFolder, IconRefresh } from "../icons";
 import { PageHeader, Row, Section, Segmented, Slider, Toggle, useEscape, usePopoverPlacement, useRowLabel } from "./controls";
 
-const save = (patch: Partial<Prefs>) => savePrefs(patch).catch((err: Error) => toast("error", err.message));
+const save = (patch: Partial<Prefs>) => savePrefs(patch).catch((err) => toastFailure(err));
 
 // ── accent ──
 

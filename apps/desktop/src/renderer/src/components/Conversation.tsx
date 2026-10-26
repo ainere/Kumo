@@ -2,7 +2,7 @@ import { Fragment, memo, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatElapsed, providerLabel, toolLabel, useNow } from "../lib";
-import { resolveApproval, toast, useStore } from "../store";
+import { resolveApproval, toastFailure, useStore } from "../store";
 import type { Approval, Message } from "../types";
 
 const Markdown = memo(function Markdown({ text }: { text: string }) {
@@ -113,7 +113,7 @@ export function ApprovalCard({ approval }: { approval: Approval }) {
     try {
       await resolveApproval(approval.approvalId, approved);
     } catch (err) {
-      toast("error", (err as Error).message);
+      toastFailure(err);
       setSending(false);
     }
   };

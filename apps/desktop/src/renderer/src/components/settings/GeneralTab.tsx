@@ -6,12 +6,12 @@
 import { useEffect, useRef, type KeyboardEvent } from "react";
 import { getSafetyModeOption, SAFETY_MODE_OPTIONS } from "../../lib";
 import { chime } from "../../sounds";
-import { loadGlobalConfig, previewPrefs, savePrefs, toast, updateSettings, useStore } from "../../store";
+import { loadGlobalConfig, previewPrefs, savePrefs, toastFailure, updateSettings, useStore } from "../../store";
 import type { Prefs } from "../../types";
 import { IconCheck, SafetyIcon } from "../icons";
 import { PageHeader, Row, Section, Slider, Toggle } from "./controls";
 
-const save = (patch: Partial<Prefs>) => savePrefs(patch).catch((err: Error) => toast("error", err.message));
+const save = (patch: Partial<Prefs>) => savePrefs(patch).catch((err) => toastFailure(err));
 
 /** The three tiers as cards: the choice that matters most on this page gets the room to explain itself. */
 function SafetyTiers() {

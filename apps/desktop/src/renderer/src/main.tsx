@@ -25,16 +25,18 @@ import "./theme";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
-import { boot, handleEvent, setState, toast } from "./store";
+import { boot, getState, handleEvent, setState, toast } from "./store";
 import type { KumoEvent } from "./types";
 
 window.kumo.onEvent((event) => handleEvent(event as KumoEvent));
 
 window.kumo.onEngineRestart(() => {
   // Sessions lived in the old engine. Chats are on disk; open the workspace
-  // again in the new one.
+  // again in the new one. Requests the old engine never answered stay quiet
+  // (ENGINE_RESTARTED) because this notice covers them.
+  const turnLost = getState().busy;
   setState({ session: null, busy: false, tools: {}, toolOrder: [], approvals: [] });
-  toast("warning", "The engine restarted, so the running turn was lost.");
+  toast("warning", turnLost ? "The engine restarted, so the running turn was lost." : "The engine restarted.");
   void boot();
 });
 

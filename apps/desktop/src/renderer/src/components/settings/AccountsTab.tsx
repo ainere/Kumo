@@ -9,7 +9,17 @@
 import "../../styles/settings-accounts.css";
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { providerLabel } from "../../lib";
-import { getState, loadAccounts, loadGlobalConfig, refreshQuotas, signIn, signOut, toast, useStore } from "../../store";
+import {
+  getState,
+  invoke,
+  loadAccounts,
+  loadGlobalConfig,
+  refreshQuotas,
+  signIn,
+  signOut,
+  toastFailure,
+  useStore,
+} from "../../store";
 import type { AccountKind, AccountStatus, EndpointTest } from "../../types";
 import { IconRefresh } from "../icons";
 import { MeterRow, meters, type Meter } from "../Sidebar";
@@ -466,13 +476,13 @@ function CompatEndpoint({ account }: { account: AccountStatus }) {
     setSaving(true);
     try {
       // Base URLs are saved defaults, not session settings: config.update takes them.
-      await window.kumo.invoke("config.update", { patch: { compatBaseUrl: value } });
+      await invoke("config.update", { patch: { compatBaseUrl: value } });
       setDraft(value);
       setFlash(true);
       await loadGlobalConfig();
       void loadAccounts(true);
     } catch (err) {
-      toast("error", err instanceof Error ? err.message : String(err));
+      toastFailure(err);
     } finally {
       setSaving(false);
     }
