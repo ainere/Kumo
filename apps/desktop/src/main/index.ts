@@ -27,6 +27,7 @@ import {
   app,
   BrowserWindow,
   MessageChannelMain,
+  Notification,
   WebContentsView,
   dialog,
   ipcMain,
@@ -56,6 +57,8 @@ let engine: UtilityProcess | null = null;
 let quitting = false;
 let stopWatchingScenes: (() => void) | null = null;
 const popoutWindows = new Map<WorkbenchTab, BrowserWindow>();
+/** Shown notifications: one that gets garbage collected loses its click. */
+const liveNotifications = new Set<Notification>();
 let browserView: WebContentsView | null = null;
 /** The window the browser view is attached to: the one showing the Browser tab. */
 let browserHost: BrowserWindow | null = null;
@@ -347,8 +350,27 @@ type WorkbenchOp = "popout" | "closePopout" | "listPopouts" | "publishSession" |
 type BrowserOp = "navigate" | "bounds" | "back" | "forward" | "reload" | "state";
 type BrowserBounds = { x: number; y: number; width: number; height: number; visible: boolean };
 
+/** Show a Windows notification, unless a Kumo window is in front and the user can already see. */
+function notify(title: string, body: string): boolean {
+  if (BrowserWindow.getFocusedWindow() || !Notification.isSupported()) return false;
+  const note = new Notification({ title, body });
+  const forget = () => liveNotifications.delete(note);
+  note.on("click", () => {
+    forget();
+    if (!win || win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  });
+  note.on("close", forget);
+  liveNotifications.add(note);
+  note.show();
+  return true;
+}
+
 type AppRequest =
   | { action: "pickFolder" }
+  | { action: "notify"; title: string; body: string }
   | { action: "setTheme"; mode: "system" | "light" | "dark" }
   | { action: "window"; op: WindowOp }
   | { action: "scenes"; op: SceneOp }
@@ -381,6 +403,7 @@ function isAppRequest(value: unknown): value is AppRequest {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   if (v.action === "pickFolder") return true;
+  if (v.action === "notify") return typeof v.title === "string" && typeof v.body === "string";
   if (v.action === "window") return typeof v.op === "string" && WINDOW_OPS.includes(v.op);
   if (v.action === "scenes") return typeof v.op === "string" && SCENE_OPS.includes(v.op);
   if (v.action === "workbench") {
@@ -419,6 +442,7 @@ ipcMain.handle("kumo:app", async (event, request: unknown) => {
     const result = await dialog.showOpenDialog(senderWin, { properties: ["openDirectory"], title: "Open a project folder" });
     return result.canceled ? null : result.filePaths[0] ?? null;
   }
+  if (request.action === "notify") return notify(request.title.slice(0, 120), request.body.slice(0, 240));
   if (request.action === "window") {
     if (request.op === "minimize") senderWin.minimize();
     else if (request.op === "toggleMaximize") {
@@ -513,6 +537,8 @@ nativeTheme.on("updated", () => {
 });
 
 app.whenReady().then(() => {
+  // Windows names the sender of a notification by this id, and drops it without one.
+  app.setAppUserModelId("com.kumo.desktop");
   // Electron grants permission requests by default. Nothing here needs a
   // device or browser permission, and theme code (Phase 3c) must not get one.
   const allowed = (permission: string) => permission === "clipboard-sanitized-write";

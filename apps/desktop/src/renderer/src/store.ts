@@ -1030,6 +1030,13 @@ const updateLead = (turnId: string, fn: (m: Message) => Message) =>
 const updateTool = (toolId: string, fn: (t: ToolView) => ToolView) =>
   setState((s) => (s.tools[toolId] ? { tools: { ...s.tools, [toolId]: fn(s.tools[toolId]) } } : {}));
 
+/** Reach someone who went to another app. The main window says it once; a window in front stays quiet. */
+function notifyAway(body: string): void {
+  if (POPOUT_TAB || state.prefs?.notifications === false) return;
+  const title = state.session ? basename(state.session.workspace) : "kumo";
+  window.kumo.app.notify(title, body).catch(() => {});
+}
+
 export function handleEvent(event: KumoEvent): void {
   // App-wide events have no session. Terminal output goes to the tab showing it.
   if (!event.sessionId) {
@@ -1058,6 +1065,7 @@ export function handleEvent(event: KumoEvent): void {
       updateLead(event.turnId, (m) => ({ ...m, streaming: false, thinking: false }));
       setState({ busy: false });
       if (state.prefs?.sounds && !POPOUT_TAB) chime("done", state.prefs.soundVolume);
+      notifyAway("Turn finished");
       void refreshChatList();
       scheduleWorkspaceRefresh();
       void refreshPlan();
@@ -1065,6 +1073,7 @@ export function handleEvent(event: KumoEvent): void {
     case "turn.failed":
       updateLead(event.turnId, (m) => ({ ...m, streaming: false, thinking: false, failed: event.reason }));
       setState({ busy: false });
+      notifyAway("Turn failed");
       scheduleWorkspaceRefresh();
       break;
     case "tool.started":
@@ -1107,6 +1116,7 @@ export function handleEvent(event: KumoEvent): void {
         approvals: [...s.approvals, { approvalId: event.approvalId, kind: event.kind, tool: event.tool, preview: event.preview }],
       }));
       if (state.prefs?.sounds && !POPOUT_TAB) chime("approval", state.prefs.soundVolume);
+      notifyAway(`Approval needed: ${event.tool}`);
       break;
     case "approval.resolved":
       setState((s) => ({ approvals: s.approvals.filter((a) => a.approvalId !== event.approvalId) }));

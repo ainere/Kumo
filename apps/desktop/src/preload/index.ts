@@ -128,6 +128,8 @@ contextBridge.exposeInMainWorld("kumo", {
   },
   app: {
     pickFolder: (): Promise<string | null> => ipcRenderer.invoke("kumo:app", { action: "pickFolder" }),
+    notify: (title: string, body: string): Promise<boolean> =>
+      ipcRenderer.invoke("kumo:app", { action: "notify", title, body }),
     setTheme: (mode: "system" | "light" | "dark"): Promise<"dark" | "light"> =>
       ipcRenderer.invoke("kumo:app", { action: "setTheme", mode }),
     platform: process.platform,

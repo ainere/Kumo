@@ -328,6 +328,9 @@ export function GeneralTab() {
       </Section>
 
       <Section label="Notices">
+        <Row label="Windows notifications" hint="When a turn ends or an approval is waiting and Kumo isn't in front.">
+          <Toggle checked={prefs?.notifications ?? true} onChange={(on) => void save({ notifications: on })} />
+        </Row>
         <Row label="Error notifications" hint="A notification when something running in the background fails.">
           <Toggle checked={prefs?.errorToasts ?? true} onChange={(on) => void save({ errorToasts: on })} />
         </Row>

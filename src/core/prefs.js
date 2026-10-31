@@ -67,6 +67,8 @@ export const PrefsSchema = z.object({
   reduceMotion: z.boolean(),
   /** Chimes when a turn finishes or needs approval. */
   sounds: z.boolean(),
+  /** A Windows notification when a turn ends or an approval waits and no Kumo window is in front. */
+  notifications: z.boolean(),
   soundVolume: z.number().int().min(0).max(100),
   errorToasts: z.boolean(),
   /** Where chats are exported: a folder inside the workspace, relative to it; null is the workspace itself. */
@@ -98,6 +100,7 @@ export const DEFAULT_PREFS = {
   reduceTransparency: false,
   reduceMotion: false,
   sounds: true,
+  notifications: true,
   soundVolume: 50,
   errorToasts: true,
   exportDir: null,

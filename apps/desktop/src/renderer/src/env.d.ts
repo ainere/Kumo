@@ -6,6 +6,8 @@ interface KumoBridge {
   onEngineRestart(listener: () => void): () => void;
   app: {
     pickFolder(): Promise<string | null>;
+    /** A Windows notification; resolves false when a Kumo window is in front, so none was shown. */
+    notify(title: string, body: string): Promise<boolean>;
     setTheme(mode: "system" | "light" | "dark"): Promise<"dark" | "light">;
     platform: string;
     window(op: "minimize" | "toggleMaximize" | "close" | "state"): Promise<{ maximized: boolean; focused: boolean }>;
