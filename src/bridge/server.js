@@ -617,6 +617,11 @@ export function resolveWorkerTarget(opts, config) {
  * `permission` ("read" | "write") is what the worker is allowed to do; it is
  * derived from the legacy `mode` when absent. Tasks a worker cannot perform are
  * refused here rather than run and answered with invented output.
+ *
+ * `previewRequired` marks a write that redoes a task whose approved preview no
+ * longer applies (`staleReason` says why). A worker that edits files itself
+ * runs it again; one that writes by proposing a diff is refused, because the
+ * diff it would propose now is not the one that was approved.
  */
 export async function dispatchWorkerTask(opts) {
   if (nestedInWorker) {
@@ -634,23 +639,32 @@ export async function dispatchWorkerTask(opts) {
   const caps = workerCapabilities(target.provider);
   const permission = opts.permission || (opts.mode === "workspace-write" ? "write" : "read");
 
-  if (permission === "write" && !caps.canWrite) {
+  if (!caps.readsWorkspace && (!opts.files || opts.files.length === 0)) {
+    const action = permission === "write" ? "read or change (a file that does not exist yet is fine)" : "read";
     return refusal(
-      `worker provider '${target.provider}' cannot modify files. Use a CLI worker (codex, claude, antigravity, …), ` +
-        `or switch to diff-review mode so Kumo can apply its proposed diff itself.`
+      `worker provider '${target.provider}' cannot open workspace files on its own, so ${opts.toolName || "this call"} needs \`files\`. ` +
+        `Call it again with \`files\` set to the workspace-relative paths the worker should ${action}, ` +
+        `for example files: ["src/app.js", "src/util.js"]; their contents are sent along with the task ` +
+        `(up to ${INLINE_MAX_FILE_BYTES / 1024} KB each, ${INLINE_MAX_TOTAL_BYTES / 1024} KB in all). ` +
+        `Or assign a worker that opens files itself (codex, claude, antigravity, …).`
     );
   }
 
-  let fileContents = [];
-  if (!caps.readsWorkspace) {
-    if (!opts.files || opts.files.length === 0) {
+  // A worker that cannot edit files itself writes by proposing a diff, which
+  // the bridge applies (see writeThroughBridge).
+  if (permission === "write" && !caps.writesWorkspace) {
+    // The caller is redoing a task whose approved preview went stale. A new
+    // diff from this worker would be written unseen, so it needs a new preview.
+    if (opts.previewRequired) {
       return refusal(
-        `worker provider '${target.provider}' cannot open workspace files on its own. ` +
-          `Pass the files it should read in \`files\`, or use a CLI worker (codex, claude, antigravity, …).`
+        `the approved diff could not be applied verbatim (${opts.staleReason}), and worker provider '${target.provider}' cannot edit files itself, ` +
+          `so redoing the task would write a change nobody approved; nothing was written. Request a new preview.`
       );
     }
-    fileContents = readWorkspaceFiles(workspace, opts.files);
+    return writeThroughBridge({ ...opts, config, workspace });
   }
+
+  const fileContents = caps.readsWorkspace ? [] : readWorkspaceFiles(workspace, opts.files);
 
   const systemPrompt =
     opts.systemPrompt ??
@@ -808,6 +822,32 @@ function patchPathProblem(p) {
 }
 
 /**
+ * Why a path must not be written given what is on disk, or null: it runs
+ * through a link already in the workspace. Git stops at a symbolic link but not
+ * at a Windows junction, so `junction/x.txt` would land wherever the junction
+ * points. `lstat` reports both as links; the workspace's own path is not judged.
+ *
+ * @param {string} workspace
+ * @param {string} p - a path git named, relative to the workspace
+ * @returns {string|null}
+ */
+function patchLinkProblem(workspace, p) {
+  let at = workspace;
+  for (const part of p.split(/[\\/]/).filter(Boolean)) {
+    at = path.join(at, part);
+    try {
+      if (fs.lstatSync(at).isSymbolicLink()) return `the diff writes through a link in the workspace (${p})`;
+    } catch (err) {
+      // Nothing there yet, so the patch creates the rest. Anything else cannot be vouched for.
+      const code = /** @type {NodeJS.ErrnoException} */ (err).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return null;
+      return `the diff names a path that cannot be checked (${p})`;
+    }
+  }
+  return null;
+}
+
+/**
  * Like {@link patchPathProblem} for text that holds paths git splits by rules
  * of its own (a `diff --git` line, where a name may contain spaces): every
  * fragment between separators, quotes, braces and whitespace is looked at, so
@@ -837,10 +877,17 @@ function patchTextProblem(text) {
  * bare CR, VT or FF is refused: git ends a name there, so the name it reads is
  * not the one on the line.
  *
+ * With `workspace`, every name is also checked against the disk. That covers
+ * the old name of a patch whose old and new names differ with no rename header,
+ * which git reports by its new name only. Like {@link patchTextProblem}, it can
+ * only over-refuse: each name is looked at as written and with its first
+ * component dropped (what `-p1` leaves), so a link named `a` or `b` counts too.
+ *
  * @param {string} diff
+ * @param {string} [workspace]
  * @returns {string|null}
  */
-function patchRefusal(diff) {
+function patchRefusal(diff, workspace) {
   if (diff.includes("\0")) return "the diff contains a NUL byte";
   /** @type {string[]} */
   const named = [];
@@ -872,6 +919,12 @@ function patchRefusal(diff) {
   for (const p of named) {
     const problem = patchPathProblem(p);
     if (problem) return problem;
+    if (!workspace) continue;
+    // Raw and decoded, as in patchPathProblem: the disk holds the real name, not git's quoted spelling.
+    for (const candidate of new Set([p, decodeGitPath(p)])) {
+      const linked = patchLinkProblem(workspace, candidate);
+      if (linked) return linked;
+    }
   }
   return null;
 }
@@ -904,18 +957,39 @@ function renameCandidates(body) {
 }
 
 /**
+ * The names in a `Checking patch …` line of `git apply --check --verbose`: one
+ * name, or `old => new`. Git quotes a name only when it has to, and a name can
+ * hold ` => `, so each reading is returned.
+ *
+ * @param {string} body - the text between `Checking patch ` and `...`
+ * @returns {string[]}
+ */
+function checkedNames(body) {
+  return (body.includes(" => ") ? [body, ...renameCandidates(body)] : [body]).map((p) => {
+    const quoted = /^"(.*)"$/s.exec(p);
+    return quoted ? decodeGitPath(quoted[1]) : p;
+  });
+}
+
+/**
  * The second layer: ask git what it reads in the patch, with the very flags
  * the apply will use, and check every path and mode it reports.
  * `--numstat -z` lists the file each patch writes (the deleted one for a
  * delete); `--summary` adds creations and deletions with their modes, mode
  * changes, and the source of a rename or copy, which `--numstat` leaves out.
- * Whatever the patch's text suggests, git is the one that will write.
+ * `--check --verbose` names both sides of a section whose `---` and `+++`
+ * differ with no rename header, which git treats as moving the file and neither
+ * of the others reports, and it does so after git's own unquoting and `-p`
+ * stripping, which no reading of the patch's text can match exactly.
+ * Whatever the patch's text suggests, git is the one that will write. With
+ * `workspace`, each path is also checked against the disk.
  *
  * @param {(extra: string[]) => import("node:child_process").SpawnSyncReturns<string>} run
  * @param {string} prefix - the `--directory` root git prepends to every name, "" for none
+ * @param {string} [workspace]
  * @returns {string|null} why to refuse, or null (also when git cannot read the patch: `--check` says why)
  */
-export function gitPatchRefusal(run, prefix) {
+export function gitPatchRefusal(run, prefix, workspace) {
   const numstat = run(["--numstat", "-z"]);
   const summary = run(["--summary"]);
   if (numstat.status !== 0 || summary.status !== 0) return null;
@@ -934,9 +1008,15 @@ export function gitPatchRefusal(run, prefix) {
     const moved = /^ (?:rename|copy) (.*) \(\d+%\)$/.exec(line);
     if (moved) named.push(...renameCandidates(moved[1].replace(/"/g, "")));
   }
+  // The env `run` sets keeps this line in English.
+  for (const line of String(run(["--check", "--verbose"]).stderr ?? "").split("\n")) {
+    const checked = /^Checking patch (.*)\.\.\.\s*$/.exec(line);
+    if (checked) named.push(...checkedNames(checked[1]));
+  }
   for (const name of named) {
     // Judge the name inside the workspace, not the repository path above it.
-    const problem = patchPathProblem(prefix && name.startsWith(prefix) ? name.slice(prefix.length) : name);
+    const rel = prefix && name.startsWith(prefix) ? name.slice(prefix.length) : name;
+    const problem = patchPathProblem(rel) ?? (workspace ? patchLinkProblem(workspace, rel) : null);
     if (problem) return problem;
   }
   return null;
@@ -973,8 +1053,9 @@ function gitFailure(result, fallback) {
  * directories such as `.git/` or `.claude/`, symbolic links) comes back with
  * `refused: true`: it is not a patch that merely failed to apply, so the
  * caller must not fall back to letting a worker write the change instead.
- * Two layers decide: a scan of the patch text, then git's own report of the
- * files and modes it reads in it. Nothing is written unless both pass.
+ * Three layers decide: a scan of the patch text, git's own report of the files
+ * and modes it reads in it, and whether the paths of both run through a link on
+ * disk. Nothing is written unless all three pass.
  *
  * No `--recount`: it rewrites hunk line counts to fit whatever body is
  * present, which hides a truncated diff. A hunk whose counts are wrong is
@@ -989,7 +1070,7 @@ export function applyApprovedDiff(cwd, previewText) {
   if (!diff) return { ok: false, reason: "the preview contains no unified diff" };
 
   const level = diffStripLevel(diffHeaderPaths(diff));
-  const refusal = patchRefusal(diff);
+  const refusal = patchRefusal(diff, cwd);
   if (refusal) return { ok: false, reason: refusal, refused: true };
 
   // The patch names workspace-relative paths. Run inside a subdirectory of the
@@ -1016,7 +1097,7 @@ export function applyApprovedDiff(cwd, previewText) {
         env,
       });
 
-    const gitRefusal = gitPatchRefusal(run, fromRoot ? prefix : "");
+    const gitRefusal = gitPatchRefusal(run, fromRoot ? prefix : "", cwd);
     if (gitRefusal) return { ok: false, reason: gitRefusal, refused: true };
 
     const check = run(["--check"]);
@@ -1027,6 +1108,48 @@ export function applyApprovedDiff(cwd, previewText) {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Run a write task on a worker that cannot edit files itself (an HTTP API,
+ * `ollama run`). The worker is asked for the change as a unified diff, exactly
+ * as in a diff-review preview, and the bridge applies it with
+ * {@link applyApprovedDiff}: the same checks as an approved preview (paths
+ * inside the workspace, nothing under `.git/` or the agent config
+ * directories, no symbolic links, `git apply --check` before anything is
+ * written). The result has an agent worker's shape — the worker's own account
+ * of the change as stdout — and the caller reports the files that changed.
+ *
+ * Nothing is applied unless the worker succeeded and its reply holds a diff
+ * that passes; every other outcome is a failed result and leaves the tree as
+ * it was.
+ *
+ * @param {object} opts - what {@link dispatchWorkerTask} was given, with `config` and `workspace` resolved
+ */
+async function writeThroughBridge(opts) {
+  const proposal = await dispatchWorkerTask({ ...opts, permission: "read", previewDiff: true });
+  if (!proposal.ok) return proposal;
+
+  const applied = applyApprovedDiff(opts.workspace, proposal.stdout);
+  if (applied.ok) {
+    return {
+      ok: true,
+      code: 0,
+      stdout: `Applied the change the worker proposed (git apply).\n\n${proposal.stdout}`,
+      stderr: proposal.stderr,
+      timedOut: false,
+    };
+  }
+  if (applied.refused) {
+    return refusal(`the diff the worker proposed was refused (${applied.reason}); nothing was written.`);
+  }
+  return {
+    ok: false,
+    code: 1,
+    stdout: proposal.stdout,
+    stderr: `the worker's reply could not be applied (${applied.reason}); nothing was written. Retry the call, with the files it must change in \`files\`.`,
+    timedOut: false,
+  };
 }
 
 /** How long the bridge waits for a human decision in `interactive` mode. */
@@ -1244,10 +1367,14 @@ export async function handleRoleTool(registered, { task, files, confirm, preview
           `Request a new preview so the operator can approve the actual change.`
       );
     } else {
+      // Only a worker that edits files itself can redo the task; one that writes
+      // through the bridge is refused, since that would apply a diff nobody saw.
+      result = await dispatch({ permission: "write", safetyMode, previewRequired: true, staleReason: applied.reason });
+      // A refusal ran nothing, so there is no re-run to report.
+      if (result.refused) return formatResult(result, toolName);
       note =
         `\n\n[NOTE: the approved diff could not be applied verbatim (${applied.reason}); ` +
         `the worker re-ran the task, so the result may differ from the preview.]`;
-      result = await dispatch({ permission: "write", safetyMode });
     }
   } else {
     result = await dispatch({ permission: "write", safetyMode });

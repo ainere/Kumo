@@ -40,13 +40,13 @@ import {
   ALLOWED_PROVIDERS,
   EFFORT_LEVELS,
   MODEL_ID_PATTERN,
+  MODEL_ID_RULE,
   canonicalizeProvider,
   detectProviderForModel,
   modelBelongsElsewhere,
   modelDisplayName,
   providerDisplayName,
 } from "./models.js";
-import { workerCapabilities } from "../providers/workers/capabilities.js";
 
 /** @typedef {"read"|"write"} RoleAccess */
 /** @typedef {"scout"|"builder"|"tester"|"researcher"|"reviewer"|"designer"} BuiltinRoleId */
@@ -209,15 +209,14 @@ function text(value, where, { max, required = false, multiline = false }) {
  *
  * @param {unknown} raw
  * @param {string} where - e.g. "roles.builder", for messages
- * @param {RoleAccess} access
  * @returns {RoleAssignment}
  */
-function normalizeAssignment(raw, where, access) {
+function normalizeAssignment(raw, where) {
   if (!isPlainObject(raw)) throw new Error(`${where} must be an object with a model, and optionally a provider and effort`);
   rejectUnknownKeys(raw, ["provider", "model", "effort"], where);
   const model = String(raw.model ?? "").trim();
   if (!MODEL_ID_PATTERN.test(model)) {
-    throw new Error(`${where}.model must be 1-120 chars of letters, digits, '.', '_' or '-'`);
+    throw new Error(`${where}.model must be ${MODEL_ID_RULE}`);
   }
   const provider =
     raw.provider === undefined || raw.provider === null || raw.provider === ""
@@ -229,12 +228,6 @@ function normalizeAssignment(raw, where, access) {
   const elsewhere = modelBelongsElsewhere(provider, model);
   if (elsewhere) {
     throw new Error(`${where}: ${providerDisplayName(provider)} does not offer ${model}; use provider ${elsewhere}.`);
-  }
-  if (access === "write" && !workerCapabilities(provider).canWrite) {
-    throw new Error(
-      `${where}: ${provider} is a text-only worker and cannot modify files, but this role writes. ` +
-        `Pick a CLI worker (claude, codex, antigravity, …).`
-    );
   }
   /** @type {RoleAssignment} */
   const out = { provider, model };
@@ -277,7 +270,7 @@ function normalizeCustomRole(raw, index, seen) {
   };
   const hasModel = raw.model !== undefined && raw.model !== null && raw.model !== "";
   if (hasModel) {
-    Object.assign(role, normalizeAssignment({ provider: raw.provider, model: raw.model, effort: raw.effort }, where, access));
+    Object.assign(role, normalizeAssignment({ provider: raw.provider, model: raw.model, effort: raw.effort }, where));
   } else if ((raw.provider ?? "") !== "" || (raw.effort ?? "") !== "") {
     // An assignment is all or nothing: half of one would mix this role's
     // choice with whatever the shared worker happens to be.
@@ -322,7 +315,7 @@ export function normalizeRoles(value) {
   for (const role of BUILTIN_ROLES) {
     const entry = raw[role.id];
     if (entry === undefined || entry === null) continue;
-    out[role.id] = normalizeAssignment(entry, `roles.${role.id}`, role.access);
+    out[role.id] = normalizeAssignment(entry, `roles.${role.id}`);
   }
   const list = raw.custom === undefined || raw.custom === null ? [] : raw.custom;
   if (!Array.isArray(list)) throw new Error("roles.custom must be a list");
@@ -356,7 +349,7 @@ export function sanitizeRoles(value) {
   for (const role of BUILTIN_ROLES) {
     if (value[role.id] === undefined || value[role.id] === null) continue;
     try {
-      out[role.id] = normalizeAssignment(value[role.id], `roles.${role.id}`, role.access);
+      out[role.id] = normalizeAssignment(value[role.id], `roles.${role.id}`);
     } catch (err) {
       problems.push(err instanceof Error ? err.message : String(err));
     }

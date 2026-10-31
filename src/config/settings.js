@@ -37,6 +37,7 @@ import {
   EFFORT_LEVELS,
   LEGACY_MODEL_IDS,
   MODEL_ID_PATTERN,
+  MODEL_ID_RULE,
   canonicalizeProvider,
 } from "./models.js";
 import { BUILTIN_ROLE_IDS, emptyRoles, normalizeRoles, sanitizeRoles } from "./roles.js";
@@ -526,9 +527,7 @@ export function normalizeConfigValue(key, value) {
     // Interpolated raw into generated TOML and passed to provider CLIs.
     const val = String(value ?? "").trim();
     if (!MODEL_ID_PATTERN.test(val)) {
-      throw new Error(
-        `Value for '${key}' must be 1-120 chars of letters, digits, '.', '_' or '-'`
-      );
+      throw new Error(`Value for '${key}' must be ${MODEL_ID_RULE}`);
     }
     value = val;
   } else if (key === "cliBinary") {

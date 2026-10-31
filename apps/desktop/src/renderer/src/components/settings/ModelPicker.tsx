@@ -35,11 +35,9 @@ import { useEscape, usePopoverPlacement, useRowLabel } from "./controls";
 // ── engine rules, mirrored ──
 
 /** src/config/models.js MODEL_ID_PATTERN: ids are passed raw to provider CLIs. */
-export const MODEL_ID_PATTERN = /^[A-Za-z0-9._-]{1,120}$/;
+export const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/;
 /** src/config/models.js EFFORT_LEVELS. */
 export const EFFORT_LEVELS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
-/** src/providers/workers/capabilities.js: workers that only return text. */
-const TEXT_ONLY = new Set(["ollama", "openai-api", "anthropic-api", "gemini-api", "compat-api"]);
 
 /** What the role needs from its model: the lead calls worker tools, a write role edits files. */
 export type ModelNeed = "lead" | "write" | "read";
@@ -69,9 +67,13 @@ export const providerName = (catalog: CatalogProvider[] | null, provider: string
 export const modelName = (catalog: CatalogProvider[] | null, provider: string, model: string): string =>
   findModel(catalog, provider, model)?.name || model;
 
+/**
+ * Whether a provider can fill a write role. Any can (capabilities.js: a worker
+ * that cannot edit files proposes a diff and the bridge applies it), so before
+ * the catalog has loaded the answer is yes.
+ */
 export function canWrite(catalog: CatalogProvider[] | null, provider: string): boolean {
-  const entry = findProvider(catalog, provider);
-  return entry ? entry.canWrite : !TEXT_ONLY.has(canonicalProvider(provider));
+  return findProvider(catalog, provider)?.canWrite ?? true;
 }
 
 /** Why a provider can't serve this role, or null when it can. */
@@ -560,7 +562,7 @@ function CustomModelField({ providerName: name, onUse, onCancel }: { providerNam
   const [text, setText] = useState("");
   const [tried, setTried] = useState(false);
   const clean = text.trim();
-  const error = !clean ? (tried ? "Enter a model id" : null) : MODEL_ID_PATTERN.test(clean) ? null : "Letters, digits, '.', '_' and '-' only, up to 120";
+  const error = !clean ? (tried ? "Enter a model id" : null) : MODEL_ID_PATTERN.test(clean) ? null : "Letters, digits, '.', '_', '-', ':' and '/' only, up to 120, starting with a letter or digit";
 
   useEffect(() => {
     input.current?.focus();

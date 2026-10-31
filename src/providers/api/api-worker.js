@@ -37,8 +37,7 @@ export async function executeApiTask({
       ok: false,
       code: 1,
       stdout: "",
-      stderr:
-        "Direct-API workers cannot modify files; select a CLI worker provider for worker_implement/worker_test.",
+      stderr: "Direct-API workers do not write files themselves; a write goes through the bridge, which applies the diff they propose.",
       timedOut: false,
     };
   }

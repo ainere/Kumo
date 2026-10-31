@@ -87,9 +87,14 @@ export function providerDisplayName(provider) {
 
 /**
  * Model ids are interpolated raw into generated TOML and passed to provider
- * CLIs, so they are limited to this alphabet.
+ * CLIs, so they are limited to this alphabet. `/` and `:` are for ids such as
+ * OpenCode's `provider/model` and Ollama's `name:tag`; the first character keeps
+ * an id from reading as a flag.
  */
-export const MODEL_ID_PATTERN = /^[A-Za-z0-9._-]{1,120}$/;
+export const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/;
+
+/** What {@link MODEL_ID_PATTERN} allows, for error messages. */
+export const MODEL_ID_RULE = "1-120 chars of letters, digits, '.', '_', '-', ':' or '/', starting with a letter or digit";
 
 /**
  * Claude models, current generation first. Claude Code takes the full id or

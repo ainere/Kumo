@@ -36,7 +36,7 @@ export async function executeTask(opts) {
 
   const bin = findOllamaBinary();
   // `ollama run` is a plain model call: it cannot open or write files, so the
-  // bridge inlines file contents and never routes write tasks here.
+  // bridge inlines file contents and applies any diff it proposes itself.
   const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files, fileContents });
 
   // `ollama run <model>` reads the prompt from stdin when none is given; that

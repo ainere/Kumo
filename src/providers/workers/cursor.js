@@ -42,7 +42,13 @@ export async function executeTask(opts) {
     args.push("--model", model);
   }
   if (grantsWrite(opts)) {
-    args.push("--force");
+    // Without --force, print mode only proposes changes. --trust spares a
+    // headless run the workspace-trust prompt nobody is there to answer.
+    args.push("--force", "--trust");
+  } else {
+    // Ask mode is the documented read-only mode ("explore code without making
+    // changes"). Plan mode is not: it is for drafting a plan to approve.
+    args.push("--mode", "ask");
   }
 
   // cursor-agent reads the prompt from stdin when `-p` is given without a value.
