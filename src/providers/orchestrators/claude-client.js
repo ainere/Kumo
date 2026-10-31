@@ -39,11 +39,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { GenericAppClient } from "./generic-client.js";
+import { BRIDGE_SERVER_NAME, bridgeLaunch } from "./lead-support.js";
 import { findClaudeBinary, CLAUDE_EFFORTS } from "../workers/claude.js";
-import { BRIDGE_SERVER_PATH } from "../../config/sync.js";
 import { kumoHome, ensureDir, atomicWriteJson } from "../../config/paths.js";
 import { formatResetTime } from "../../utils/ui.js";
-import { nodeCommand } from "../../core/node-command.js";
 import { bridgeEnvFrom } from "../../utils/process.js";
 import { activeProviders } from "../../config/roles.js";
 
@@ -121,6 +120,10 @@ export class ClaudeAppClient extends GenericAppClient {
    * Write the per-session MCP config naming the bridge for this workspace.
    * Lives under the Kumo state directory, never in the user's repository.
    *
+   * It names no secrets: the session token and worker keys reach the bridge
+   * through Claude Code's own environment (see {@link childEnv}), which it
+   * passes on to the stdio servers it starts.
+   *
    * @returns {string}
    */
   _mcpConfigFile() {
@@ -128,19 +131,10 @@ export class ClaudeAppClient extends GenericAppClient {
     const dir = path.join(kumoHome(), "run");
     ensureDir(dir);
     const file = path.join(dir, `claude-mcp-${process.pid}-${randomUUID()}.json`);
-    const node = nodeCommand();
+    const bridge = bridgeLaunch({ workspace: this.workspace });
     atomicWriteJson(file, {
       mcpServers: {
-        "kumo-bridge": {
-          command: node.command,
-          args: [BRIDGE_SERVER_PATH, "--workspace", this.workspace],
-          env: {
-            ...node.env,
-            ...(this.options.env || {}),
-            KUMO_WORKSPACE: this.workspace,
-            ...(process.env.KUMO_HOME ? { KUMO_HOME: process.env.KUMO_HOME } : {}),
-          },
-        },
+        [BRIDGE_SERVER_NAME]: { command: bridge.command, args: bridge.args, env: bridge.env },
       },
     });
     this.mcpConfigPath = file;
