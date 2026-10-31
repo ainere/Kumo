@@ -45,6 +45,7 @@ import type {
   Toast,
   ToolView,
   Turn,
+  ThemeList,
   TurnOutcome,
   WorkbenchTab,
   WorkspaceDiff,
@@ -124,6 +125,8 @@ export interface State {
   workbenchResizing: boolean;
   /** A modal dialog is open. */
   dialogOpen: boolean;
+  /** The theme packages in the user's folder; null until read. */
+  themes: ThemeList | null;
 }
 
 /** What a project's Workbench holds, cleared on moving to another project. */
@@ -180,6 +183,7 @@ let state: State = {
   composerInsert: null,
   workbenchResizing: false,
   dialogOpen: false,
+  themes: null,
   ...EMPTY_WORKBENCH,
 };
 
@@ -1159,6 +1163,15 @@ async function refreshChatList(): Promise<void> {
   if (!state.session) return;
   setState({ chats: await invoke<Chat[]>("session.listChats", { sessionId: state.session.id }) });
 }
+
+// ── theme packages ──
+
+async function refreshThemes(): Promise<void> {
+  setState({ themes: await window.kumo.app.themes.list() });
+}
+
+void refreshThemes().catch(() => {});
+window.kumo.app.themes.onChanged(() => void refreshThemes().catch(() => {}));
 
 // ── the Workbench ──
 

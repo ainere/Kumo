@@ -242,6 +242,31 @@ export interface Toast {
   text: string;
 }
 
+// ── theme packages ──
+
+export interface ThemeColors {
+  ground?: string;
+  text?: string;
+  muted?: string;
+  glass?: string;
+  accent?: string;
+}
+
+export interface UserTheme {
+  id: string;
+  name: string;
+  dark: ThemeColors;
+  light: ThemeColors;
+  css: string;
+  /** Why part of it was left out, else null. */
+  error: string | null;
+}
+
+export interface ThemeList {
+  dir: string;
+  themes: UserTheme[];
+}
+
 // ── the Workbench ──
 
 export type WorkbenchTab = "workers" | "files" | "diff" | "terminal" | "browser" | "plan";

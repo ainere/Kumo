@@ -29,7 +29,7 @@ import { Sidebar } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
 import { PopoutWorkbenchView, Workbench } from "./components/workbench/Workbench";
 import { POPOUT_TAB, getState, openSettings, useStore, workbenchVisible } from "./store";
-import { applyPrefs } from "./theme";
+import { applyPrefs, applyUserTheme } from "./theme";
 
 const isMac = window.kumo.app.platform === "darwin";
 
@@ -43,6 +43,12 @@ export function App() {
   useEffect(() => {
     if (prefs) applyPrefs(prefs);
   }, [prefs]);
+
+  const themes = useStore((s) => s.themes);
+  const themeId = prefs?.theme ?? null;
+  useEffect(() => {
+    applyUserTheme(themes?.themes.find((t) => t.id === themeId) ?? null);
+  }, [themes, themeId]);
 
   // Ctrl+, (Cmd+, on macOS) opens Settings from anywhere.
   useEffect(() => {

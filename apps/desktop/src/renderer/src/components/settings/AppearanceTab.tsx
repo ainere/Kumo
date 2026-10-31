@@ -574,6 +574,8 @@ export function AppearanceTab() {
 
   const scene = prefs?.scene ?? "clouds";
   const broken = user.filter((u) => u.error).length;
+  const themeList = useStore((s) => s.themes);
+  const activeTheme = themeList?.themes.find((t) => t.id === prefs?.theme);
 
   return (
     <>
@@ -593,6 +595,30 @@ export function AppearanceTab() {
         </Row>
         <Row label="Accent" hint="Focus, selection and the usage bars. The theme's own, a preset, or any color.">
           <AccentPicker />
+        </Row>
+        <Row
+          label="Theme package"
+          part="theme-package"
+          hint={
+            activeTheme?.error ?? (
+              <>
+                Colors and CSS from <span className="settings-path">{themeList?.dir ?? "your themes folder"}</span>. Start
+                one with <code>kumo theme new</code>.
+              </>
+            )
+          }
+        >
+          {themeList && themeList.themes.length > 0 && (
+            <Segmented
+              value={prefs?.theme ?? "default"}
+              options={[["default", "Kumo"], ...themeList.themes.map((t): [string, string] => [t.id, t.name])]}
+              onChange={(id) => void save({ theme: id === "default" ? null : id })}
+            />
+          )}
+          <button type="button" className="btn sm" onClick={() => void window.kumo.app.themes.openFolder()}>
+            <IconFolder />
+            Open folder
+          </button>
         </Row>
       </Section>
 

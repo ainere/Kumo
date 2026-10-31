@@ -45,6 +45,8 @@ const WorkbenchTabSchema = z.enum(WORKBENCH_TABS);
 export const PrefsSchema = z.object({
   mode: z.enum(["system", "light", "dark"]),
   scene: z.string().min(1).max(64),
+  /** The folder name of the theme package in use (see `kumo theme new`); null for Kumo's own look. */
+  theme: z.string().min(1).max(64).nullable(),
   dock: z.enum(["right", "bottom", "floating", "hidden"]),
   /** The active tab in the primary workbench pane. */
   workbenchTab: WorkbenchTabSchema,
@@ -86,6 +88,7 @@ export const PrefsSchema = z.object({
 export const DEFAULT_PREFS = {
   mode: "system",
   scene: "clouds",
+  theme: null,
   dock: "right",
   workbenchTab: "workers",
   workbenchSplitTab: null,

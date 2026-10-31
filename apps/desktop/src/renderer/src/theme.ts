@@ -9,11 +9,12 @@
  *   data-mode="dark|light", data-transparency="full|reduced", data-motion="full|reduced"
  *   --accent, --on-accent, --glass-blur, --glass-opacity, and per mode
  *   --bg, --text, --muted, --faint, --glass-rgb, --glass-strong-rgb.
- * An unset color is removed, so tokens.css shows through.
+ * An unset color is removed, so tokens.css shows through. A theme package sits
+ * between the two: the user's own colors win over it, and it wins over the app's.
  */
 
 import { useSyncExternalStore } from "react";
-import type { Prefs } from "./types";
+import type { Prefs, UserTheme } from "./types";
 
 const darkQuery = matchMedia("(prefers-color-scheme: dark)");
 const transparencyQuery = matchMedia("(prefers-reduced-transparency: reduce)");
@@ -38,6 +39,7 @@ export interface AppliedTheme {
 }
 
 let prefs: Prefs | null = null;
+let userTheme: UserTheme | null = null;
 let override: Mode | null = null;
 let appliedMode: Prefs["mode"] | null = null;
 let applied: AppliedTheme | null = null;
@@ -69,9 +71,10 @@ function sync(): void {
   root.dataset.transparency = reducedTransparency ? "reduced" : "full";
   // The OS setting is handled in CSS with media queries; this is the app's own.
   root.dataset.motion = prefs?.reduceMotion ? "reduced" : "full";
-  applyColors(root.style, prefs?.colors[mode]);
+  applyColors(root.style, { ...userTheme?.[mode], ...prefs?.colors[mode] });
+  const accent = prefs?.accent ?? userTheme?.[mode].accent ?? null;
+  setVar(root.style, "--accent", accent);
   // Text on the accent (the primary button, the selected card's check): whichever of ink or white reads better.
-  const accent = prefs?.accent ?? null;
   setVar(root.style, "--on-accent", accent && (contrastRatio(accent, "#ffffff") >= contrastRatio(accent, INK) ? "#ffffff" : INK));
 
   const next: AppliedTheme = {
@@ -97,7 +100,6 @@ export function applyPrefs(next: Prefs): void {
   const style = document.documentElement.style;
   style.setProperty("--glass-blur", `${next.glassBlur}px`);
   style.setProperty("--glass-opacity", String(next.glassOpacity / 100));
-  setVar(style, "--accent", next.accent);
   if (next.mode !== appliedMode) {
     appliedMode = next.mode;
     override = next.mode === "system" ? null : next.mode;
@@ -106,6 +108,17 @@ export function applyPrefs(next: Prefs): void {
     void window.kumo.app.setTheme(next.mode).then(sync, sync);
     return;
   }
+  sync();
+}
+
+// After the app's own stylesheets, so a theme's rules win a tie with them.
+const themeStyle = document.head.appendChild(document.createElement("style"));
+themeStyle.dataset.kumoTheme = "";
+
+/** Put a theme package on, or take it off with null. */
+export function applyUserTheme(next: UserTheme | null): void {
+  userTheme = next;
+  themeStyle.textContent = next?.css ?? "";
   sync();
 }
 

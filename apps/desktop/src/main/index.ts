@@ -41,6 +41,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SCENE_SCHEME, handleSceneScheme, registerSceneScheme } from "./scene-protocol";
 import { ensureUserScenesDir, listUserScenes, watchUserScenes } from "./user-scenes";
+import { ensureUserThemesDir, listUserThemes, watchUserThemes } from "./user-themes";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // In development the engine is the repository's src/. Packaging (Phase 6)
@@ -56,6 +57,7 @@ let win: BrowserWindow | null = null;
 let engine: UtilityProcess | null = null;
 let quitting = false;
 let stopWatchingScenes: (() => void) | null = null;
+let stopWatchingThemes: (() => void) | null = null;
 const popoutWindows = new Map<WorkbenchTab, BrowserWindow>();
 /** Shown notifications: one that gets garbage collected loses its click. */
 const liveNotifications = new Set<Notification>();
@@ -374,6 +376,7 @@ type AppRequest =
   | { action: "setTheme"; mode: "system" | "light" | "dark" }
   | { action: "window"; op: WindowOp }
   | { action: "scenes"; op: SceneOp }
+  | { action: "themes"; op: SceneOp }
   | { action: "workbench"; op: WorkbenchOp; tab?: WorkbenchTab; sessionId?: string | null; message?: WorkbenchMessage }
   | { action: "browser"; op: BrowserOp; url?: string; bounds?: BrowserBounds };
 
@@ -405,7 +408,7 @@ function isAppRequest(value: unknown): value is AppRequest {
   if (v.action === "pickFolder") return true;
   if (v.action === "notify") return typeof v.title === "string" && typeof v.body === "string";
   if (v.action === "window") return typeof v.op === "string" && WINDOW_OPS.includes(v.op);
-  if (v.action === "scenes") return typeof v.op === "string" && SCENE_OPS.includes(v.op);
+  if (v.action === "scenes" || v.action === "themes") return typeof v.op === "string" && SCENE_OPS.includes(v.op);
   if (v.action === "workbench") {
     if (typeof v.op !== "string" || !WORKBENCH_OPS.includes(v.op)) return false;
     if (v.op === "popout" || v.op === "closePopout") return isWorkbenchTab(v.tab);
@@ -455,6 +458,12 @@ ipcMain.handle("kumo:app", async (event, request: unknown) => {
     if (request.op === "list") return listUserScenes();
     // openPath answers with an error message, or "" when it worked.
     const failure = await shell.openPath(ensureUserScenesDir());
+    if (failure) throw new Error(failure);
+    return;
+  }
+  if (request.action === "themes") {
+    if (request.op === "list") return listUserThemes();
+    const failure = await shell.openPath(ensureUserThemesDir());
     if (failure) throw new Error(failure);
     return;
   }
@@ -549,6 +558,11 @@ app.whenReady().then(() => {
   browserSes.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   browserSes.setPermissionCheckHandler(() => false);
   handleSceneScheme();
+  stopWatchingThemes = watchUserThemes(() => {
+    for (const target of [win, ...popoutWindows.values()]) {
+      if (target && !target.isDestroyed()) target.webContents.send("kumo:themes-changed");
+    }
+  });
   stopWatchingScenes = watchUserScenes(() => {
     if (win && !win.isDestroyed()) win.webContents.send("kumo:scenes-changed");
     for (const child of popoutWindows.values()) {
@@ -567,6 +581,8 @@ app.whenReady().then(() => {
 app.on("before-quit", (event) => {
   stopWatchingScenes?.();
   stopWatchingScenes = null;
+  stopWatchingThemes?.();
+  stopWatchingThemes = null;
   if (quitting || !engine) {
     quitting = true;
     return;

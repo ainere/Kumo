@@ -20,6 +20,14 @@ interface KumoBridge {
       /** A scene file was added, changed or removed; the scene page serves the new set. */
       onChanged(listener: () => void): () => void;
     };
+    themes: {
+      /** The user's themes folder (created if missing) and the packages in it. */
+      list(): Promise<import("./types").ThemeList>;
+      /** Opens the themes folder in the system file manager. */
+      openFolder(): Promise<void>;
+      /** Something in the themes folder changed. */
+      onChanged(listener: () => void): () => void;
+    };
     workbench: {
       popout(tab: import("./types").WorkbenchTab): Promise<import("./types").WorkbenchTab[]>;
       closePopout(tab: import("./types").WorkbenchTab): Promise<import("./types").WorkbenchTab[]>;

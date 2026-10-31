@@ -31,6 +31,7 @@ import { bannerCommand } from "./commands/banner.js";
 import { statusCommand } from "./commands/status.js";
 import { graphCommand } from "./commands/graph.js";
 import { roleListCommand, roleSetCommand, roleAddCommand, roleRemoveCommand } from "./commands/role.js";
+import { themeNewCommand } from "./commands/theme.js";
 import { badge } from "./utils/ui.js";
 
 export { VERSION };
@@ -120,6 +121,13 @@ export function createCli() {
     .action(async (action, target, value, extra) => {
       await modelCommand(action, target, value, extra);
     });
+
+  // Theme command: start a desktop theme package
+  const theme = program.command("theme").description("Work with desktop theme packages");
+  theme
+    .command("new <name>")
+    .description("Create a starter theme in the themes folder, to pick in Settings › Appearance")
+    .action(failing((name) => themeNewCommand(name)));
 
   // Role command: which model runs the lead and each worker role
   const role = program
