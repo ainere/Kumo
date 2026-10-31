@@ -132,6 +132,17 @@ export interface State {
   panels: PanelList | null;
   /** Counts changes in the panels folder, so an edited panel's frame reloads. */
   panelsRevision: number;
+  /** The window's other sessions, running out of sight. */
+  backgroundSessions: SessionTab[];
+}
+
+/** A session this window has open but isn't showing. */
+export interface SessionTab {
+  id: string;
+  title: string;
+  busy: boolean;
+  /** Approvals waiting for an answer. */
+  waiting: number;
 }
 
 /** What a project's Workbench holds, cleared on moving to another project. */
@@ -192,10 +203,13 @@ let state: State = {
   themes: null,
   panels: null,
   panelsRevision: 0,
+  backgroundSessions: [],
   ...EMPTY_WORKBENCH,
 };
 
 const listeners = new Set<() => void>();
+/** True while parked events replay, so screens redraw once at the end instead of per event. */
+let replaying = false;
 
 export function getState(): State {
   return state;
@@ -204,7 +218,7 @@ export function getState(): State {
 export function setState(patch: Partial<State> | ((s: State) => Partial<State>)): void {
   const next = typeof patch === "function" ? patch(state) : patch;
   state = { ...state, ...next };
-  for (const listener of listeners) listener();
+  if (!replaying) for (const listener of listeners) listener();
 }
 
 export function useStore<T>(select: (s: State) => T): T {
@@ -1058,7 +1072,7 @@ const updateTool = (toolId: string, fn: (t: ToolView) => ToolView) =>
 
 /** Reach someone who went to another app. The main window says it once; a window in front stays quiet. */
 function notifyAway(body: string): void {
-  if (POPOUT_TAB || state.prefs?.notifications === false) return;
+  if (POPOUT_TAB || replaying || state.prefs?.notifications === false) return;
   const title = state.session ? basename(state.session.workspace) : "kumo";
   window.kumo.app.notify(title, body).catch(() => {});
 }
@@ -1069,7 +1083,11 @@ export function handleEvent(event: KumoEvent): void {
     if (event.type === "prefs.changed") setState({ prefs: inThisWindow(event.prefs as Prefs) });
     return;
   }
-  if (state.session && event.sessionId !== state.session.id) return;
+  if (state.session && event.sessionId !== state.session.id) {
+    const other = parked.get(event.sessionId);
+    if (other) parkEvent(other, event);
+    return;
+  }
   switch (event.type) {
     case "turn.started":
       setState((s) => ({
@@ -1090,7 +1108,7 @@ export function handleEvent(event: KumoEvent): void {
     case "turn.completed":
       updateLead(event.turnId, (m) => ({ ...m, streaming: false, thinking: false }));
       setState({ busy: false });
-      if (state.prefs?.sounds && !POPOUT_TAB) chime("done", state.prefs.soundVolume);
+      if (state.prefs?.sounds && !POPOUT_TAB && !replaying) chime("done", state.prefs.soundVolume);
       notifyAway("Turn finished");
       void refreshChatList();
       scheduleWorkspaceRefresh();
@@ -1141,7 +1159,7 @@ export function handleEvent(event: KumoEvent): void {
       setState((s) => ({
         approvals: [...s.approvals, { approvalId: event.approvalId, kind: event.kind, tool: event.tool, preview: event.preview }],
       }));
-      if (state.prefs?.sounds && !POPOUT_TAB) chime("approval", state.prefs.soundVolume);
+      if (state.prefs?.sounds && !POPOUT_TAB && !replaying) chime("approval", state.prefs.soundVolume);
       notifyAway(`Approval needed: ${event.tool}`);
       break;
     case "approval.resolved":
@@ -1185,6 +1203,153 @@ async function refreshChatList(): Promise<void> {
   if (!state.session) return;
   setState({ chats: await invoke<Chat[]>("session.listChats", { sessionId: state.session.id }) });
 }
+
+// ── several sessions in one window ──
+//
+// The session on screen lives at the top of the state, where every component
+// reads it. The others wait here with the events they've had since, and
+// switching back replays those, so a running turn loses nothing.
+
+const SESSION_KEYS = [
+  "session",
+  "chats",
+  "messages",
+  "tools",
+  "toolOrder",
+  "turnMeta",
+  "approvals",
+  "busy",
+  "workspaceFiles",
+  "filesTruncated",
+  "selectedFile",
+  "workspaceDiff",
+  "diffIsGit",
+  "diffTruncated",
+  "reviewComments",
+  "planItems",
+] as const;
+
+type SessionView = Pick<State, (typeof SESSION_KEYS)[number]>;
+
+interface ParkedSession {
+  view: SessionView;
+  events: KumoEvent[];
+  title: string;
+  busy: boolean;
+  waiting: number;
+}
+
+const parked = new Map<string, ParkedSession>();
+
+const syncBackgroundSessions = () =>
+  setState({
+    backgroundSessions: [...parked].map(([id, p]) => ({ id, title: p.title, busy: p.busy, waiting: p.waiting })),
+  });
+
+function parkCurrent(): void {
+  const { session, chats, busy, approvals } = state;
+  if (!session) return;
+  const view = Object.fromEntries(SESSION_KEYS.map((key) => [key, state[key]])) as SessionView;
+  const title = chats.find((c) => c.id === session.chatId)?.title || basename(session.workspace);
+  parked.set(session.id, { view, events: [], title, busy, waiting: approvals.length });
+}
+
+/** Keep an event for later, and tell the user if it's one they need to hear about now. */
+function parkEvent(other: ParkedSession, event: KumoEvent): void {
+  const last = other.events.at(-1);
+  // A long turn's text comes in thousands of small pieces: one piece keeps it cheap to hold and replay.
+  if (last?.type === "turn.delta" && event.type === "turn.delta" && last.turnId === event.turnId) {
+    other.events[other.events.length - 1] = { ...last, text: last.text + event.text };
+    return;
+  }
+  if (last?.type === "tool.output" && event.type === "tool.output" && last.toolId === event.toolId) {
+    other.events[other.events.length - 1] = { ...last, text: last.text + event.text };
+    return;
+  }
+  other.events.push(event);
+  if (event.type === "turn.started") other.busy = true;
+  else if (event.type === "turn.completed" || event.type === "turn.failed") {
+    other.busy = false;
+    if (state.prefs?.sounds) chime("done", state.prefs.soundVolume);
+    notifyAway(`${other.title}: turn ${event.type === "turn.failed" ? "failed" : "finished"}`);
+  } else if (event.type === "approval.requested") {
+    other.waiting += 1;
+    if (state.prefs?.sounds) chime("approval", state.prefs.soundVolume);
+    notifyAway(`${other.title}: approval needed`);
+    toast("notice", `Approval needed in another session: ${other.title}`);
+  } else if (event.type === "approval.resolved") {
+    other.waiting = Math.max(0, other.waiting - 1);
+  }
+  syncBackgroundSessions();
+}
+
+function replay(events: KumoEvent[]): void {
+  replaying = true;
+  try {
+    for (const event of events) handleEvent(event);
+  } finally {
+    replaying = false;
+  }
+  setState({});
+}
+
+/** Bring a background session to the front. */
+export function switchSession(id: string): void {
+  const target = parked.get(id);
+  if (!target || state.session?.id === id) return;
+  parkCurrent();
+  parked.delete(id);
+  setState(target.view);
+  replay(target.events);
+  syncBackgroundSessions();
+  void window.kumo.app.workbench.publishSession(id);
+  scheduleWorkspaceRefresh();
+}
+
+/** A new session in this project on a chat of its own; the current one keeps running out of sight. */
+export async function newSession(): Promise<void> {
+  const current = state.session;
+  if (!current) return;
+  try {
+    const snapshot = await invoke<SessionSnapshot>("session.create", { workspace: current.workspace });
+    parkCurrent();
+    setState({ ...EMPTY_WORKBENCH, chats: [], messages: [], tools: {}, toolOrder: [], turnMeta: {}, approvals: [] });
+    setState({ session: snapshot, busy: snapshot.busy, quotas: snapshot.quotas });
+    syncBackgroundSessions();
+    void window.kumo.app.workbench.publishSession(snapshot.id);
+    scheduleWorkspaceRefresh();
+    await refreshChat();
+  } catch (err) {
+    toastFailure(err);
+  }
+}
+
+/** Stop a session and let it go. A window keeps its last one, and a running turn has to end first. */
+export async function closeSession(id = state.session?.id): Promise<void> {
+  if (!id) return;
+  const other = parked.get(id);
+  if (other ? other.busy : state.busy) {
+    toast("notice", "That session is still working. Stop its turn first.");
+    return;
+  }
+  if (other) {
+    parked.delete(id);
+    syncBackgroundSessions();
+  } else {
+    const next = parked.keys().next().value;
+    if (!next) return;
+    switchSession(next);
+    parked.delete(id);
+    syncBackgroundSessions();
+  }
+  await invoke("session.stop", { sessionId: id }).catch((err) => toastFailure(err));
+}
+
+// The sessions went down with the engine; their chats are on disk.
+window.kumo.onEngineRestart(() => {
+  parked.clear();
+  setState({ backgroundSessions: [] });
+});
 
 // ── theme packages and custom panels ──
 

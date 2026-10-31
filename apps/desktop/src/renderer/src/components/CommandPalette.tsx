@@ -3,7 +3,9 @@ import {
   closePalette,
   insertIntoComposer,
   invoke,
+  closeSession,
   newChat,
+  newSession,
   openNewWindow,
   openPalette,
   openSettings,
@@ -13,6 +15,7 @@ import {
   refreshQuotas,
   savePrefs,
   setWorkbenchTab,
+  switchSession,
   toast,
   toastFailure,
   toggleWorkbenchSplit,
@@ -47,6 +50,7 @@ export function CommandPalette() {
   const visible = useStore(workbenchVisible);
   const appliedTheme = useAppliedTheme();
   const tabs = useWorkbenchTabs();
+  const background = useStore((s) => s.backgroundSessions);
 
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -80,6 +84,10 @@ export function CommandPalette() {
         if (phase !== "ready") return;
         e.preventDefault();
         toggleWorkbenchVisible();
+      } else if (key === "t") {
+        if (phase !== "ready") return;
+        e.preventDefault();
+        void newSession();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -135,6 +143,16 @@ export function CommandPalette() {
         { id: "dock-bottom", group: "Workbench", label: "Dock Bottom", run: () => void savePrefs({ dock: "bottom" }) },
         { id: "dock-floating", group: "Workbench", label: "Float Panel", run: () => void savePrefs({ dock: "floating" }) },
         { id: "quick-open", group: "Files", label: "Quick Open…", hint: shortcut("P"), run: () => openPalette("files") },
+        { id: "new-session", group: "Session", label: "New Session", hint: shortcut("T"), run: () => void newSession() },
+        ...background.map((s): CommandItem => ({
+          id: `session-${s.id}`,
+          group: "Session",
+          label: `Switch to ${s.title}${s.waiting > 0 ? " (approval waiting)" : s.busy ? " (working)" : ""}`,
+          run: () => switchSession(s.id),
+        })),
+        ...(background.length > 0
+          ? [{ id: "close-session", group: "Session", label: "Close This Session", run: () => void closeSession() }]
+          : []),
         { id: "new-chat", group: "Chat", label: "New Chat", run: () => void newChat() },
         {
           id: "export-md",
@@ -166,7 +184,7 @@ export function CommandPalette() {
       { id: "settings-doctor", group: "Settings", label: "Doctor", run: () => openSettings("doctor") }
     );
     return items;
-  }, [prefs?.workbenchSplitTab, prefs?.workbenchTab, session, appliedTheme.mode, visible, tabs]);
+  }, [prefs?.workbenchSplitTab, prefs?.workbenchTab, session, appliedTheme.mode, visible, tabs, background]);
 
   const filteredCommands = useMemo(() => {
     const q = query.trim().toLowerCase();

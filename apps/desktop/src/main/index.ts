@@ -66,8 +66,10 @@ interface Studio {
   /** The window the browser view is attached to: the one showing the Browser tab. */
   browserHost: BrowserWindow | null;
   browserError: BrowserLoadError | null;
-  /** Pop-outs show this session; they never start their own. */
+  /** The session on screen. Pop-outs show this one; they never start their own. */
   session: string | null;
+  /** Every session this window has had open, to stop with it. */
+  sessions: Set<string>;
 }
 
 const studios = new Set<Studio>();
@@ -288,7 +290,7 @@ function createWindow(from?: BrowserWindow): void {
     },
   });
 
-  const studio: Studio = { win, popouts: new Map(), browserView: null, browserHost: null, browserError: null, session: null };
+  const studio: Studio = { win, popouts: new Map(), browserView: null, browserHost: null, browserError: null, session: null, sessions: new Set() };
   studios.add(studio);
   win.once("ready-to-show", () => win.show());
   attachWindowGuards(win);
@@ -302,8 +304,8 @@ function createWindow(from?: BrowserWindow): void {
     }
     studio.popouts.clear();
     if (studio.browserView && !studio.browserView.webContents.isDestroyed()) studio.browserView.webContents.close();
-    // Nothing shows this session any more; its lead shouldn't keep running.
-    if (studio.session) engine?.postMessage({ type: "stop-session", sessionId: studio.session });
+    // Nothing shows these sessions any more; their leads shouldn't keep running.
+    for (const sessionId of studio.sessions) engine?.postMessage({ type: "stop-session", sessionId });
   });
 
   if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -509,6 +511,7 @@ ipcMain.handle("kumo:app", async (event, request: unknown) => {
     if (request.op === "publishSession") {
       if (senderWin !== studio.win) throw new Error("Only a main window has a session of its own.");
       studio.session = request.sessionId ?? null;
+      if (studio.session) studio.sessions.add(studio.session);
       for (const child of studio.popouts.values()) {
         if (!child.isDestroyed()) child.webContents.send("kumo:workbench-session", studio.session);
       }
