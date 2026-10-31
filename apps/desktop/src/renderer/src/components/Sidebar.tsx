@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { basename, dirname, providerLabel, sameDir } from "../lib";
+import { basename, dirname, sameDir } from "../lib";
 import {
   addAccessibleFolder,
   createProject,
@@ -20,7 +20,8 @@ import {
   toastFailure,
   useStore,
 } from "../store";
-import type { Chat, Project, Quotas, SessionSettings } from "../types";
+import type { Chat, Project } from "../types";
+import { usageMeters, WINDOW_KEYS, type Meter, type MeterWindow, type WindowKey } from "../usage";
 import {
   IconChevronRight,
   IconClose,
@@ -35,139 +36,8 @@ import {
 } from "./icons";
 import { Modal } from "./settings/controls";
 
-/** One usage window: the share left (0-100) and when it resets. */
-export type MeterWindow = { left: number; reset: string | null };
-/** One bar per provider or Antigravity pool, with its 5-hour, weekly and monthly windows layered on the same track. */
-export type Meter = { label: string; fiveHour: MeterWindow | null; weekly: MeterWindow | null; monthly: MeterWindow | null };
-type WindowKey = "fiveHour" | "weekly" | "monthly";
-
-const WINDOW_KEYS: WindowKey[] = ["fiveHour", "weekly", "monthly"];
 const WINDOW_NAME: Record<WindowKey, string> = { fiveHour: "5-hour", weekly: "Weekly", monthly: "Monthly" };
 const WINDOW_SHORT: Record<WindowKey, string> = { fiveHour: "5h", weekly: "weekly", monthly: "monthly" };
-
-const BUILTIN_ROLE_KEYS = ["scout", "builder", "tester", "researcher", "reviewer", "designer"] as const;
-
-const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
-const str = (v: unknown): string | null => (typeof v === "string" && v && v !== "N/A" ? v : null);
-const clamp = (v: number) => Math.max(0, Math.min(100, Math.round(v)));
-const normProvider = (p: string | null | undefined): string => {
-  const v = (p ?? "").trim().toLowerCase();
-  return v === "agy" ? "antigravity" : v;
-};
-const isClaudeOrGpt = (model: string | null | undefined): boolean =>
-  /claude|gpt|anthropic/i.test(String(model ?? ""));
-
-function activeTargets(settings: SessionSettings | undefined): Array<{ provider: string; model: string }> {
-  if (!settings) return [];
-  const out: Array<{ provider: string; model: string }> = [];
-  const leadProvider = normProvider(settings.orchestratorProvider);
-  if (leadProvider) out.push({ provider: leadProvider, model: settings.orchestratorModel || "" });
-  const workerProvider = normProvider(settings.workerProvider);
-  if (workerProvider) out.push({ provider: workerProvider, model: settings.workerModel || "" });
-  for (const key of BUILTIN_ROLE_KEYS) {
-    const role = settings.roles?.[key];
-    if (role?.model) out.push({ provider: normProvider(role.provider || workerProvider), model: role.model });
-  }
-  for (const custom of settings.roles?.custom ?? []) {
-    const p = normProvider(custom.provider || workerProvider);
-    const m = custom.model || (p === workerProvider ? settings.workerModel : "") || "";
-    if (p) out.push({ provider: p, model: m });
-  }
-  return out;
-}
-
-/** Windows up to 6 hours are the 5-hour limit; up to 8 days are weekly; longer is monthly. */
-function windowKey(windowMinutes: unknown, fallback: WindowKey): WindowKey {
-  const mins = num(windowMinutes);
-  if (!mins) return fallback;
-  if (mins <= 360) return "fiveHour";
-  if (mins <= 11520) return "weekly";
-  return "monthly";
-}
-
-/** Two windows that land in the same slot keep the tighter one. */
-function place(meter: Meter, key: WindowKey, win: MeterWindow): void {
-  const current = meter[key];
-  if (!current || win.left < current.left) meter[key] = win;
-}
-
-/** An Antigravity window, which already reports the share left. */
-function remaining(percent: unknown, reset: unknown): MeterWindow | null {
-  const left = num(percent);
-  return left === null ? null : { left: clamp(left), reset: str(reset) };
-}
-
-/** Orchestrator/provider limits report the share used; Antigravity reports what's left. */
-export function meters(quotas: Quotas, settings: SessionSettings | undefined, allProviders = false): Meter[] {
-  const out: Meter[] = [];
-  const targets = activeTargets(settings);
-  const leadProvider = normProvider(settings?.orchestratorProvider);
-
-  const directProviders: string[] = [];
-  const addProvider = (p: string) => {
-    if (p && p !== "antigravity" && !directProviders.includes(p)) directProviders.push(p);
-  };
-  if (leadProvider) addProvider(leadProvider);
-  for (const t of targets) addProvider(t.provider);
-  if (allProviders) {
-    for (const p of Object.keys(quotas.providers || {})) {
-      addProvider(p);
-    }
-  }
-  if (directProviders.length === 0 && quotas.orchestrator) directProviders.push("lead");
-
-  for (const p of directProviders) {
-    const limits =
-      quotas.providers?.[p] ??
-      (p === leadProvider || p === "lead" ? quotas.orchestrator : null);
-    const used = num(limits?.usedPercent);
-    if (!limits || used === null) continue;
-    const meter: Meter = { label: (p === "lead" ? "" : providerLabel(p)) || "Lead", fiveHour: null, weekly: null, monthly: null };
-    place(meter, windowKey(limits.windowMinutes, "fiveHour"), {
-      left: clamp(100 - used),
-      reset: str(limits.resetFormatted),
-    });
-    const secondary = limits.secondary as Record<string, unknown> | null | undefined;
-    const usedLater = num(secondary?.usedPercent);
-    if (secondary && usedLater !== null) {
-      place(meter, windowKey(secondary.windowMinutes, "weekly"), {
-        left: clamp(100 - usedLater),
-        reset: str(secondary.resetFormatted),
-      });
-    }
-    out.push(meter);
-  }
-
-  const a = quotas.antigravity;
-  const agyTargets = targets.filter((t) => t.provider === "antigravity");
-  const usesAgy = allProviders ? Boolean(a) : (agyTargets.length > 0 || (!settings && Boolean(a)));
-  if (a && usesAgy) {
-    const pool = (label: string, fiveHour: MeterWindow | null, weekly: MeterWindow | null, monthly: MeterWindow | null = null) => {
-      if (fiveHour || weekly || monthly) out.push({ label, fiveHour, weekly, monthly });
-    };
-    const usesGeminiFamily = allProviders || agyTargets.length === 0 || agyTargets.some((t) => !isClaudeOrGpt(t.model));
-    if (usesGeminiFamily) {
-      pool(
-        "Gemini",
-        remaining(a.gemini5HourPercent, a.gemini5HourResetFormatted),
-        remaining(a.geminiWeeklyPercent, a.geminiWeeklyResetFormatted)
-      );
-    }
-    pool(
-      "Gemini 4 Argon",
-      remaining(a.geminiArgon5HourPercent, a.geminiArgon5HourResetFormatted),
-      remaining(a.geminiArgonWeeklyPercent, a.geminiArgonWeeklyResetFormatted)
-    );
-    if (allProviders || agyTargets.some((t) => isClaudeOrGpt(t.model))) {
-      pool(
-        "Claude/GPT",
-        remaining(a.claudeGpt5HourPercent, a.claudeGpt5HourResetFormatted),
-        remaining(a.claudeGptWeeklyPercent, a.claudeGptWeeklyResetFormatted)
-      );
-    }
-  }
-  return out;
-}
 
 const windowsOf = (row: Meter): Array<[WindowKey, MeterWindow]> =>
   WINDOW_KEYS.flatMap((key): Array<[WindowKey, MeterWindow]> => {
@@ -177,6 +47,7 @@ const windowsOf = (row: Meter): Array<[WindowKey, MeterWindow]> =>
 
 /** "5-hour: 75% left, resets in 3h · Weekly: 41% left, resets Thu 09:00" */
 const describe = (row: Meter): string =>
+  row.note ??
   windowsOf(row)
     .map(([key, win]) => `${WINDOW_NAME[key]}: ${win.left}% left${win.reset ? `, resets ${win.reset}` : ""}`)
     .join(" · ");
@@ -209,30 +80,33 @@ export function MeterRow({ row }: { row: Meter }) {
       <div className="meter-row">
         <span className="meter-label">{row.label}</span>
         <span className="meter-values" aria-hidden="true">
-          {windows.map(([key, win]) => (
-            <span key={key} className="meter-value" data-window={key}>
-              {win.left}%
-            </span>
-          ))}
+          {row.note ??
+            windows.map(([key, win]) => (
+              <span key={key} className="meter-value" data-window={key}>
+                {win.left}%
+              </span>
+            ))}
         </span>
       </div>
-      <div className="meter-track">
-        {windows.map(([key, win]) => (
-          <div
-            key={key}
-            className="meter-fill"
-            data-window={key}
-            data-top={key === top || undefined}
-            role="meter"
-            aria-label={`${row.label} ${WINDOW_NAME[key].toLowerCase()} usage left`}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={win.left}
-            aria-valuetext={`${win.left}% left${win.reset ? `, resets ${win.reset}` : ""}`}
-            style={{ width: `${win.left}%` }}
-          />
-        ))}
-      </div>
+      {windows.length > 0 && (
+        <div className="meter-track">
+          {windows.map(([key, win]) => (
+            <div
+              key={key}
+              className="meter-fill"
+              data-window={key}
+              data-top={key === top || undefined}
+              role="meter"
+              aria-label={`${row.label} ${WINDOW_NAME[key].toLowerCase()} usage left`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={win.left}
+              aria-valuetext={`${win.left}% left${win.reset ? `, resets ${win.reset}` : ""}`}
+              style={{ width: `${win.left}%` }}
+            />
+          ))}
+        </div>
+      )}
       {resets.length > 0 && (
         <div className="meter-detail" aria-hidden="true">
           {resets.map(([key, win]) => (
@@ -248,8 +122,7 @@ export function MeterRow({ row }: { row: Meter }) {
 
 function Meters() {
   const quotas = useStore((s) => s.quotas);
-  const settings = useStore((s) => s.session?.settings);
-  const rows = meters(quotas, settings);
+  const rows = usageMeters(quotas);
   const shown = WINDOW_KEYS.filter((key) => rows.some((row) => row[key]));
   return (
     <>

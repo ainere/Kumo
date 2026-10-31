@@ -5,7 +5,12 @@ import type { Prefs } from "../../../../../src/core/prefs.js";
 export type { KumoEvent, SessionSettings, Prefs };
 
 export type Limits = Record<string, unknown> | null;
-export type Quotas = { orchestrator: Limits; antigravity: Limits; providers?: Record<string, Limits> };
+/**
+ * What the engine knows of usage. `providers` holds every account's limits
+ * (Antigravity's are `antigravity`); `active` names the providers in use, the
+ * lead first, with or without a reading yet.
+ */
+export type Quotas = { orchestrator: Limits; antigravity: Limits; providers?: Record<string, Limits>; active?: string[] };
 
 export interface SessionSnapshot {
   id: string;

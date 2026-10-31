@@ -104,7 +104,7 @@ let state: State = {
   approvals: [],
   toasts: [],
   busy: false,
-  quotas: { orchestrator: null, antigravity: null, providers: {} },
+  quotas: { orchestrator: null, antigravity: null, providers: {}, active: [] },
   scenes: [],
   accounts: null,
   catalog: null,
@@ -295,7 +295,7 @@ export async function openWorkspace(workspace: string, chatId?: string): Promise
     : await invoke<SessionSnapshot>("session.create", { workspace, chatId });
   setState({ session: snapshot, busy: snapshot.busy, quotas: snapshot.quotas, phase: "ready" });
   await savePrefs({ lastWorkspace: snapshot.workspace });
-  void refreshQuotas().catch(() => {});
+  void refreshQuotas();
   await Promise.all([refreshChat(), refreshProjects()]);
 }
 
@@ -631,10 +631,51 @@ export async function reorderChats(workspace: string, order: string[]): Promise<
   }
 }
 
-export async function refreshQuotas(): Promise<void> {
-  if (!state.session) return;
-  setState({ quotas: await invoke<Quotas>("session.refreshQuotas", { sessionId: state.session.id }) });
+/** A view that opens often (Accounts, the window coming back) reads usage again at most this often... */
+const QUOTA_VIEW_MS = 15_000;
+/** ...and the window regaining focus at most this often. */
+const QUOTA_FOCUS_MS = 60_000;
+
+let quotaRead: Promise<void> | null = null;
+let quotaReadAt = 0;
+
+/**
+ * Read every account's usage again, with or without a session, and keep the
+ * snapshot (its `active` names the providers in use). It runs in the
+ * background, so a failure leaves the figures as they were and toasts nothing.
+ * Callers share a read in flight. `throttle` is for views that open often: it
+ * skips the read when one finished in the last 15 seconds. The Refresh button
+ * and a session opening read regardless.
+ */
+export function refreshQuotas({ throttle = false }: { throttle?: boolean } = {}): Promise<void> {
+  if (quotaRead) return quotaRead;
+  if (throttle && Date.now() - quotaReadAt < QUOTA_VIEW_MS) return Promise.resolve();
+  const read: Promise<void> = invoke<Quotas>("quotas.refresh", {})
+    .then((quotas) => {
+      quotaReadAt = Date.now();
+      setState({ quotas });
+    })
+    .catch((err: unknown) => {
+      // The restart notice covers a read the engine never answered.
+      if (!(err instanceof Error && err.name === ENGINE_RESTARTED)) console.warn(`Couldn't read usage: ${errorText(err)}`);
+    })
+    .finally(() => {
+      if (quotaRead === read) quotaRead = null;
+    });
+  quotaRead = read;
+  return read;
 }
+
+// The window coming back into focus reads usage again, at most once a minute.
+let windowFocused = true;
+let focusReadAt = 0;
+window.kumo.app.onWindowState(({ focused }) => {
+  const regained = focused && !windowFocused;
+  windowFocused = focused;
+  if (!regained || state.phase !== "ready" || Date.now() - focusReadAt < QUOTA_FOCUS_MS) return;
+  focusReadAt = Date.now();
+  void refreshQuotas({ throttle: true });
+});
 
 let finishing = false;
 
@@ -847,6 +888,9 @@ export function answerProviderSwitch(ok: boolean, dontAskAgain: boolean): void {
   resolve?.(ok);
 }
 
+/** Settings that decide which providers are in use. */
+const CREW_KEYS = ["orchestratorProvider", "orchestratorModel", "workerProvider", "workerModel", "roles"];
+
 /**
  * Change engine settings. With a session they apply now and are saved as the
  * defaults; without one only the defaults change. A lead provider switch on a
@@ -867,6 +911,8 @@ export async function updateSettings(patch: Record<string, unknown>): Promise<bo
     } else {
       await invoke("config.update", { patch });
       await loadGlobalConfig();
+      // With a session, the engine reports the providers now in use itself; without one, ask.
+      if (CREW_KEYS.some((key) => key in patch)) void refreshQuotas();
     }
     return true;
   } catch (err) {
@@ -956,7 +1002,9 @@ export function handleEvent(event: KumoEvent): void {
       setState((s) => ({ approvals: s.approvals.filter((a) => a.approvalId !== event.approvalId) }));
       break;
     case "quota.updated":
-      setState({ quotas: { orchestrator: event.orchestrator, antigravity: event.antigravity, providers: event.providers ?? {} } });
+      setState({
+        quotas: { orchestrator: event.orchestrator, antigravity: event.antigravity, providers: event.providers ?? {}, active: event.active },
+      });
       break;
     case "settings.changed":
       setState((s) => (s.session ? { session: { ...s.session, settings: event.settings } } : {}));

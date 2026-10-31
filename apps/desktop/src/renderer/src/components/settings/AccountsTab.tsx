@@ -8,7 +8,6 @@
 
 import "../../styles/settings-accounts.css";
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { providerLabel } from "../../lib";
 import {
   getState,
   invoke,
@@ -21,8 +20,9 @@ import {
   useStore,
 } from "../../store";
 import type { AccountKind, AccountStatus, EndpointTest } from "../../types";
+import { providerMeters, type Meter } from "../../usage";
 import { IconRefresh } from "../icons";
-import { MeterRow, meters, type Meter } from "../Sidebar";
+import { MeterRow } from "../Sidebar";
 import { Badge, Callout, Modal, Note, PageHeader, Section, StatusDot, type StatusKind } from "./controls";
 
 const GROUPS: ReadonlyArray<{ kind: AccountKind; label: string; hint: string }> = [
@@ -63,6 +63,8 @@ export function AccountsTab() {
       setLoading(false);
       settle();
     });
+    // The bars on the cards come from a fresh read of each account's usage.
+    void refreshQuotas({ throttle: true });
     if (getState().globalConfig === null) void loadGlobalConfig();
     return () => {
       live = false;
@@ -73,7 +75,7 @@ export function AccountsTab() {
     setRefreshing(true);
     setFailed(false);
     if (getState().accounts === null) setLoading(true);
-    await Promise.all([loadAccounts(true), refreshQuotas().catch(() => {})]);
+    await Promise.all([loadAccounts(true), refreshQuotas()]);
     setRefreshing(false);
     setLoading(false);
     settle();
@@ -181,26 +183,19 @@ const WINDOWS = [
   ["monthly", "monthly"],
 ] as const;
 
-/** Antigravity's meters are its model pools, not its own name. */
-const AGY_POOLS = new Set(["Gemini", "Gemini 4 Argon", "Claude/GPT"]);
+/** Whether a card draws usage bars: the same test for the cards and the legend. */
+const hasMeters = (a: AccountStatus): boolean => a.installed && a.signedIn === true;
 
-/** The session's usage bars that belong to this provider (allProviders=true so accounts page shows every known provider). */
+/** This provider's usage bars, the same ones the sidebar draws for it whether or not it is in use. */
 function useProviderMeters(provider: string): Meter[] {
   const quotas = useStore((s) => s.quotas);
-  const settings = useStore((s) => s.session?.settings);
-  const rows = meters(quotas, settings, true);
-  if (provider === "antigravity") return rows.filter((r) => AGY_POOLS.has(r.label));
-  const label = providerLabel(provider);
-  return rows.filter((r) => r.label === label && !AGY_POOLS.has(r.label));
+  return providerMeters(quotas, provider);
 }
 
 /** The windows' colors, once for the group, when any card has a bar. */
 function MeterLegend({ accounts }: { accounts: AccountStatus[] }) {
   const quotas = useStore((s) => s.quotas);
-  const settings = useStore((s) => s.session?.settings);
-  const rows = meters(quotas, settings, true);
-  const labels = new Set(accounts.map((a) => providerLabel(a.provider)));
-  const mine = rows.filter((r) => labels.has(r.label) || AGY_POOLS.has(r.label));
+  const mine = accounts.filter(hasMeters).flatMap((a) => providerMeters(quotas, a.provider));
   const shown = WINDOWS.filter(([key]) => mine.some((r) => r[key]));
   if (shown.length === 0) return null;
   return (
@@ -266,7 +261,7 @@ function AccountCard({
   const state = stateOf(a);
   const detail = detailOf(a);
   const rows = useProviderMeters(a.provider);
-  const showMeters = a.installed && a.signedIn === true && rows.length > 0;
+  const showMeters = hasMeters(a) && rows.length > 0;
   const actionable = a.installed && a.kind === "subscription";
 
   return (

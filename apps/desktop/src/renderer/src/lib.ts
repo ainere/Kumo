@@ -17,6 +17,11 @@ const PROVIDERS: Record<string, string> = {
   "anthropic-api": "Anthropic API",
   "gemini-api": "Gemini API",
   "compat-api": "Compatible API",
+  opencode: "OpenCode",
+  commandcode: "CommandCode",
+  copilot: "Copilot CLI",
+  cursor: "Cursor",
+  ollama: "Ollama",
 };
 export const providerLabel = (provider: string | null | undefined): string =>
   provider ? (PROVIDERS[provider] ?? provider) : "";
