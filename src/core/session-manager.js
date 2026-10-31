@@ -58,6 +58,7 @@ export class SessionManager extends EventEmitter {
       ...this.sessionOptions,
       ...rest,
       settings: snapshotSettings(this.defaults()),
+      chatTaken: (chatId, self) => this.chatTaken(chatId, self),
     });
     if (overrides) await session.updateSettings(overrides);
     this.sessions.set(session.id, session);
@@ -69,6 +70,17 @@ export class SessionManager extends EventEmitter {
     // prompt; it does not make the session unusable.
     await session.start().catch(() => {});
     return session;
+  }
+
+  /**
+   * Whether a session other than `self` has this chat open. Two leads on one
+   * chat would talk over each other in its log and its thread.
+   *
+   * @param {string} chatId
+   * @param {Session} [self]
+   */
+  chatTaken(chatId, self) {
+    return this.list().some((s) => s !== self && s.chatId === chatId);
   }
 
   /** @param {string} id */

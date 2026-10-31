@@ -145,7 +145,7 @@ contextBridge.exposeInMainWorld("kumo", {
     setTheme: (mode: "system" | "light" | "dark"): Promise<"dark" | "light"> =>
       ipcRenderer.invoke("kumo:app", { action: "setTheme", mode }),
     platform: process.platform,
-    window: (op: "minimize" | "toggleMaximize" | "close" | "state"): Promise<WindowState> =>
+    window: (op: "minimize" | "toggleMaximize" | "close" | "state" | "new"): Promise<WindowState> =>
       ipcRenderer.invoke("kumo:app", { action: "window", op }),
     onWindowState(listener: (state: WindowState) => void): () => void {
       windowListeners.add(listener);

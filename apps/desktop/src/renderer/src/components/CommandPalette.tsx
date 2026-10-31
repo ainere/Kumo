@@ -4,6 +4,7 @@ import {
   insertIntoComposer,
   invoke,
   newChat,
+  openNewWindow,
   openPalette,
   openSettings,
   openWorkspaceFile,
@@ -56,8 +57,15 @@ export function CommandPalette() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
-      if (!mod || e.altKey || e.shiftKey || hasOpenDialog()) return;
+      if (!mod || e.altKey || hasOpenDialog()) return;
       const key = e.key.toLowerCase();
+      if (e.shiftKey) {
+        if (key === "n") {
+          e.preventDefault();
+          openNewWindow();
+        }
+        return;
+      }
       if (key === "k") {
         if (phase !== "ready" && phase !== "no-project") return;
         e.preventDefault();
@@ -142,6 +150,7 @@ export function CommandPalette() {
     }
     items.push(
       { id: "open-folder", group: "Project", label: "Open Folder…", run: () => void pickAndOpenFolder() },
+      { id: "new-window", group: "Window", label: "New Window", hint: shortcut("Shift+N"), run: () => openNewWindow() },
       { id: "refresh-quotas", group: "Usage", label: "Refresh Usage", run: () => void refreshQuotas() },
       {
         id: "theme-toggle",

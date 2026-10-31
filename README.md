@@ -76,6 +76,7 @@ A Windows-first Electron app on the same engine as the CLI. Glass panels sit ove
 - **Command Palette (`Ctrl+K`), Quick Open (`Ctrl+P`) and `@` Mentions:** jump to any panel, dock layout, session action or file from the keyboard, or type `@` in the composer to mention a file.
 - **Settings:** one glass page for Accounts (sign in through each CLI's own login, usage per subscription, API keys read from the environment), Models, Roles (a model per role, and custom roles of your own), Appearance (any accent color, scenes, frame rate, dock and glass), General (your name and standing instructions, safety mode, chimes, notices) and Doctor (health checks, one-click repairs and a report to paste into an issue). Ctrl+, opens it.
 - **First run:** a three-step setup over the live scene: sign in to your CLIs, pick the lead and the shared worker, and choose a project folder.
+- **Several windows:** `Ctrl+Shift+N` opens another window with its own session and chat, so leads can work side by side.
 - **Custom panels:** `kumo panel new` starts your own Workbench tab, an HTML page sandboxed like a scene, with no network and no access to your chats.
 - **Themes:** `kumo theme new` starts a package of colors and CSS in `~/.kumo/themes/`; pick it in Settings › Appearance and it reloads as you save.
 - **Scenes:** Clouds, Night sky, or your own: drop a `defineScene` script (`.js` or `.ts`) into `~/.kumo/scenes/` and it shows up in Settings › Appearance, and reloads when you save it. Scenes run sandboxed, with no network and no access to your chats.

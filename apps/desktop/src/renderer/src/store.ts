@@ -390,10 +390,20 @@ export async function openWorkspace(workspace: string, chatId?: string): Promise
   await Promise.all([refreshChat(), refreshProjects()]);
 }
 
+/** What each window arranges for itself: another window saving these doesn't move this one's. */
+const WINDOW_LAYOUT = ["dock", "workbenchTab", "workbenchSplitTab", "workbenchWidth", "workbenchHeight"] as const;
+
+/** Saved prefs as this window draws them: its own layout stays, except what `patch` just changed. */
+function inThisWindow(saved: Prefs, patch: Partial<Prefs> = {}): Prefs {
+  const own = state.prefs;
+  const layout = own ? Object.fromEntries(WINDOW_LAYOUT.filter((key) => !(key in patch)).map((key) => [key, own[key]])) : {};
+  // A slider still settling keeps its value over what was saved before it.
+  return { ...saved, ...layout, ...unsavedPreview };
+}
+
 export async function savePrefs(patch: Partial<Prefs>): Promise<void> {
   const prefs = await invoke<Prefs>("prefs.set", { patch });
-  // A slider still settling keeps its value over what was saved before it.
-  setState({ prefs: { ...prefs, ...unsavedPreview } });
+  setState({ prefs: inThisWindow(prefs, patch) });
 }
 
 let previewTimer: ReturnType<typeof setTimeout> | undefined;
@@ -415,7 +425,8 @@ export function previewPrefs(patch: Partial<Prefs>): void {
   }, 300);
 }
 
-export async function boot(): Promise<void> {
+/** Start up. After an engine restart, `resume` is the chat this window was on. */
+export async function boot(resume?: SessionSnapshot | null): Promise<void> {
   const [prefs, projects] = await Promise.all([invoke<Prefs>("prefs.get"), invoke<Project[]>("projects.list")]);
   setState({ prefs, projects });
   if (!prefs.onboarded) {
@@ -434,7 +445,8 @@ export async function boot(): Promise<void> {
     return;
   }
   try {
-    await openWorkspace(workspace);
+    if (resume) await openWorkspace(resume.workspace, resume.chatId ?? undefined);
+    else await openWorkspace(workspace);
   } catch (err) {
     toastFailure(err, `Couldn't open ${workspace}: ${(err as Error).message}`);
     setState({ phase: "no-project" });
@@ -477,10 +489,7 @@ export async function newChat(): Promise<void> {
 
   // If another chat in this workspace is empty, navigate to it instead of making another.
   const emptyChat = state.chats.find((c) => (c.turns ?? 0) === 0);
-  if (emptyChat) {
-    await openChat(emptyChat.id);
-    return;
-  }
+  if (emptyChat && (await openChat(emptyChat.id).then(() => true, () => false))) return;
 
   const snapshot = await invoke<SessionSnapshot>("session.newChat", { sessionId: state.session.id });
   setState({ session: snapshot });
@@ -512,6 +521,11 @@ export async function openChat(chatId: string): Promise<void> {
   }
   // The engine replays the earlier turns into the new provider and says so itself.
   await invoke<{ resumed: boolean; hadTurns?: boolean; replayed?: boolean }>("session.openChat", { sessionId: session.id, chatId });
+}
+
+/** A second window: its own session on its own chat, to run beside this one. */
+export function openNewWindow(): void {
+  void window.kumo.app.window("new").catch((err) => toastFailure(err));
 }
 
 export async function pickAndOpenFolder(): Promise<void> {
@@ -1052,7 +1066,7 @@ function notifyAway(body: string): void {
 export function handleEvent(event: KumoEvent): void {
   // App-wide events have no session. Terminal output goes to the tab showing it.
   if (!event.sessionId) {
-    if (event.type === "prefs.changed") setState({ prefs: { ...(event.prefs as Prefs), ...unsavedPreview } });
+    if (event.type === "prefs.changed") setState({ prefs: inThisWindow(event.prefs as Prefs) });
     return;
   }
   if (state.session && event.sessionId !== state.session.id) return;

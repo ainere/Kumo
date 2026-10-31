@@ -10,7 +10,7 @@ interface KumoBridge {
     notify(title: string, body: string): Promise<boolean>;
     setTheme(mode: "system" | "light" | "dark"): Promise<"dark" | "light">;
     platform: string;
-    window(op: "minimize" | "toggleMaximize" | "close" | "state"): Promise<{ maximized: boolean; focused: boolean }>;
+    window(op: "minimize" | "toggleMaximize" | "close" | "state" | "new"): Promise<{ maximized: boolean; focused: boolean }>;
     onWindowState(listener: (state: { maximized: boolean; focused: boolean }) => void): () => void;
     scenes: {
       /** The user's scenes folder (created if missing) and the scene files in it. */

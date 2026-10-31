@@ -35,12 +35,12 @@ window.kumo.onEngineRestart(() => {
   // Sessions lived in the old engine. Chats are on disk; open the workspace
   // again in the new one. Requests the old engine never answered stay quiet
   // (ENGINE_RESTARTED) because this notice covers them.
-  const turnLost = getState().busy;
+  const { busy: turnLost, session } = getState();
   setState({ session: null, busy: false, tools: {}, toolOrder: [], approvals: [] });
   // A pop-out waits to hear which session the main window opened next.
   if (POPOUT_TAB) return;
   toast("warning", turnLost ? "The engine restarted, so the running turn was lost." : "The engine restarted.");
-  void boot();
+  void boot(session);
 });
 
 createRoot(document.getElementById("root")!).render(

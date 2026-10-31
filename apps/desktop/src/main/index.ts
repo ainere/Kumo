@@ -55,39 +55,47 @@ const GROUND = { dark: "#05070D", light: "#F5F6F8" } as const;
 export const WORKBENCH_TABS = ["workers", "files", "diff", "terminal", "browser", "plan"] as const;
 export type WorkbenchTab = (typeof WORKBENCH_TABS)[number] | `panel:${string}`;
 
-let win: BrowserWindow | null = null;
+/** A main window and what belongs to it: its pop-outs, its browser page and the session they all show. */
+interface Studio {
+  win: BrowserWindow;
+  popouts: Map<WorkbenchTab, BrowserWindow>;
+  browserView: WebContentsView | null;
+  /** The window the browser view is attached to: the one showing the Browser tab. */
+  browserHost: BrowserWindow | null;
+  browserError: BrowserLoadError | null;
+  /** Pop-outs show this session; they never start their own. */
+  session: string | null;
+}
+
+const studios = new Set<Studio>();
 let engine: UtilityProcess | null = null;
 let quitting = false;
 let stopWatchingScenes: (() => void) | null = null;
 let stopWatchingThemes: (() => void) | null = null;
 let stopWatchingPanels: (() => void) | null = null;
-const popoutWindows = new Map<WorkbenchTab, BrowserWindow>();
 /** Shown notifications: one that gets garbage collected loses its click. */
 const liveNotifications = new Set<Notification>();
-let browserView: WebContentsView | null = null;
-/** The window the browser view is attached to: the one showing the Browser tab. */
-let browserHost: BrowserWindow | null = null;
-let browserError: BrowserLoadError | null = null;
-/** The main window's session: pop-outs show this one, they never start their own. */
-let sharedSession: string | null = null;
-
 registerFrameSchemes();
 
 const effectiveMode = (): "dark" | "light" => (nativeTheme.shouldUseDarkColors ? "dark" : "light");
 
-function sendWindowState(target: BrowserWindow | null = win): void {
-  if (!target || target.isDestroyed()) return;
+const windowsOf = (studio: Studio): BrowserWindow[] =>
+  [studio.win, ...studio.popouts.values()].filter((w) => !w.isDestroyed());
+
+const allWindows = (): BrowserWindow[] => [...studios].flatMap(windowsOf);
+
+function broadcast(channel: string, ...args: unknown[]): void {
+  for (const target of allWindows()) target.webContents.send(channel, ...args);
+}
+
+function sendWindowState(target: BrowserWindow): void {
+  if (target.isDestroyed()) return;
   target.webContents.send("kumo:window-state", { maximized: target.isMaximized(), focused: target.isFocused() });
 }
 
-function sendPopoutsChanged(): void {
-  const tabs = [...popoutWindows.keys()];
-  if (win && !win.isDestroyed()) {
-    win.webContents.send("kumo:popouts-changed", tabs);
-  }
-  for (const child of popoutWindows.values()) {
-    if (!child.isDestroyed()) child.webContents.send("kumo:popouts-changed", tabs);
-  }
+function sendPopoutsChanged(studio: Studio): void {
+  const tabs = [...studio.popouts.keys()];
+  for (const target of windowsOf(studio)) target.webContents.send("kumo:popouts-changed", tabs);
 }
 
 export type BrowserLoadError = { url: string; description: string };
@@ -104,7 +112,8 @@ export type BrowserViewState = {
 /** What a pop-out asks the main window to do, because only that window can. */
 export type WorkbenchMessage = { kind: "insert"; text: string } | { kind: "openFile"; path: string };
 
-function currentBrowserState(): BrowserViewState {
+function currentBrowserState(studio: Studio): BrowserViewState {
+  const { browserView } = studio;
   if (!browserView || browserView.webContents.isDestroyed()) {
     return { url: "", title: "", loading: false, canGoBack: false, canGoForward: false, error: null };
   }
@@ -115,19 +124,17 @@ function currentBrowserState(): BrowserViewState {
     loading: wc.isLoading(),
     canGoBack: wc.navigationHistory.canGoBack(),
     canGoForward: wc.navigationHistory.canGoForward(),
-    error: browserError,
+    error: studio.browserError,
   };
 }
 
-function sendBrowserState(): void {
-  const state = currentBrowserState();
-  if (win && !win.isDestroyed()) win.webContents.send("kumo:browser-state", state);
-  const popout = popoutWindows.get("browser");
-  if (popout && !popout.isDestroyed()) popout.webContents.send("kumo:browser-state", state);
+function sendBrowserState(studio: Studio): void {
+  const state = currentBrowserState(studio);
+  for (const target of windowsOf(studio)) target.webContents.send("kumo:browser-state", state);
 }
 
-function ensureBrowserView(): WebContentsView {
-  if (browserView && !browserView.webContents.isDestroyed()) return browserView;
+function ensureBrowserView(studio: Studio): WebContentsView {
+  if (studio.browserView && !studio.browserView.webContents.isDestroyed()) return studio.browserView;
   const view = new WebContentsView({
     webPreferences: {
       partition: "persist:kumo-browser",
@@ -150,39 +157,40 @@ function ensureBrowserView(): WebContentsView {
     }
   });
   view.webContents.on("did-start-navigation", (details) => {
-    if (details.isMainFrame && !details.isSameDocument) browserError = null;
+    if (details.isMainFrame && !details.isSameDocument) studio.browserError = null;
   });
   view.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
     // -3 is ERR_ABORTED: another navigation took over, nothing went wrong.
     if (!isMainFrame || code === -3) return;
-    browserError = { url, description };
-    sendBrowserState();
+    studio.browserError = { url, description };
+    sendBrowserState(studio);
   });
   for (const evt of ["did-start-loading", "did-stop-loading", "did-navigate", "did-navigate-in-page", "page-title-updated"] as const) {
-    view.webContents.on(evt as "did-start-loading", () => sendBrowserState());
+    view.webContents.on(evt as "did-start-loading", () => sendBrowserState(studio));
   }
-  browserView = view;
-  browserHost = null;
+  studio.browserView = view;
+  studio.browserHost = null;
   return view;
 }
 
 /** Put the browser view in `target`. It is native, so it has to live in the window that shows it. */
-function hostBrowserIn(target: BrowserWindow): WebContentsView {
-  const view = ensureBrowserView();
-  if (browserHost !== target) {
-    releaseBrowserHost();
+function hostBrowserIn(studio: Studio, target: BrowserWindow): WebContentsView {
+  const view = ensureBrowserView(studio);
+  if (studio.browserHost !== target) {
+    releaseBrowserHost(studio);
     target.contentView.addChildView(view);
-    browserHost = target;
+    studio.browserHost = target;
   }
   return view;
 }
 
-function releaseBrowserHost(): void {
+function releaseBrowserHost(studio: Studio): void {
+  const { browserView, browserHost } = studio;
   if (browserView && browserHost && !browserHost.isDestroyed()) {
     browserHost.contentView.removeChildView(browserView);
     browserView.setVisible(false);
   }
-  browserHost = null;
+  studio.browserHost = null;
 }
 
 /** A typed address as a URL: a bare local host means the dev server, anything else https. */
@@ -204,16 +212,11 @@ function browserUrl(raw: string): URL {
   return parsed;
 }
 
-function connectWindow(target: BrowserWindow | null): void {
-  if (!engine || !target || target.isDestroyed()) return;
+function connectWindow(target: BrowserWindow): void {
+  if (!engine || target.isDestroyed()) return;
   const { port1, port2 } = new MessageChannelMain();
   engine.postMessage({ type: "port" }, [port1]);
   target.webContents.postMessage("kumo:engine-port", null, [port2]);
-}
-
-function connectAllWindows(): void {
-  connectWindow(win);
-  for (const child of popoutWindows.values()) connectWindow(child);
 }
 
 function startEngine(): void {
@@ -228,12 +231,9 @@ function startEngine(): void {
     console.error(`kumo: the engine exited (code ${code}); restarting it`);
     // Sessions live in the engine; a crash loses the running turn, not the
     // chats. Restart it and give the renderer windows fresh ports.
-    win?.webContents.send("kumo:engine-restarted", code);
-    for (const child of popoutWindows.values()) {
-      if (!child.isDestroyed()) child.webContents.send("kumo:engine-restarted", code);
-    }
+    broadcast("kumo:engine-restarted", code);
     startEngine();
-    connectAllWindows();
+    allWindows().forEach(connectWindow);
   });
 }
 
@@ -258,10 +258,13 @@ function attachWindowGuards(target: BrowserWindow): void {
   });
 }
 
-function createWindow(): void {
-  win = new BrowserWindow({
-    width: 1440,
-    height: 900,
+/** Open a main window. One opened from another starts a step down and to the right of it. */
+function createWindow(from?: BrowserWindow): void {
+  const origin = from?.getNormalBounds();
+  const win = new BrowserWindow({
+    width: origin?.width ?? 1440,
+    height: origin?.height ?? 900,
+    ...(origin ? { x: origin.x + 32, y: origin.y + 32 } : {}),
     minWidth: 960,
     minHeight: 640,
     show: false,
@@ -281,29 +284,34 @@ function createWindow(): void {
     },
   });
 
-  win.once("ready-to-show", () => win?.show());
+  const studio: Studio = { win, popouts: new Map(), browserView: null, browserHost: null, browserError: null, session: null };
+  studios.add(studio);
+  win.once("ready-to-show", () => win.show());
   attachWindowGuards(win);
   win.on("close", () => {
-    if (browserHost === win) releaseBrowserHost();
+    if (studio.browserHost === win) releaseBrowserHost(studio);
   });
   win.on("closed", () => {
-    win = null;
-    for (const child of popoutWindows.values()) {
+    studios.delete(studio);
+    for (const child of studio.popouts.values()) {
       if (!child.isDestroyed()) child.close();
     }
-    popoutWindows.clear();
+    studio.popouts.clear();
+    if (studio.browserView && !studio.browserView.webContents.isDestroyed()) studio.browserView.webContents.close();
+    // Nothing shows this session any more; its lead shouldn't keep running.
+    if (studio.session) engine?.postMessage({ type: "stop-session", sessionId: studio.session });
   });
 
   if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);
   else void win.loadFile(join(here, "../renderer/index.html"));
 }
 
-function openPopoutWindow(tab: WorkbenchTab): WorkbenchTab[] {
-  const existing = popoutWindows.get(tab);
+function openPopoutWindow(studio: Studio, tab: WorkbenchTab): WorkbenchTab[] {
+  const existing = studio.popouts.get(tab);
   if (existing && !existing.isDestroyed()) {
     existing.show();
     existing.focus();
-    return [...popoutWindows.keys()];
+    return [...studio.popouts.keys()];
   }
 
   const child = new BrowserWindow({
@@ -325,17 +333,17 @@ function openPopoutWindow(tab: WorkbenchTab): WorkbenchTab[] {
     },
   });
 
-  popoutWindows.set(tab, child);
+  studio.popouts.set(tab, child);
   child.once("ready-to-show", () => child.show());
   attachWindowGuards(child);
   child.on("close", () => {
     // The view outlives this window: the dock takes it back.
-    if (browserHost === child) releaseBrowserHost();
+    if (studio.browserHost === child) releaseBrowserHost(studio);
   });
   child.on("closed", () => {
     // Reopened while this one was closing: the entry is the new window's now.
-    if (popoutWindows.get(tab) === child) popoutWindows.delete(tab);
-    sendPopoutsChanged();
+    if (studio.popouts.get(tab) === child) studio.popouts.delete(tab);
+    sendPopoutsChanged(studio);
   });
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -346,24 +354,26 @@ function openPopoutWindow(tab: WorkbenchTab): WorkbenchTab[] {
     void child.loadFile(join(here, "../renderer/index.html"), { query: { popout: tab } });
   }
 
-  sendPopoutsChanged();
-  return [...popoutWindows.keys()];
+  sendPopoutsChanged(studio);
+  return [...studio.popouts.keys()];
 }
 
-type WindowOp = "minimize" | "toggleMaximize" | "close" | "state";
+type WindowOp = "minimize" | "toggleMaximize" | "close" | "state" | "new";
 type SceneOp = "list" | "openFolder";
 type WorkbenchOp = "popout" | "closePopout" | "listPopouts" | "publishSession" | "session" | "relay";
 type BrowserOp = "navigate" | "bounds" | "back" | "forward" | "reload" | "state";
 type BrowserBounds = { x: number; y: number; width: number; height: number; visible: boolean };
 
-/** Show a Windows notification, unless a Kumo window is in front and the user can already see. */
-function notify(title: string, body: string): boolean {
-  if (BrowserWindow.getFocusedWindow() || !Notification.isSupported()) return false;
+/** Show a Windows notification, unless this session's window is in front and the user can already see. */
+function notify(studio: Studio, title: string, body: string): boolean {
+  const focused = BrowserWindow.getFocusedWindow();
+  if ((focused && windowsOf(studio).includes(focused)) || !Notification.isSupported()) return false;
   const note = new Notification({ title, body });
   const forget = () => liveNotifications.delete(note);
   note.on("click", () => {
     forget();
-    if (!win || win.isDestroyed()) return;
+    const { win } = studio;
+    if (win.isDestroyed()) return;
     if (win.isMinimized()) win.restore();
     win.show();
     win.focus();
@@ -385,7 +395,7 @@ type AppRequest =
   | { action: "workbench"; op: WorkbenchOp; tab?: WorkbenchTab; sessionId?: string | null; message?: WorkbenchMessage }
   | { action: "browser"; op: BrowserOp; url?: string; bounds?: BrowserBounds };
 
-const WINDOW_OPS: readonly string[] = ["minimize", "toggleMaximize", "close", "state"];
+const WINDOW_OPS: readonly string[] = ["minimize", "toggleMaximize", "close", "state", "new"];
 const SCENE_OPS: readonly string[] = ["list", "openFolder"];
 const WORKBENCH_OPS: readonly string[] = ["popout", "closePopout", "listPopouts", "publishSession", "session", "relay"];
 const BROWSER_OPS: readonly string[] = ["navigate", "bounds", "back", "forward", "reload", "state"];
@@ -428,31 +438,33 @@ function isAppRequest(value: unknown): value is AppRequest {
   return v.action === "setTheme" && (v.mode === "system" || v.mode === "light" || v.mode === "dark");
 }
 
-function isTrustedSender(event: Electron.IpcMainInvokeEvent): BrowserWindow | null {
-  if (win && !win.isDestroyed() && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame) {
-    return win;
-  }
-  for (const child of popoutWindows.values()) {
-    if (!child.isDestroyed() && event.sender === child.webContents && event.senderFrame === child.webContents.mainFrame) {
-      return child;
+/** The window asking and its studio; only one of our own windows' top frames may ask. */
+function trustedSender(event: Electron.IpcMainInvokeEvent): { studio: Studio; senderWin: BrowserWindow } | null {
+  for (const studio of studios) {
+    for (const senderWin of windowsOf(studio)) {
+      if (event.sender === senderWin.webContents && event.senderFrame === senderWin.webContents.mainFrame) {
+        return { studio, senderWin };
+      }
     }
   }
   return null;
 }
 
 ipcMain.handle("kumo:app", async (event, request: unknown) => {
-  const senderWin = isTrustedSender(event);
-  if (!senderWin) {
+  const sender = trustedSender(event);
+  if (!sender) {
     throw new Error("Not allowed");
   }
+  const { studio, senderWin } = sender;
   if (!isAppRequest(request)) throw new Error("Unknown request");
   if (request.action === "pickFolder") {
     const result = await dialog.showOpenDialog(senderWin, { properties: ["openDirectory"], title: "Open a project folder" });
     return result.canceled ? null : result.filePaths[0] ?? null;
   }
-  if (request.action === "notify") return notify(request.title.slice(0, 120), request.body.slice(0, 240));
+  if (request.action === "notify") return notify(studio, request.title.slice(0, 120), request.body.slice(0, 240));
   if (request.action === "window") {
-    if (request.op === "minimize") senderWin.minimize();
+    if (request.op === "new") createWindow(senderWin);
+    else if (request.op === "minimize") senderWin.minimize();
     else if (request.op === "toggleMaximize") {
       if (senderWin.isMaximized()) senderWin.unmaximize();
       else senderWin.maximize();
@@ -479,40 +491,40 @@ ipcMain.handle("kumo:app", async (event, request: unknown) => {
     return;
   }
   if (request.action === "workbench") {
-    if (request.op === "listPopouts") return [...popoutWindows.keys()];
-    if (request.op === "popout" && request.tab) return openPopoutWindow(request.tab);
+    if (request.op === "listPopouts") return [...studio.popouts.keys()];
+    if (request.op === "popout" && request.tab) return openPopoutWindow(studio, request.tab);
     if (request.op === "closePopout" && request.tab) {
-      const child = popoutWindows.get(request.tab);
+      const child = studio.popouts.get(request.tab);
       if (child && !child.isDestroyed()) child.close();
-      popoutWindows.delete(request.tab);
-      sendPopoutsChanged();
-      return [...popoutWindows.keys()];
+      studio.popouts.delete(request.tab);
+      sendPopoutsChanged(studio);
+      return [...studio.popouts.keys()];
     }
-    if (request.op === "session") return sharedSession;
+    if (request.op === "session") return studio.session;
     if (request.op === "publishSession") {
-      if (senderWin !== win) throw new Error("Only the main window has a session of its own.");
-      sharedSession = request.sessionId ?? null;
-      for (const child of popoutWindows.values()) {
-        if (!child.isDestroyed()) child.webContents.send("kumo:workbench-session", sharedSession);
+      if (senderWin !== studio.win) throw new Error("Only a main window has a session of its own.");
+      studio.session = request.sessionId ?? null;
+      for (const child of studio.popouts.values()) {
+        if (!child.isDestroyed()) child.webContents.send("kumo:workbench-session", studio.session);
       }
       return;
     }
-    if (request.op === "relay" && request.message && win && !win.isDestroyed()) {
-      win.webContents.send("kumo:workbench-message", request.message);
-      win.focus();
+    if (request.op === "relay" && request.message && !studio.win.isDestroyed()) {
+      studio.win.webContents.send("kumo:workbench-message", request.message);
+      studio.win.focus();
     }
     return;
   }
   if (request.action === "browser") {
-    if (request.op === "state") return currentBrowserState();
+    if (request.op === "state") return currentBrowserState(studio);
     if (request.op === "bounds") {
       const b = request.bounds!;
       if (!b.visible || b.width <= 0 || b.height <= 0) {
         // Giving the tab up only hides what this window still holds: a pop-out may have taken it already.
-        if (browserView && browserHost === senderWin) browserView.setVisible(false);
-        return currentBrowserState();
+        if (studio.browserView && studio.browserHost === senderWin) studio.browserView.setVisible(false);
+        return currentBrowserState(studio);
       }
-      const view = hostBrowserIn(senderWin);
+      const view = hostBrowserIn(studio, senderWin);
       view.setBounds({
         x: Math.round(b.x),
         y: Math.round(b.y),
@@ -520,16 +532,16 @@ ipcMain.handle("kumo:app", async (event, request: unknown) => {
         height: Math.round(b.height),
       });
       view.setVisible(true);
-      return currentBrowserState();
+      return currentBrowserState(studio);
     }
-    const view = ensureBrowserView();
+    const view = ensureBrowserView(studio);
     if (request.op === "navigate") {
       const raw = String(request.url ?? "").trim();
-      if (!raw) return currentBrowserState();
+      if (!raw) return currentBrowserState(studio);
       // A failed load is reported through did-fail-load and shown in the tab.
       await view.webContents.loadURL(browserUrl(raw).toString()).catch(() => {});
-      sendBrowserState();
-      return currentBrowserState();
+      sendBrowserState(studio);
+      return currentBrowserState(studio);
     }
     if (request.op === "back" && view.webContents.navigationHistory.canGoBack()) {
       view.webContents.navigationHistory.goBack();
@@ -538,22 +550,16 @@ ipcMain.handle("kumo:app", async (event, request: unknown) => {
     } else if (request.op === "reload") {
       view.webContents.reload();
     }
-    sendBrowserState();
-    return currentBrowserState();
+    sendBrowserState(studio);
+    return currentBrowserState(studio);
   }
   nativeTheme.themeSource = request.mode;
-  win?.setBackgroundColor(GROUND[effectiveMode()]);
-  for (const child of popoutWindows.values()) {
-    if (!child.isDestroyed()) child.setBackgroundColor(GROUND[effectiveMode()]);
-  }
+  for (const target of allWindows()) target.setBackgroundColor(GROUND[effectiveMode()]);
   return effectiveMode();
 });
 
 nativeTheme.on("updated", () => {
-  win?.setBackgroundColor(GROUND[effectiveMode()]);
-  for (const child of popoutWindows.values()) {
-    if (!child.isDestroyed()) child.setBackgroundColor(GROUND[effectiveMode()]);
-  }
+  for (const target of allWindows()) target.setBackgroundColor(GROUND[effectiveMode()]);
 });
 
 app.whenReady().then(() => {
@@ -570,22 +576,9 @@ app.whenReady().then(() => {
   browserSes.setPermissionCheckHandler(() => false);
   handleSceneScheme();
   handlePanelScheme();
-  stopWatchingPanels = watchUserPanels(() => {
-    for (const target of [win, ...popoutWindows.values()]) {
-      if (target && !target.isDestroyed()) target.webContents.send("kumo:panels-changed");
-    }
-  });
-  stopWatchingThemes = watchUserThemes(() => {
-    for (const target of [win, ...popoutWindows.values()]) {
-      if (target && !target.isDestroyed()) target.webContents.send("kumo:themes-changed");
-    }
-  });
-  stopWatchingScenes = watchUserScenes(() => {
-    if (win && !win.isDestroyed()) win.webContents.send("kumo:scenes-changed");
-    for (const child of popoutWindows.values()) {
-      if (!child.isDestroyed()) child.webContents.send("kumo:scenes-changed");
-    }
-  });
+  stopWatchingPanels = watchUserPanels(() => broadcast("kumo:panels-changed"));
+  stopWatchingThemes = watchUserThemes(() => broadcast("kumo:themes-changed"));
+  stopWatchingScenes = watchUserScenes(() => broadcast("kumo:scenes-changed"));
   startEngine();
   createWindow();
   app.on("activate", () => {

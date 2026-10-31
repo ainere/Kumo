@@ -76,6 +76,7 @@ import { ENGINE_ENDPOINT_ENV, SESSION_TOKEN_ENV } from "./ipc/protocol.js";
  *   createClient?: (opts: any) => any,
  *   store?: typeof defaultStore,
  *   id?: string,
+ *   chatTaken?: (chatId: string, self: Session) => boolean,
  * }} SessionOptions
  */
 
@@ -361,6 +362,8 @@ export class Session extends EventEmitter {
     this.store = opts.store || defaultStore;
     /** @type {string|null} */
     this.chatId = opts.chatId || null;
+    /** Asks whether another session has a chat open, where sessions run side by side. */
+    this.chatTaken = opts.chatTaken || (() => false);
     this.turnCount = 0;
     /** @type {any} */
     this.client = null;
@@ -1108,6 +1111,7 @@ export class Session extends EventEmitter {
     const chats = this.store.listChats(this.workspace);
     return (
       chats.find((c) => {
+        if (this.chatTaken(c.id, this)) return false;
         if ((c.turns || 0) > 0) return false;
         const turns = this.store.loadTurnLog(this.workspace, c.id);
         return turns.length === 0;

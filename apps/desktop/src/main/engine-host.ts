@@ -74,6 +74,7 @@ function attach(port: MessagePortMain): void {
 process.parentPort.on("message", ({ data, ports: transferred }) => {
   const type = (data as { type?: string } | null)?.type;
   if (type === "port" && transferred[0]) attach(transferred[0]);
+  else if (type === "stop-session") void manager.close((data as { sessionId: string }).sessionId).catch(() => {});
   else if (type === "shutdown") void shutdown();
 });
 

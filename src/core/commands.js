@@ -307,6 +307,16 @@ export function createCommandRouter(manager, opts = {}) {
   const openWorkspaces = () => manager.list().map((s) => s.workspace);
 
   /**
+   * Refuse a chat another session already has open.
+   *
+   * @param {string | undefined} chatId
+   * @param {any} [self]
+   */
+  const assertChatFree = (chatId, self) => {
+    if (chatId && manager.chatTaken?.(chatId, self)) throw new Error("This chat is open in another window.");
+  };
+
+  /**
    * Ensure `workspace` is an open session workspace or a registered project.
    *
    * @param {string} workspace
@@ -375,8 +385,10 @@ export function createCommandRouter(manager, opts = {}) {
     "chat.delete": ({ workspace, chatId }) => deleteChat(workspace, chatId),
     "chat.move": ({ fromWorkspace, toWorkspace, chatId }) => moveChat(fromWorkspace, toWorkspace, chatId),
     "chat.reorder": ({ workspace, order }) => reorderChats(workspace, order),
-    "session.create": async ({ workspace, chatId }) =>
-      sessionSnapshot(await manager.create({ workspace, chatId, interactive: true })),
+    "session.create": async ({ workspace, chatId }) => {
+      assertChatFree(chatId);
+      return sessionSnapshot(await manager.create({ workspace, chatId, interactive: true }));
+    },
     "session.snapshot": ({ sessionId }) => sessionSnapshot(session(sessionId)),
     "session.send": ({ sessionId, prompt }) => session(sessionId).send(prompt),
     "session.interrupt": ({ sessionId }) => {
@@ -387,10 +399,14 @@ export function createCommandRouter(manager, opts = {}) {
       await session(sessionId).newChat();
       return sessionSnapshot(session(sessionId));
     },
-    "session.openChat": ({ sessionId, chatId }) => session(sessionId).openChat(chatId),
+    "session.openChat": ({ sessionId, chatId }) => {
+      assertChatFree(chatId, session(sessionId));
+      return session(sessionId).openChat(chatId);
+    },
     "session.listChats": ({ sessionId }) => session(sessionId).listChats(),
     "session.turnLog": ({ sessionId }) => session(sessionId).turnLog(),
     "session.setWorkspace": async ({ sessionId, workspace, chatId }) => {
+      assertChatFree(chatId, session(sessionId));
       await session(sessionId).setWorkspace(workspace, { chatId });
       return sessionSnapshot(session(sessionId));
     },
