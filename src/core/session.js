@@ -36,7 +36,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { loadConfig, setConfigValue } from "../config/settings.js";
+import { loadConfig, setConfigValue, stricterSafetyMode } from "../config/settings.js";
 import { syncAgentConfigs } from "../config/sync.js";
 import { createOrchestratorClient, orchestratorDelegates } from "../providers/orchestrators/registry.js";
 import { isToolCallItem, toolNameOf, toolArgsOf } from "../providers/orchestrators/items.js";
@@ -89,6 +89,13 @@ const PROTECTED_EXPORT_FILES = new Set(["agents.md", "claude.md", "claude.local.
 
 /** Names Windows treats as devices, with or without an extension; an export folder is never one. */
 const WINDOWS_DEVICE_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
+
+/**
+ * Leads whose own permissions are fixed by the safety mode their client was
+ * built with (Antigravity when it starts, Copilot and OpenCode in the flags
+ * and config of every turn), so a new mode needs a new client.
+ */
+const TIER_BOUND_LEADS = new Set(["antigravity", "copilot", "opencode"]);
 
 /**
  * How much of the chat so far goes in front of the first prompt on a new lead
@@ -542,7 +549,8 @@ export class Session extends EventEmitter {
       provider,
       model: this.settings.orchestratorModel,
       effort: this.settings.reasoningEffort,
-      safetyMode: this.settings.safetyMode,
+      // An operator's KUMO_SAFETY_MODE holds the lead's own tools as it holds the bridge's.
+      safetyMode: process.env.KUMO_SAFETY_MODE ? stricterSafetyMode(this.settings.safetyMode, process.env.KUMO_SAFETY_MODE) : this.settings.safetyMode,
       workspace: this.workspace,
       config: { ...loadConfig(), ...this.settings },
       env: this._clientEnv(),
@@ -574,12 +582,13 @@ export class Session extends EventEmitter {
 
   /**
    * Whether the client was built for another safety mode than the session has
-   * now. Only Antigravity matters: it fixes its permission mode (skipping them,
-   * or not) when it starts. The other leads are held to the tier by the bridge,
-   * which reads it from the session on every worker call.
+   * now. It matters for the leads in TIER_BOUND_LEADS: they fix the permissions
+   * of their own tools (skipping them, or not) from the mode they were built
+   * with. The bridge reads the tier from the session on every worker call, so
+   * that holds for every lead's worker calls; it cannot reach a lead's own tools.
    */
   _clientTierStale() {
-    return this.settings.orchestratorProvider === "antigravity" && this._clientSafetyMode !== this.settings.safetyMode;
+    return TIER_BOUND_LEADS.has(this.settings.orchestratorProvider) && this._clientSafetyMode !== this.settings.safetyMode;
   }
 
   /** Environment handed to the orchestrator, and through it to the bridge. */
@@ -1331,8 +1340,7 @@ export class Session extends EventEmitter {
       throw new Error("The orchestrator cannot change while a turn is running.");
     }
     const toolsChanged = roleToolSignature(this.settings.roles) !== roleToolSignature(next.roles);
-    // Antigravity fixes its permission mode when it starts, so a new tier needs a new client.
-    const tierChanged = changed.includes("safetyMode") && next.orchestratorProvider === "antigravity";
+    const tierChanged = changed.includes("safetyMode") && TIER_BOUND_LEADS.has(next.orchestratorProvider);
     // Taken now: connecting may correct the model, and the saved default is what the user asked for.
     const saved = changed.map((key) => /** @type {[string, unknown]} */ ([key, /** @type {Record<string, unknown>} */ (next)[key]]));
     const previous = this.settings;
@@ -1350,7 +1358,7 @@ export class Session extends EventEmitter {
         // A running turn keeps its tools and its permissions; the next one starts on the new ones.
         if (this.busy) {
           this.needsReconnect = true;
-          if (tierChanged) this._notice("Antigravity applies the new safety mode from the next turn.");
+          if (tierChanged) this._notice(`${providerDisplayName(next.orchestratorProvider)} applies the new safety mode from the next turn.`);
         } else {
           await this._connect({ threadId: this._clientThreadId() });
         }
