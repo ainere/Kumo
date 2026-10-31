@@ -134,6 +134,8 @@ export interface State {
   panelsRevision: number;
   /** The window's other sessions, running out of sight. */
   backgroundSessions: SessionTab[];
+  /** Every session in the window in the order they opened, so tabs stay put when switching. */
+  sessionOrder: string[];
 }
 
 /** A session this window has open but isn't showing. */
@@ -204,6 +206,7 @@ let state: State = {
   panels: null,
   panelsRevision: 0,
   backgroundSessions: [],
+  sessionOrder: [],
   ...EMPTY_WORKBENCH,
 };
 
@@ -1246,12 +1249,21 @@ const syncBackgroundSessions = () =>
     backgroundSessions: [...parked].map(([id, p]) => ({ id, title: p.title, busy: p.busy, waiting: p.waiting })),
   });
 
+/** A chat is only named when its first turn ends, so until then its first prompt stands in. */
+function sessionTitle(session: SessionSnapshot, chats: Chat[], messages: Message[]): string {
+  const title = chats.find((c) => c.id === session.chatId)?.title;
+  if (title && title !== "New Chat") return title;
+  return messages.find((m) => m.kind === "user")?.text.slice(0, 60) || title || basename(session.workspace);
+}
+
+export const currentSessionTitle = (s: State): string =>
+  s.session ? sessionTitle(s.session, s.chats, s.messages) : "";
+
 function parkCurrent(): void {
-  const { session, chats, busy, approvals } = state;
+  const { session, chats, messages, busy, approvals } = state;
   if (!session) return;
   const view = Object.fromEntries(SESSION_KEYS.map((key) => [key, state[key]])) as SessionView;
-  const title = chats.find((c) => c.id === session.chatId)?.title || basename(session.workspace);
-  parked.set(session.id, { view, events: [], title, busy, waiting: approvals.length });
+  parked.set(session.id, { view, events: [], title: sessionTitle(session, chats, messages), busy, waiting: approvals.length });
 }
 
 /** Keep an event for later, and tell the user if it's one they need to hear about now. */
@@ -1267,8 +1279,10 @@ function parkEvent(other: ParkedSession, event: KumoEvent): void {
     return;
   }
   other.events.push(event);
-  if (event.type === "turn.started") other.busy = true;
-  else if (event.type === "turn.completed" || event.type === "turn.failed") {
+  if (event.type === "turn.started") {
+    other.busy = true;
+    if (other.title === "New Chat") other.title = event.prompt.slice(0, 60);
+  } else if (event.type === "turn.completed" || event.type === "turn.failed") {
     other.busy = false;
     if (state.prefs?.sounds) chime("done", state.prefs.soundVolume);
     notifyAway(`${other.title}: turn ${event.type === "turn.failed" ? "failed" : "finished"}`);
@@ -1315,6 +1329,7 @@ export async function newSession(): Promise<void> {
     parkCurrent();
     setState({ ...EMPTY_WORKBENCH, chats: [], messages: [], tools: {}, toolOrder: [], turnMeta: {}, approvals: [] });
     setState({ session: snapshot, busy: snapshot.busy, quotas: snapshot.quotas });
+    setState((s) => ({ sessionOrder: [...(s.sessionOrder.length > 0 ? s.sessionOrder : [current.id]), snapshot.id] }));
     syncBackgroundSessions();
     void window.kumo.app.workbench.publishSession(snapshot.id);
     scheduleWorkspaceRefresh();
@@ -1342,13 +1357,21 @@ export async function closeSession(id = state.session?.id): Promise<void> {
     parked.delete(id);
     syncBackgroundSessions();
   }
+  setState((s) => ({ sessionOrder: s.sessionOrder.filter((other) => other !== id) }));
   await invoke("session.stop", { sessionId: id }).catch((err) => toastFailure(err));
+}
+
+/** The next or previous session in tab order. */
+export function cycleSession(step: 1 | -1): void {
+  const { sessionOrder: order, session } = state;
+  const at = order.indexOf(session?.id ?? "");
+  if (order.length > 1 && at !== -1) switchSession(order[(at + step + order.length) % order.length]);
 }
 
 // The sessions went down with the engine; their chats are on disk.
 window.kumo.onEngineRestart(() => {
   parked.clear();
-  setState({ backgroundSessions: [] });
+  setState({ backgroundSessions: [], sessionOrder: [] });
 });
 
 // ── theme packages and custom panels ──

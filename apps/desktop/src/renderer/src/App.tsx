@@ -24,6 +24,7 @@ import { Onboarding } from "./components/Onboarding";
 import { ProviderSwitchModal } from "./components/ProviderSwitchModal";
 import { SceneLayer } from "./components/SceneLayer";
 import { hasOpenDialog } from "./components/settings/controls";
+import { SessionTabs } from "./components/SessionTabs";
 import { SettingsView } from "./components/settings/SettingsView";
 import { Sidebar } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
@@ -106,6 +107,7 @@ export function App() {
             <div className="body" {...covered}>
               <Sidebar />
               <main className="main" data-part="chat">
+                <SessionTabs />
                 {empty ? (
                   <EmptyState />
                 ) : (

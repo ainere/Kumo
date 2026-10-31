@@ -4,6 +4,7 @@ import {
   insertIntoComposer,
   invoke,
   closeSession,
+  cycleSession,
   newChat,
   newSession,
   openNewWindow,
@@ -63,6 +64,11 @@ export function CommandPalette() {
       const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
       if (!mod || e.altKey || hasOpenDialog()) return;
       const key = e.key.toLowerCase();
+      if (key === "tab") {
+        e.preventDefault();
+        cycleSession(e.shiftKey ? -1 : 1);
+        return;
+      }
       if (e.shiftKey) {
         if (key === "n") {
           e.preventDefault();
