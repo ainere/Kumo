@@ -52,6 +52,9 @@ const engineRoot = process.env.KUMO_ENGINE_ROOT || resolve(here, "../../../../sr
 
 const GROUND = { dark: "#05070D", light: "#F5F6F8" } as const;
 
+// Beside out/, in development and in a package alike.
+const ICON = join(here, "../../resources/icon.ico");
+
 export const WORKBENCH_TABS = ["workers", "files", "diff", "terminal", "browser", "plan"] as const;
 export type WorkbenchTab = (typeof WORKBENCH_TABS)[number] | `panel:${string}`;
 
@@ -269,6 +272,7 @@ function createWindow(from?: BrowserWindow): void {
     minHeight: 640,
     show: false,
     title: "kumo",
+    icon: ICON,
     backgroundColor: GROUND[effectiveMode()],
     // Frameless: the window buttons are the app's own, inside the glass title
     // bar and colored by the theme. macOS keeps its traffic lights, moved
@@ -321,6 +325,7 @@ function openPopoutWindow(studio: Studio, tab: WorkbenchTab): WorkbenchTab[] {
     minHeight: 360,
     show: false,
     title: `kumo · ${tab}`,
+    icon: ICON,
     backgroundColor: GROUND[effectiveMode()],
     titleBarStyle: "hidden",
     ...(process.platform === "darwin" ? { trafficLightPosition: { x: 26, y: 27 } } : {}),
