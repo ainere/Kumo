@@ -11,11 +11,17 @@ Every provider can be selected for either role, but not every pairing does real 
 | `codex` | Delegates (bridge passed per thread via `thread/start`); live quotas; approval prompts | Reads and writes files (`codex exec --sandbox …`) |
 | `claude` | Delegates (`--mcp-config` + `--allowedTools mcp__kumo-bridge`); streams answers and worker calls (`--output-format stream-json`); resumable conversations; Claude subscription limits | Reads and writes files; read-only tasks cannot edit (see below) |
 | `antigravity` | Delegates (via `.agents/mcp_config.json` in the workspace); resumable conversations | Reads and writes files |
-| `cursor`, `copilot`, `opencode`, `commandcode` | Answers on its own — **cannot call worker tools** | Reads and writes files |
-| `ollama` | Answers on its own — **cannot call worker tools** | Text only: sees only the files you pass in `files` (contents are inlined); refused for writes |
-| `openai-api`, `anthropic-api`, `gemini-api`, `compat-api` | Single-shot chat, no tools, no memory between turns | Text only, like `ollama` |
+| `copilot` | Delegates (`--additional-mcp-config`); streams; resumable conversations. Outside `autonomous` it may only call the worker tools and read | Reads and writes files |
+| `opencode` | Delegates (`OPENCODE_CONFIG_CONTENT`); streams; resumable conversations. Outside `autonomous` it may only call the worker tools and read | Reads and writes files |
+| `cursor`, `commandcode` | Answers on its own — **cannot call worker tools** | Reads and writes files |
+| `ollama` | Delegates: Kumo runs the tool loop against Ollama's OpenAI-compatible API. The model must support tool calling. Conversations are kept in memory; after a restart the earlier turns are replayed | Sees only the files you pass in `files` (contents are inlined); writes by proposing a diff, which Kumo applies |
+| `openai-api`, `anthropic-api`, `gemini-api`, `compat-api` | Delegates, the same way as `ollama` | Same as `ollama` |
 
-When a session starts with an orchestrator that cannot delegate, Kumo says so. A text-only worker asked to explore with no `files`, or to write in `autonomous` mode, is refused with a `[REFUSED]` result instead of returning invented output. In `diff-review` mode a text-only worker can still propose a diff, which Kumo applies itself. A worker that exits successfully without answering (its reason only on stderr) is reported as `[NO OUTPUT]` with that reason.
+Access follows the role, not the provider: any worker can fill any role, and a read-only role stays read-only on every model. Only the way a worker reaches the workspace differs. A worker without file access called with no `files` is refused with a `[REFUSED]` result that says which paths to pass, instead of returning invented output. A write on such a worker goes through the same checks as an approved preview: paths must stay inside the workspace, nothing under `.git/` or the agent config directories, no symbolic links, and no path through a link or Windows junction already in the workspace. Safety modes apply as usual; `diff-review` and `interactive` show the diff before anything is written.
+
+When a session starts with an orchestrator that cannot delegate, Kumo says so. A worker that exits successfully without answering (its reason only on stderr) is reported as `[NO OUTPUT]` with that reason.
+
+Model ids may contain letters, digits, `.`, `_`, `-`, `:` and `/`, so OpenCode's `provider/model` and Ollama's `name:tag` both work.
 
 Provider notes, verified against the installed CLIs (codex-cli 0.153, Claude Code 2.1, agy 1.2):
 

@@ -140,9 +140,12 @@ Roles you leave alone share the worker model, so older configs keep working. Det
 | `codex` | Delegates; live quotas; approval prompts | Reads and writes files |
 | `claude` (Claude Code) | Delegates; streams; resumable; subscription limits | Reads and writes files |
 | `antigravity` | Delegates; resumable | Reads and writes files |
-| `cursor`, `copilot`, `opencode`, `commandcode` | Answers on its own, can't call workers | Reads and writes files |
-| `ollama` | Answers on its own, can't call workers | Text only |
-| `openai-api`, `anthropic-api`, `gemini-api`, `compat-api` | Single-shot chat | Text only |
+| `copilot`, `opencode` | Delegates; resumable | Reads and writes files |
+| `cursor`, `commandcode` | Answers on its own, can't call workers | Reads and writes files |
+| `ollama` | Delegates, if the model supports tool calling | Works from the files it's given; Kumo applies the diff it proposes |
+| `openai-api`, `anthropic-api`, `gemini-api`, `compat-api` | Delegates, if the model supports tool calling | Same as `ollama` |
+
+Access follows the role, not the provider: any worker can fill any role, and a read-only role stays read-only on every model.
 
 Claude Code runs as the official CLI on your own login; Kumo never handles your Claude credentials and keeps API keys away from it so it can't bill one by surprise. Provider details are in the [providers guide](guides/providers.md).
 

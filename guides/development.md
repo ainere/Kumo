@@ -29,22 +29,25 @@ The codebase implements a decoupled, unhardcoded provider and data persistence s
   - `claude-client.js`: Anthropic Claude Code CLI client: print-mode stream-json turns with the bridge via `--mcp-config`, headless tool permission, resumable sessions and subscription rate limits.
   - `turn-wait.js`: `runTurn()` — attaches terminal-event listeners before submitting, interrupts on timeout or Ctrl+C.
   - `items.js`: provider-neutral helpers for recognizing tool-call items (`mcpToolCall`, `mcp_tool_call`, …).
-  - `opencode-client.js`: OpenCode CLI client.
+  - `opencode-client.js`: OpenCode CLI lead (`opencode run`), with the bridge in its inline config.
   - `commandcode-client.js`: CommandCode CLI client.
-  - `copilot-client.js`: GitHub Copilot CLI client (`gh copilot`).
+  - `copilot-client.js`: GitHub Copilot CLI lead (`gh copilot`), with the bridge in a per-session MCP config.
+  - `lead-support.js`: what the CLI leads share: launching the bridge and reading line-delimited JSON.
   - `cursor-client.js`: Cursor Agent CLI client (`cursor-agent`).
-  - `ollama-client.js`: Ollama local runner client (`ollama run <model>`).
+  - `ollama-client.js`: Ollama lead over its OpenAI-compatible API (see `api-lead.js`).
   - `generic-client.js`: Universal CLI orchestrator adapter that can drive any arbitrary AI CLI tool without hardcoding.
   - `registry.js`: Open-ended orchestrator provider registry and factory (12 providers incl. direct APIs), with `orchestratorDelegates()` reporting which can reach the worker tools.
 - **Direct-API transport** ([`src/providers/api/`](../src/providers/api/)):
-  - `api-transport.js`: Zero-dependency native-fetch transport (`getApiKey`, `resolveBaseUrl`, `ApiError`, `chatComplete`); keys live only in env vars, never on disk.
-  - `openai-api-client.js` (+ `compat-api` via `provider` option), `anthropic-api-client.js`, `gemini-api-client.js`: single-shot orchestrator clients behind the standard client surface (`getRateLimits()` always `null`).
+  - `api-transport.js`: Zero-dependency native-fetch transport (`getApiKey`, `resolveBaseUrl`, `ApiError`, `chatComplete`, `chatWithTools`); keys live only in env vars, never on disk.
+  - `tool-wire.js`: pure functions for the tool-calling wire formats of OpenAI-compatible servers, Anthropic and Gemini.
+  - `api-lead.js`: `ApiLeadClient`, the lead loop for providers with no agent of their own: connects to the bridge as an MCP client and runs the model's tool calls.
+  - `openai-api-client.js` (+ `compat-api` via `provider` option), `anthropic-api-client.js`, `gemini-api-client.js`: name the provider for `ApiLeadClient` (`getRateLimits()` always `null`).
   - `api-worker.js`: shared `executeApiTask` composing the standard composite-prompt blocks over `chatComplete`.
 - **Workers** ([`src/providers/workers/`](../src/providers/workers/)):
   - `gemini.js`: Google Gemini adapter backed by Antigravity (`agy`).
   - `codex.js`: OpenAI Codex execution worker (`codex exec`).
   - `claude.js`: Anthropic Claude Code execution worker (`claude -p`).
-  - `opencode.js`: OpenCode execution worker (`opencode -p`).
+  - `opencode.js`: OpenCode execution worker (`opencode run`).
   - `commandcode.js`: CommandCode execution worker (`commandcode -p`).
   - `copilot.js`: GitHub Copilot CLI worker (`gh copilot -p`).
   - `cursor.js`: Cursor Agent worker (`cursor-agent -p`).
@@ -55,7 +58,7 @@ The codebase implements a decoupled, unhardcoded provider and data persistence s
 - **MCP Bridge** ([`src/bridge/`](../src/bridge/)):
   - `prompts.js`: Role prompts for the scout, builder, tester, researcher, reviewer and designer, and custom roles' own prompts; each names the model it runs on and the lead, from the session's settings.
   - `agy-runner.js`: Subprocess executor enforcing timeout, permission sandboxes, and transient socket reset recovery.
-  - `server.js`: Standard MCP stdio server with one tool per role, registered at startup from the session's settings, each routed to the model assigned to its role (or the shared worker), with optional per-call `provider` override, per-call read/write permission, file inlining for text-only workers, and `git apply` of approved previews.
+  - `server.js`: Standard MCP stdio server with one tool per role, registered at startup from the session's settings, each routed to the model assigned to its role (or the shared worker), with optional per-call `provider` override, per-call read/write permission, file inlining for workers that cannot open files, and `git apply` of approved previews and of the diffs such workers propose.
 - **Session Persistence & Projects** ([`src/data/sessions.js`](../src/data/sessions.js)):
   - Project registry (`~/.kumo/projects.json`), multi-chat persistence, append-only turn logs (`~/.kumo/sessions/<hash>/`), and Markdown export.
 - **Terminal UI & Utilities** ([`src/utils/`](../src/utils/)):
