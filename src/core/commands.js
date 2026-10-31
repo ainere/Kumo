@@ -182,8 +182,8 @@ export const CommandSchemas = {
   "projects.removeFolder": z.object({ workspace: z.string().min(1).max(4096), folder: z.string().min(1).max(4096) }).strict(),
   "projects.setAccessibleFolders": z.object({ workspace: z.string().min(1).max(4096), folders: z.array(z.string().min(1).max(4096)).max(50) }).strict(),
   "chat.rename": z.object({ workspace: z.string().min(1).max(4096), chatId: id, title: z.string().min(1).max(256) }).strict(),
-  "chat.delete": z.object({ workspace: z.string().min(1).max(4096), chatId: id }).strict(),
-  "chat.move": z.object({ fromWorkspace: z.string().min(1).max(4096), toWorkspace: z.string().min(1).max(4096), chatId: id }).strict(),
+  "chat.delete": z.object({ workspace: z.string().min(1).max(4096), chatId: id, sessionId: id.optional() }).strict(),
+  "chat.move": z.object({ fromWorkspace: z.string().min(1).max(4096), toWorkspace: z.string().min(1).max(4096), chatId: id, sessionId: id.optional() }).strict(),
   "chat.reorder": z.object({ workspace: z.string().min(1).max(4096), order: z.array(id).max(200) }).strict(),
   "session.create": z.object({ workspace: z.string().min(1).max(4096), chatId: id.optional() }).strict(),
   "session.snapshot": sessionOnly,
@@ -382,8 +382,14 @@ export function createCommandRouter(manager, opts = {}) {
     "projects.removeFolder": ({ workspace, folder }) => removeAccessibleFolder(workspace, folder),
     "projects.setAccessibleFolders": ({ workspace, folders }) => setAccessibleFolders(workspace, folders),
     "chat.rename": ({ workspace, chatId, title }) => renameChat(workspace, chatId, title),
-    "chat.delete": ({ workspace, chatId }) => deleteChat(workspace, chatId),
-    "chat.move": ({ fromWorkspace, toWorkspace, chatId }) => moveChat(fromWorkspace, toWorkspace, chatId),
+    "chat.delete": ({ workspace, chatId, sessionId }) => {
+      assertChatFree(chatId, sessionId ? manager.get(sessionId) : undefined);
+      return deleteChat(workspace, chatId);
+    },
+    "chat.move": ({ fromWorkspace, toWorkspace, chatId, sessionId }) => {
+      assertChatFree(chatId, sessionId ? manager.get(sessionId) : undefined);
+      return moveChat(fromWorkspace, toWorkspace, chatId);
+    },
     "chat.reorder": ({ workspace, order }) => reorderChats(workspace, order),
     "session.create": async ({ workspace, chatId }) => {
       assertChatFree(chatId);

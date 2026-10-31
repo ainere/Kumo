@@ -714,27 +714,7 @@ code, pre, kbd { font-family: var(--font-mono); }
 [data-status="done"] > .dot, [data-status="done"] .worker-title .dot { background: var(--ok); }
 [data-status="failed"] > .dot, [data-status="failed"] .worker-title .dot { background: var(--bad); }
 
-/*
- * The frame a theme can't restyle: what an approval asks and the buttons that
- * answer it have to stay on screen and honest. The rest of the window is fair
- * game, so these hold through a cascade layer: !important in the first layer
- * declared beats everything after it, a theme's own !important included.
- */
-@layer frame {
-  .approval, .approval-strip, .approval-body, .approval-actions, .approval-notice { display: flex !important; }
-  .approval .btn, .approval-notice .btn { display: inline-block !important; }
-  .approval .diff { display: block !important; }
-  .approval, .approval *, .approval-notice, .approval-notice * {
-    visibility: visible !important;
-    opacity: 1 !important;
-    pointer-events: auto !important;
-    position: static !important;
-    transform: none !important;
-    filter: none !important;
-    clip-path: none !important;
-  }
-}
-
+/* Approval. While one waits, a theme's stylesheet is lifted (see App.tsx), so what it asks can't be restyled. */
 .approval { border-radius: 16px; overflow: hidden; display: flex; flex-direction: column; }
 .approval-strip { all: initial; display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: #f2b866; color: #2b1d05; font: 600 12px system-ui, sans-serif; }
 .approval-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }

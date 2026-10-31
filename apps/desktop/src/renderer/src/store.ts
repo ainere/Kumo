@@ -378,6 +378,8 @@ export async function refreshChat(): Promise<void> {
     invoke<Turn[]>("session.turnLog", { sessionId: session.id }),
     invoke<Chat[]>("session.listChats", { sessionId: session.id }),
   ]);
+  // Switched away meanwhile: this is another session's now, and it has approvals of its own.
+  if (state.session?.id !== session.id) return;
   setState({ ...restoreLog(log), chats, approvals: [] });
   void refreshPlan();
 }
@@ -703,7 +705,7 @@ export async function renameChat(workspace: string, chatId: string, title: strin
 
 export async function deleteChat(workspace: string, chatId: string): Promise<void> {
   try {
-    const updated = await invoke<Chat[]>("chat.delete", { workspace, chatId });
+    const updated = await invoke<Chat[]>("chat.delete", { workspace, chatId, sessionId: state.session?.id });
     if (state.session && sameDir(state.session.workspace, workspace)) {
       setState({ chats: updated });
       if (state.session.chatId === chatId) {
@@ -715,7 +717,11 @@ export async function deleteChat(workspace: string, chatId: string): Promise<voi
       }
     }
     toast("notice", "Chat deleted");
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("another window")) {
+      toastFailure(err);
+      return;
+    }
     if (state.session && sameDir(state.session.workspace, workspace)) {
       const remaining = state.chats.filter((c) => c.id !== chatId);
       setState({ chats: remaining });
@@ -733,7 +739,7 @@ export async function deleteChat(workspace: string, chatId: string): Promise<voi
 
 export async function moveChat(fromWorkspace: string, toWorkspace: string, chatId: string): Promise<void> {
   try {
-    await invoke<{ ok: boolean }>("chat.move", { fromWorkspace, toWorkspace, chatId });
+    await invoke<{ ok: boolean }>("chat.move", { fromWorkspace, toWorkspace, chatId, sessionId: state.session?.id });
     if (state.session && sameDir(state.session.workspace, fromWorkspace)) {
       const remaining = await invoke<Chat[]>("projects.listChats", { workspace: fromWorkspace });
       setState({ chats: remaining });
@@ -1089,6 +1095,7 @@ export function handleEvent(event: KumoEvent): void {
   if (state.session && event.sessionId !== state.session.id) {
     const other = parked.get(event.sessionId);
     if (other) parkEvent(other, event);
+    else startingEvents?.push(event);
     return;
   }
   switch (event.type) {
@@ -1203,8 +1210,10 @@ export function handleEvent(event: KumoEvent): void {
 }
 
 async function refreshChatList(): Promise<void> {
-  if (!state.session) return;
-  setState({ chats: await invoke<Chat[]>("session.listChats", { sessionId: state.session.id }) });
+  const session = state.session;
+  if (!session) return;
+  const chats = await invoke<Chat[]>("session.listChats", { sessionId: session.id });
+  if (state.session?.id === session.id) setState({ chats });
 }
 
 // ── several sessions in one window ──
@@ -1243,6 +1252,9 @@ interface ParkedSession {
 }
 
 const parked = new Map<string, ParkedSession>();
+
+/** What arrives while a new session starts, before this window knows it's its own; a failed start says why here. */
+let startingEvents: KumoEvent[] | null = null;
 
 const syncBackgroundSessions = () =>
   setState({
@@ -1324,17 +1336,21 @@ export function switchSession(id: string): void {
 export async function newSession(): Promise<void> {
   const current = state.session;
   if (!current) return;
+  startingEvents = [];
   try {
     const snapshot = await invoke<SessionSnapshot>("session.create", { workspace: current.workspace });
     parkCurrent();
     setState({ ...EMPTY_WORKBENCH, chats: [], messages: [], tools: {}, toolOrder: [], turnMeta: {}, approvals: [] });
     setState({ session: snapshot, busy: snapshot.busy, quotas: snapshot.quotas });
+    replay((startingEvents ?? []).filter((event) => event.sessionId === snapshot.id));
+    startingEvents = null;
     setState((s) => ({ sessionOrder: [...(s.sessionOrder.length > 0 ? s.sessionOrder : [current.id]), snapshot.id] }));
     syncBackgroundSessions();
     void window.kumo.app.workbench.publishSession(snapshot.id);
     scheduleWorkspaceRefresh();
     await refreshChat();
   } catch (err) {
+    startingEvents = null;
     toastFailure(err);
   }
 }

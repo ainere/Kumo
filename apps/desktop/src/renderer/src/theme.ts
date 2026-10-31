@@ -115,10 +115,28 @@ export function applyPrefs(next: Prefs): void {
 const themeStyle = document.head.appendChild(document.createElement("style"));
 themeStyle.dataset.kumoTheme = "";
 
-/** Put a theme package on, or take it off with null. */
-export function applyUserTheme(next: UserTheme | null): void {
+// Whatever in a stylesheet loads a file. On Windows, a url() naming another
+// machine has the app try to sign in there, handing over a hash of the login.
+const LOADS_A_FILE = /\b(?:url|src)\(\s*["']?(?!data:)|image-set\(\s*["'](?!data:)/i;
+
+/** A theme's rules, minus any that load a file. Parsed first, so no escape or comment hides one. */
+function localCss(css: string): string {
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(css);
+  return [...sheet.cssRules]
+    .map((rule) => rule.cssText)
+    .filter((text) => !LOADS_A_FILE.test(text))
+    .join("\n");
+}
+
+/**
+ * Put a theme package on, or take it off with null. `liftCss` keeps its colors
+ * but not its stylesheet: no CSS rule can hold out against another stylesheet
+ * in the same page, so an approval is only trustworthy with none there.
+ */
+export function applyUserTheme(next: UserTheme | null, liftCss = false): void {
   userTheme = next;
-  themeStyle.textContent = next?.css ?? "";
+  themeStyle.textContent = next && !liftCss ? localCss(next.css) : "";
   sync();
 }
 

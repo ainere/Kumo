@@ -21,8 +21,8 @@
  * both. Only Node modules here, so it can run (and be tested) outside Electron.
  *
  * The page's Content-Security-Policy applies to `theme.css` as to everything
- * else, so a theme can't reach the network; app.css keeps approvals out of its
- * reach too.
+ * else. The renderer also drops rules that load a file (theme.ts) and lifts the
+ * stylesheet while an approval waits (App.tsx).
  */
 
 import fs from "node:fs";

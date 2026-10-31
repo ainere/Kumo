@@ -15,7 +15,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect } from "react";
 import { Toasts, TurnStatus, Welcome } from "./components/Chrome";
 import { CommandPalette } from "./components/CommandPalette";
 import { Composer, EmptyState } from "./components/Composer";
@@ -47,9 +47,11 @@ export function App() {
 
   const themes = useStore((s) => s.themes);
   const themeId = prefs?.theme ?? null;
-  useEffect(() => {
-    applyUserTheme(themes?.themes.find((t) => t.id === themeId) ?? null);
-  }, [themes, themeId]);
+  // Before paint: an approval never shows under a theme's stylesheet, even for a frame.
+  const approvalWaiting = useStore((s) => s.approvals.length > 0);
+  useLayoutEffect(() => {
+    applyUserTheme(themes?.themes.find((t) => t.id === themeId) ?? null, approvalWaiting);
+  }, [themes, themeId, approvalWaiting]);
 
   // Ctrl+, (Cmd+, on macOS) opens Settings from anywhere.
   useEffect(() => {
