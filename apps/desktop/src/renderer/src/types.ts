@@ -168,6 +168,10 @@ export interface GlobalConfig {
   openaiBaseUrl: string;
   anthropicBaseUrl: string;
   geminiBaseUrl: string;
+  /** What the lead calls the user; empty when unset. A saved default of its own, not a session setting. */
+  userName: string;
+  /** Standing instructions for the lead and every worker; empty when unset. */
+  customInstructions: string;
 }
 
 /** A scene script in the user's scenes folder (main process, scene-protocol.ts). */

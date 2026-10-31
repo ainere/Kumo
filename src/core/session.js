@@ -45,6 +45,7 @@ import { runTurn } from "../providers/orchestrators/turn-wait.js";
 import * as defaultStore from "../data/sessions.js";
 import { makeEvent } from "./events.js";
 import { snapshotSettings, applySettingsPatch } from "./settings.js";
+import { profileText, profilePreamble } from "./profile.js";
 import { providerDisplayName } from "../config/models.js";
 import { ToolTracker, TurnTrace } from "./tool-tracker.js";
 import { LiveLogTailer } from "./live-log-tailer.js";
@@ -377,6 +378,12 @@ export class Session extends EventEmitter {
     this._turn = null;
     /** The next prompt carries the chat's earlier turns: the lead provider changed under them. */
     this._replayPending = false;
+    /**
+     * The profile text (core/profile.js) that has reached this conversation in front of a prompt, for a
+     * lead with no system prompt of its own; null when none has. Memory only: a restart sends it again once.
+     * @type {string|null}
+     */
+    this._profileSent = null;
     this.tools = new ToolTracker();
     /** @type {Map<string, LiveLogTailer>} */
     this._tailers = new Map();
@@ -563,6 +570,8 @@ export class Session extends EventEmitter {
       this._assertOpen();
       const opened = await this._openThread({ threadId });
       this._assertOpen();
+      // A thread that is not the one the lead had has not seen the profile.
+      if (!opened.resumed) this._profileSent = null;
       // This chat's thread would not come back: the new one has not seen its earlier turns.
       if (opened.resumeFailed && this.turnCount > 0 && !this._replayPending) this._armReplay(this.turnCount);
       return opened;
@@ -698,13 +707,17 @@ export class Session extends EventEmitter {
     const transcript = [];
     const trace = new TurnTrace();
     this._turn = { id: turnId, transcript, trace };
-    // The prompt shown and recorded is the user's own; a replay goes in front of it only on its way to the lead.
+    // The prompt shown and recorded is the user's own; a replay and the profile go in front of it only on its way to the lead.
     this._emit("turn.started", { turnId, prompt });
 
     /** @type {{ ok: boolean, reason?: string, timedOut?: boolean, interrupted?: boolean }} */
     let outcome;
     let replayed = false;
+    /** @type {string|null} the profile text this turn's prompt carries to the lead */
+    let profileCarried = null;
     try {
+      // Read now, so a change in Settings applies from this turn with no restart.
+      const profile = profileText(loadConfig());
       // A failed background start is retried here rather than surfacing twice.
       await this.start().catch(() => {});
       if (this.needsReconnect || !this.client || this._clientTierStale()) {
@@ -717,9 +730,18 @@ export class Session extends EventEmitter {
       // Built after the start: opening the chat may have armed the replay.
       const preamble = this._replayPending ? this._takeReplayPreamble() : null;
       replayed = preamble !== null;
-      const sent = preamble === null ? prompt : [preamble, "", prompt].join("\n");
 
       const client = this.client;
+      // A lead with a system prompt per turn takes the profile there. Any other gets it in front of the
+      // prompt, once for the conversation and again when the text changes.
+      if (typeof client.setProfile === "function") client.setProfile(profile);
+      else if (profile !== "" && profile !== this._profileSent) profileCarried = profile;
+      /** @type {string[]} */
+      const front = [];
+      if (preamble !== null) front.push(preamble, "");
+      if (profileCarried !== null) front.push(profilePreamble(profileCarried), "");
+      const sent = [...front, prompt].join("\n");
+
       this.activeTurn = runTurn(
         client,
         () => client.startTurn(sent, { model: this.settings.orchestratorModel, effort: this.settings.reasoningEffort }),
@@ -744,6 +766,7 @@ export class Session extends EventEmitter {
       this._recordTurn(prompt, text, elapsedMs, { trace, replayed });
       // The context reached the lead and the turn is saved; a failed turn leaves it pending for the next prompt.
       if (replayed) this._replayPending = false;
+      if (profileCarried !== null) this._profileSent = profileCarried;
       this._emit("turn.completed", { turnId, text, elapsedMs });
     } else {
       this._emit("turn.failed", {
@@ -1166,6 +1189,8 @@ export class Session extends EventEmitter {
     this.chatId = this.persist ? this._newChatRecord() : null;
     this.turnCount = 0;
     this._replayPending = false;
+    // A new thread has not seen the profile.
+    this._profileSent = null;
     this._emit("chat.changed", { workspace: this.workspace, chatId: this.chatId, title: "New Chat", resumed: false });
   }
 
@@ -1188,8 +1213,9 @@ export class Session extends EventEmitter {
     const { resumed, resumeFailed } = await this._openThread({ threadId: sameProvider ? chat.threadId || null : null });
     this.chatId = chat.id;
     this.turnCount = chat.turns || 0;
-    // Whatever was pending belonged to the chat that was open.
+    // Whatever was pending belonged to the chat that was open, and the profile reached that chat's thread, not this one.
     this._replayPending = false;
+    this._profileSent = null;
     this._emit("chat.changed", { workspace: this.workspace, chatId: chat.id, title: chat.title || "Chat", resumed });
     const hadTurns = this.turnCount > 0;
     // Its thread is gone or on another provider: the lead has not seen these turns.
@@ -1212,6 +1238,7 @@ export class Session extends EventEmitter {
     this.workspace = resolved;
     // Whatever was pending belonged to the chat that was open; the chat chosen below may arm its own.
     this._replayPending = false;
+    this._profileSent = null;
     let targetChat = null;
     let threadId = null;
     if (this.persist) {
@@ -1345,6 +1372,7 @@ export class Session extends EventEmitter {
     const saved = changed.map((key) => /** @type {[string, unknown]} */ ([key, /** @type {Record<string, unknown>} */ (next)[key]]));
     const previous = this.settings;
     const replayWas = this._replayPending;
+    const profileWas = this._profileSent;
     this.settings = next;
     let applied = false;
     try {
@@ -1373,6 +1401,7 @@ export class Session extends EventEmitter {
         // The session could not follow the change, so it stays as it was.
         this.settings = previous;
         this._replayPending = replayWas;
+        this._profileSent = profileWas;
         if (changed.includes("orchestratorProvider")) this.quotas.providerChanged();
       }
       throw err;

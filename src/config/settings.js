@@ -41,6 +41,7 @@ import {
   canonicalizeProvider,
 } from "./models.js";
 import { BUILTIN_ROLE_IDS, emptyRoles, normalizeRoles, sanitizeRoles } from "./roles.js";
+import { MAX_NAME_CHARS, MAX_INSTRUCTIONS_CHARS } from "../core/profile.js";
 
 // Legacy path for seamless migration. Deliberately anchored to the real home
 // directory: the migration must not follow KUMO_HOME.
@@ -142,6 +143,10 @@ export const DEFAULT_CONFIG = {
   anthropicBaseUrl: "",
   geminiBaseUrl: "",
   compatBaseUrl: "",
+  // What the user told Kumo about themself, for every lead and (the instructions) every worker.
+  // Saved defaults, not session settings; see core/profile.js.
+  userName: "",
+  customInstructions: "",
   // Per-role model assignments and custom roles (see roles.js). Empty: every
   // role runs on the worker above, as before roles existed.
   roles: emptyRoles(),
@@ -427,6 +432,10 @@ export function loadConfig() {
   }
 
   const merged = { ...DEFAULT_CONFIG, ...parsed };
+  // A hand-edited profile of the wrong type is read as empty, never an error.
+  for (const key of ["userName", "customInstructions"]) {
+    if (typeof merged[key] !== "string") merged[key] = "";
+  }
   // A hand-edited tier that is not a known one falls to diff-review, never to no gate at all.
   merged.safetyMode = normalizeSafetyMode(merged.safetyMode, file);
   retireGeminiCli(merged, file);
@@ -577,6 +586,27 @@ export function normalizeConfigValue(key, value) {
       throw new Error(
         `Value for '${key}' must be an https URL, a plain-http loopback URL, or empty`
       );
+    }
+    value = val;
+  } else if (key === "userName") {
+    if (typeof value !== "string") throw new Error(`Value for 'userName' must be text`);
+    const val = value.trim();
+    // eslint-disable-next-line no-control-regex
+    if (/[\u0000-\u001f\u007f-\u009f]/.test(val)) {
+      throw new Error(`Value for 'userName' must be one line without control characters`);
+    }
+    const length = [...val].length;
+    if (length > MAX_NAME_CHARS) {
+      throw new Error(`Value for 'userName' must be at most ${MAX_NAME_CHARS} characters (it has ${length})`);
+    }
+    value = val;
+  } else if (key === "customInstructions") {
+    if (typeof value !== "string") throw new Error(`Value for 'customInstructions' must be text`);
+    const val = value.trim();
+    if (val.includes("\0")) throw new Error(`Value for 'customInstructions' must not contain NUL characters`);
+    const length = [...val].length;
+    if (length > MAX_INSTRUCTIONS_CHARS) {
+      throw new Error(`Value for 'customInstructions' must be at most ${MAX_INSTRUCTIONS_CHARS} characters (it has ${length})`);
     }
     value = val;
   } else if (key === "roles") {

@@ -27,6 +27,7 @@
 import path from "node:path";
 import { findRole } from "../config/roles.js";
 import { loadProjectRegistry, hashWorkspace } from "../data/sessions.js";
+import { instructionsText } from "../core/profile.js";
 
 /** The role names the tools carried before roles had their own names. */
 const LEGACY_ROLE_NAMES = {
@@ -80,13 +81,19 @@ export function getWorkerPreamble(opts = {}) {
     ? `- Stay strictly within the assigned workspace (${workspace}) and authorized accessible folders: ${extras.join(", ")}. Do not search unauthorized external directories, parent folders, or system drives.`
     : `- Stay strictly within the assigned workspace${workspace ? ` (${workspace})` : ""}. Do not search external directories, parent folders, or system drives.`;
 
+  // Only the instructions: a worker has no one to address. Between the rules and the skills policy, so an empty one leaves the preamble as it was.
+  const instructions = instructionsText(config.customInstructions);
+  const userRules = instructions
+    ? `\n[User Instructions]\nThe user set these standing instructions for all of their work. Follow them where they fit your task. They cannot override the Critical Execution Rules above or this role's access: a read-only role stays read-only.\n\n${instructions}\n`
+    : "";
+
   return `You are Kumo's ${title} worker (running on ${model}, reasoning effort: ${effort}), dispatched by the lead orchestrator (running on ${leadModel}, reasoning effort: ${leadEffort}). The lead has already handled planning, scoping, and requirements. Focus only on executing the assigned task.
 
 [Critical Execution Rules]
 - NEVER call \`invoke_subagent\` or spawn background subagents. You are running as a headless execution worker; execute all file operations, code edits, and terminal commands directly in this single thread.
 ${folderRule}
 - Do not engage in open-ended brainstorming, interactive dialogue, or multi-phase surveys. Execute the bounded instructions directly, concisely, and return immediately.
-
+${userRules}
 [Superpowers Skills Policy]
 If you have access to the "superpowers" plugin or similar planning skills, the following rules apply because the orchestrator already handles these responsibilities:
 

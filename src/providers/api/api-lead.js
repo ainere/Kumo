@@ -278,6 +278,8 @@ export class ApiLeadClient extends EventEmitter {
     this.workspace = options.workspace || process.cwd();
     this.env = options.env || {};
     this.config = options.config || {};
+    /** The user's standing preferences (see core/profile.js), appended to the system prompt of every request. */
+    this.profile = "";
     this.isTurnActive = false;
     /** @type {Thread|null} */
     this.thread = null;
@@ -293,6 +295,16 @@ export class ApiLeadClient extends EventEmitter {
 
   async start() {
     return Promise.resolve();
+  }
+
+  /**
+   * The user's standing preferences; the session sets them before each turn.
+   * Empty means none: the system prompt is left as it was.
+   *
+   * @param {string} text
+   */
+  setProfile(text) {
+    this.profile = typeof text === "string" ? text : "";
   }
 
   /** @param {{ workspace?: string, model?: string, reasoningEffort?: string }} [opts] */
@@ -460,7 +472,9 @@ export class ApiLeadClient extends EventEmitter {
     // Listed every turn: a role's model, and so its description, can change.
     const tools = await abortable(bridge.listTools(), signal);
     const known = new Set(tools.map((t) => t.name));
-    const system = this.options.systemPrompt ?? leadSystemPrompt(this.workspace);
+    const base = this.options.systemPrompt ?? leadSystemPrompt(this.workspace);
+    // Appended to an explicit prompt too: the user's preferences are not the caller's to drop.
+    const system = this.profile === "" ? base : `${base}\n\n${this.profile}`;
     const said = [];
 
     for (let i = 0; i < maxIterations; i++) {

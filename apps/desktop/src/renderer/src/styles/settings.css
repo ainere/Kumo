@@ -501,7 +501,16 @@ textarea.field { height: auto; min-height: 76px; padding: 8px 11px; line-height:
 }
 .color-popover-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
-/* ── General: the safety tiers, as cards ── */
+/* ── General: profile fields and the safety tiers, as cards ── */
+
+.profile-name-input { width: min(260px, 100%); }
+.profile-instructions-row { flex-direction: column; align-items: stretch; row-gap: 10px; padding-bottom: 16px; }
+.profile-instructions-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.profile-instructions-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.profile-instructions-input { width: 100%; min-height: 92px; max-height: 280px; }
+.settings-row-hint[data-tone="ok"] { color: var(--ok); }
+.settings-row-hint[data-tone="fail"],
+.settings-row-aside[data-tone="fail"] { color: var(--bad); }
 
 .tier-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
 .tier-card {

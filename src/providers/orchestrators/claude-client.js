@@ -41,7 +41,7 @@ import { randomUUID } from "node:crypto";
 import { GenericAppClient } from "./generic-client.js";
 import { BRIDGE_SERVER_NAME, bridgeLaunch } from "./lead-support.js";
 import { findClaudeBinary, CLAUDE_EFFORTS } from "../workers/claude.js";
-import { kumoHome, ensureDir, atomicWriteJson } from "../../config/paths.js";
+import { kumoHome, ensureDir, atomicWriteJson, atomicWriteText } from "../../config/paths.js";
 import { formatResetTime } from "../../utils/ui.js";
 import { bridgeEnvFrom } from "../../utils/process.js";
 import { activeProviders } from "../../config/roles.js";
@@ -84,6 +84,10 @@ export class ClaudeAppClient extends GenericAppClient {
     this.sessionId = null;
     this.sessionStarted = false;
     this.mcpConfigPath = null;
+    /** The user's standing preferences (see core/profile.js), for the system prompt of every turn. */
+    this.profile = "";
+    /** @type {{ path: string, text: string }|null} the file `--append-system-prompt-file` reads, and what it holds */
+    this._profileFile = null;
     this.rateLimit = null;
     this._warnedApiKey = false;
     this._resetTurnState();
@@ -142,6 +146,8 @@ export class ClaudeAppClient extends GenericAppClient {
   }
 
   _removeMcpConfig() {
+    // The profile file lives and dies with the MCP config: both belong to one conversation.
+    this._removeProfileFile();
     if (!this.mcpConfigPath) return;
     try {
       fs.unlinkSync(this.mcpConfigPath);
@@ -149,6 +155,48 @@ export class ClaudeAppClient extends GenericAppClient {
       /* already gone */
     }
     this.mcpConfigPath = null;
+  }
+
+  /**
+   * The user's standing preferences; the session sets them before each turn.
+   * Empty means none: the next turn runs without the flag.
+   *
+   * @param {string} text
+   */
+  setProfile(text) {
+    this.profile = typeof text === "string" ? text : "";
+  }
+
+  /**
+   * The file for `--append-system-prompt-file`: the profile, in the Kumo
+   * state directory beside the MCP config, owner-only and written atomically.
+   * A file rather than `--append-system-prompt` because the text spans lines,
+   * which argv cannot carry through a Windows .cmd shim, and argv shows in
+   * process listings. Rewritten when the text changes.
+   *
+   * @returns {string|null} null when there is no profile
+   */
+  _profileFilePath() {
+    if (this.profile === "") {
+      this._removeProfileFile();
+      return null;
+    }
+    const written = this._profileFile;
+    if (written && written.text === this.profile && fs.existsSync(written.path)) return written.path;
+    const file = written?.path ?? path.join(kumoHome(), "run", `claude-profile-${process.pid}-${randomUUID()}.txt`);
+    atomicWriteText(file, this.profile);
+    this._profileFile = { path: file, text: this.profile };
+    return file;
+  }
+
+  _removeProfileFile() {
+    if (!this._profileFile) return;
+    try {
+      fs.unlinkSync(this._profileFile.path);
+    } catch {
+      /* already gone */
+    }
+    this._profileFile = null;
   }
 
   buildTurn(prompt, { model, effort } = {}) {
@@ -163,6 +211,8 @@ export class ClaudeAppClient extends GenericAppClient {
       "--strict-mcp-config",
       "--allowedTools", BRIDGE_TOOL_RULE,
     ];
+    const profileFile = this._profileFilePath();
+    if (profileFile) args.push("--append-system-prompt-file", profileFile);
     if (model) {
       args.push("--model", model);
     }

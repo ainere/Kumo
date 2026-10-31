@@ -132,6 +132,20 @@ export async function probeBridge({ workspace = process.cwd(), timeoutMs = 15000
 }
 
 /**
+ * The config as `kumo doctor` shows it, which people paste into bug reports:
+ * what the user told Kumo about themself is shown as set, not as written.
+ *
+ * @param {Record<string, any>} config
+ */
+function withoutProfileText(config) {
+  const shown = { ...config };
+  for (const key of ["userName", "customInstructions"]) {
+    if (typeof shown[key] === "string" && shown[key] !== "") shown[key] = `(set, ${[...shown[key]].length} characters)`;
+  }
+  return shown;
+}
+
+/**
  * Execute full diagnostic suite.
  */
 export async function runDiagnostics() {
@@ -150,7 +164,7 @@ export async function runDiagnostics() {
     copilot: { ok: false, installed: false, details: "" },
     cursor: { ok: false, installed: false, details: "" },
     ollama: { ok: false, installed: false, details: "" },
-    config: { ok: true, path: getConfigPath(), values: config },
+    config: { ok: true, path: getConfigPath(), values: withoutProfileText(config) },
     // Overall orchestrator-path health: any subscription login OR any API key present.
     orchestratorPath: { ok: false, details: "" },
   };

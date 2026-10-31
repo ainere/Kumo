@@ -921,6 +921,23 @@ export async function updateSettings(patch: Record<string, unknown>): Promise<bo
   }
 }
 
+/**
+ * Save what the user told Kumo about themself. These are saved defaults of
+ * their own, never session settings, so it always goes to config.update (not
+ * session.updateSettings) and asks nothing: a change reaches the lead from the
+ * next turn with no restart. Resolves false when it failed.
+ */
+export async function saveProfile(patch: { userName?: string; customInstructions?: string }): Promise<boolean> {
+  try {
+    await invoke("config.update", { patch });
+    await loadGlobalConfig();
+    return true;
+  } catch (err) {
+    toastFailure(err, undefined, { always: true });
+    return false;
+  }
+}
+
 // ── engine events ──
 
 const updateLead = (turnId: string, fn: (m: Message) => Message) =>

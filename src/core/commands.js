@@ -87,8 +87,11 @@ const exportFilename = z
 /** The base-URL defaults Settings › Models edits, besides the session settings. */
 const BASE_URL_KEYS = ["compatBaseUrl", "openaiBaseUrl", "anthropicBaseUrl", "geminiBaseUrl"];
 
+/** What the user told Kumo about themself (see profile.js): saved defaults, never session settings. */
+const PROFILE_KEYS = ["userName", "customInstructions"];
+
 /** Every key `config.update` accepts. */
-const CONFIG_UPDATE_KEYS = [...SESSION_SETTING_KEYS, ...BASE_URL_KEYS];
+const CONFIG_UPDATE_KEYS = [...SESSION_SETTING_KEYS, ...BASE_URL_KEYS, ...PROFILE_KEYS];
 
 /** The saved defaults (config.json) a new session starts from. */
 function globalConfig() {
@@ -99,6 +102,8 @@ function globalConfig() {
     openaiBaseUrl: String(config.openaiBaseUrl ?? ""),
     anthropicBaseUrl: String(config.anthropicBaseUrl ?? ""),
     geminiBaseUrl: String(config.geminiBaseUrl ?? ""),
+    userName: String(config.userName ?? ""),
+    customInstructions: String(config.customInstructions ?? ""),
   };
 }
 
