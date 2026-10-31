@@ -50,7 +50,7 @@ import { findOpencodeBinary } from "../providers/workers/opencode.js";
 import { findCommandcodeBinary } from "../providers/workers/commandcode.js";
 import { getCachedQuotas, dropProviderQuotas } from "../utils/quota-cache.js";
 import { formatPlanType, formatResetTime } from "../utils/ui.js";
-import { readBoundedText } from "../providers/api/api-transport.js";
+import { ollamaBaseUrl, readBoundedText } from "../providers/api/api-transport.js";
 import { launchTerminalCommand } from "../utils/window-launcher.js";
 
 /** @typedef {"subscription" | "api" | "local"} AccountKind */
@@ -651,28 +651,7 @@ async function probeCli(provider, def) {
 
 // ── Ollama and the direct APIs ──
 
-/**
- * Where Ollama listens, as its own client resolves OLLAMA_HOST: a bare
- * `host:port`, a bare `host` or a full URL, defaulting to http://127.0.0.1:11434.
- *
- * @param {NodeJS.ProcessEnv} [env]
- * @returns {string | null} null when OLLAMA_HOST is not an address
- */
-export function ollamaBaseUrl(env = process.env) {
-  const raw = String(env.OLLAMA_HOST ?? "").trim();
-  if (!raw) return "http://127.0.0.1:11434";
-  try {
-    const url = new URL(raw.includes("://") ? raw : `http://${raw}`);
-    if (!/^https?:$/.test(url.protocol) || !url.hostname) return null;
-    // 0.0.0.0 and :: are where a server binds, not somewhere a client can connect.
-    const host = url.hostname.replace(/^\[|\]$/g, "");
-    if (host === "0.0.0.0" || host === "::") url.hostname = "127.0.0.1";
-    if (!url.port && url.protocol === "http:") url.port = "11434";
-    return `${url.origin}${url.pathname}`.replace(/\/+$/, "");
-  } catch {
-    return null;
-  }
-}
+export { ollamaBaseUrl };
 
 /**
  * GET a JSON document with a deadline. Redirects are not followed: a request

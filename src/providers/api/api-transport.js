@@ -1,10 +1,20 @@
 /**
  * api-transport.js — Shared HTTP transport module for direct API providers.
- * Supports openai-api, anthropic-api, gemini-api, and compat-api.
+ * Supports openai-api, anthropic-api, gemini-api, and compat-api for text
+ * workers (`chatComplete`), and those plus a local Ollama server for leads that
+ * call tools (`chatWithTools`).
  * Zero external dependencies: uses Node >=20 global fetch and AbortSignal.timeout.
  */
 
 import { isSafeBaseUrl } from "../../config/settings.js";
+import {
+  openAiRequest,
+  parseOpenAiReply,
+  anthropicRequest,
+  parseAnthropicReply,
+  geminiRequest,
+  parseGeminiReply,
+} from "./tool-wire.js";
 
 /**
  * Normalizes provider string to canonical format.
@@ -17,6 +27,7 @@ function normalizeProvider(provider) {
   if (p === "anthropic" || p === "claude" || p === "anthropic-api") return "anthropic-api";
   if (p === "gemini" || p === "google" || p === "gemini-api") return "gemini-api";
   if (p === "compat" || p === "compat-api") return "compat-api";
+  if (p === "ollama") return "ollama";
   return p;
 }
 
@@ -86,9 +97,42 @@ export function assertSafeBaseUrl(url) {
   return url;
 }
 
+/**
+ * Where Ollama listens, as its own client resolves OLLAMA_HOST: a bare
+ * `host:port`, a bare `host` or a full URL, defaulting to http://127.0.0.1:11434.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string | null} null when OLLAMA_HOST is not an address
+ */
+export function ollamaBaseUrl(env = process.env) {
+  const raw = String(env.OLLAMA_HOST ?? "").trim();
+  if (!raw) return "http://127.0.0.1:11434";
+  try {
+    const bare = !raw.includes("://");
+    const url = new URL(bare ? `http://${raw}` : raw);
+    if (!/^https?:$/.test(url.protocol) || !url.hostname) return null;
+    // 0.0.0.0 and :: are where a server binds, not somewhere a client can connect.
+    const host = url.hostname.replace(/^\[|\]$/g, "");
+    if (host === "0.0.0.0" || host === "::") url.hostname = "127.0.0.1";
+    // Ollama's port is the default for a bare host only; a URL without a port
+    // means its scheme's. Read from `raw`: URL drops an explicit `:80`.
+    if (bare && !/^(\[[^\]]*\]|[^:/]*):\d+/.test(raw)) url.port = "11434";
+    return `${url.origin}${url.pathname}`.replace(/\/+$/, "");
+  } catch {
+    return null;
+  }
+}
+
 export function resolveBaseUrl(provider, config = {}) {
   const norm = normalizeProvider(provider);
   const cfg = config || {};
+
+  if (norm === "ollama") {
+    // Its OpenAI-compatible API. No key is ever sent, so no key-safety rule applies.
+    const base = ollamaBaseUrl();
+    if (!base) throw new Error("OLLAMA_HOST is not a valid address");
+    return `${base}/v1`;
+  }
 
   if (norm === "openai-api") {
     const url =
@@ -181,6 +225,93 @@ function sanitizeMessage(message, apiKey) {
   text = text.replace(/xox[abprs]-[0-9A-Za-z-]+/g, "[REDACTED]");
   text = text.replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]");
   return text;
+}
+
+/**
+ * POST a JSON body and read the JSON reply. The one place that turns a failed
+ * request into an {@link ApiError}: timeouts, refused redirects (a redirect
+ * would carry the key elsewhere), HTTP errors with the key redacted.
+ *
+ * @param {object} req
+ * @param {string} req.provider - the id the caller used, for the error
+ * @param {string} req.normProvider - canonical provider id
+ * @param {string} req.url
+ * @param {Record<string, string>} req.headers
+ * @param {object} req.body
+ * @param {string|null} [req.apiKey]
+ * @param {number} req.timeoutMs
+ * @param {AbortSignal} [req.signal] - the caller's own cancellation, on top of the timeout
+ * @returns {Promise<any>}
+ */
+async function postJson({ provider, normProvider, url, headers, body, apiKey, timeoutMs, signal }) {
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs),
+      // The fetch spec does NOT strip x-api-key / x-goog-api-key on a
+      // cross-origin redirect, so a redirecting endpoint could harvest the key.
+      redirect: "manual",
+    });
+  } catch (err) {
+    if (err instanceof ApiError) {
+      throw err;
+    }
+    // The caller's own abort passes through as it is, so it can tell it from a timeout.
+    if (signal?.aborted) {
+      throw err;
+    }
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      throw new ApiError(provider, 0, `timeout after ${timeoutMs}ms`);
+    }
+    throw err;
+  }
+
+  if (res.status >= 300 && res.status < 400) {
+    const location = res.headers.get("location") || "(no Location header)";
+    throw new ApiError(
+      provider,
+      res.status,
+      `Endpoint attempted to redirect to ${location}; refusing to forward credentials.`
+    );
+  }
+
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      const envVar = getKeyEnvVarName(normProvider);
+      throw new ApiError(provider, res.status, `Missing or invalid ${envVar}`);
+    }
+
+    let errorText = "";
+    try {
+      const raw = await readBoundedText(res);
+      try {
+        const errData = JSON.parse(raw);
+        // An error may be a message, or (Ollama) a bare string.
+        errorText = errData?.error?.message || (typeof errData?.error === "string" ? errData.error : "") || errData?.message || raw;
+      } catch {
+        errorText = raw;
+      }
+    } catch {
+      errorText = "";
+    }
+
+    const sanitized = sanitizeMessage(errorText, apiKey);
+    const msg = sanitized
+      ? `HTTP ${res.status}: ${sanitized}`
+      : `HTTP ${res.status} ${res.statusText || "Request failed"}`;
+    throw new ApiError(provider, res.status, msg);
+  }
+
+  const raw = await readBoundedText(res);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // A captive portal or a proxy's page, most often.
+    throw new ApiError(provider, 502, `Unusable reply from ${normProvider}: not JSON`);
+  }
 }
 
 /**
@@ -317,63 +448,7 @@ export function chatComplete({
   }
 
   return (async () => {
-    let res;
-    try {
-      res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(timeoutMs),
-        // The fetch spec does NOT strip x-api-key / x-goog-api-key on a
-        // cross-origin redirect, so a redirecting endpoint could harvest the key.
-        redirect: "manual",
-      });
-    } catch (err) {
-      if (err instanceof ApiError) {
-        throw err;
-      }
-      if (err.name === "TimeoutError" || err.name === "AbortError") {
-        throw new ApiError(provider, 0, `timeout after ${timeoutMs}ms`);
-      }
-      throw err;
-    }
-
-    if (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get("location") || "(no Location header)";
-      throw new ApiError(
-        provider,
-        res.status,
-        `Endpoint attempted to redirect to ${location}; refusing to forward credentials.`
-      );
-    }
-
-    if (!res.ok) {
-      if (res.status === 401 || res.status === 403) {
-        const envVar = getKeyEnvVarName(normProvider);
-        throw new ApiError(provider, res.status, `Missing or invalid ${envVar}`);
-      }
-
-      let errorText = "";
-      try {
-        const raw = await readBoundedText(res);
-        try {
-          const errData = JSON.parse(raw);
-          errorText = errData?.error?.message || errData?.message || raw;
-        } catch {
-          errorText = raw;
-        }
-      } catch {
-        errorText = "";
-      }
-
-      const sanitized = sanitizeMessage(errorText, apiKey);
-      const msg = sanitized
-        ? `HTTP ${res.status}: ${sanitized}`
-        : `HTTP ${res.status} ${res.statusText || "Request failed"}`;
-      throw new ApiError(provider, res.status, msg);
-    }
-
-    const data = JSON.parse(await readBoundedText(res));
+    const data = await postJson({ provider, normProvider, url, headers, body: requestBody, apiKey, timeoutMs });
     let text = "";
     let usage;
 
@@ -424,5 +499,95 @@ export function chatComplete({
     }
 
     return { text, usage };
+  })();
+}
+
+/** Providers a lead can run on: the four HTTP APIs and a local Ollama server. */
+const LEAD_PROVIDERS = ["openai-api", "anthropic-api", "gemini-api", "compat-api", "ollama"];
+
+/** A lead's request carries the whole conversation and may wait on a model that thinks first. */
+const LEAD_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * One model request of a tool-calling conversation: the messages so far and the
+ * tools on offer go in, the model's text and the tool calls it wants made come
+ * out. The caller runs the calls and asks again. Not streamed.
+ *
+ * Unlike {@link chatComplete} (a one-shot text call for a worker) this keeps
+ * the provider's tool wire format; see tool-wire.js for the message shapes.
+ *
+ * @param {object} options
+ * @param {string} options.provider - "openai-api" | "anthropic-api" | "gemini-api" | "compat-api" | "ollama"
+ * @param {string} options.model
+ * @param {string} [options.system] - system prompt
+ * @param {import("./tool-wire.js").LeadMessage[]} options.messages
+ * @param {import("./tool-wire.js").ToolSpec[]} [options.tools]
+ * @param {string} [options.effort] - "low" | "medium" | "high" | "max"
+ * @param {number} [options.timeoutMs]
+ * @param {AbortSignal} [options.signal] - cancels the request
+ * @param {string} [options.baseUrl] - overrides the configured endpoint
+ * @param {object} [options.config]
+ * @returns {Promise<import("./tool-wire.js").LeadReply>}
+ */
+export function chatWithTools({
+  provider,
+  model,
+  system,
+  messages,
+  tools = [],
+  effort,
+  timeoutMs = LEAD_TIMEOUT_MS,
+  signal,
+  baseUrl,
+  config,
+} = /** @type {any} */ ({})) {
+  if (!model || typeof model !== "string" || !model.trim()) {
+    throw new ApiError(provider || "unknown", 400, "Model is required");
+  }
+  const normProvider = normalizeProvider(provider);
+  if (!LEAD_PROVIDERS.includes(normProvider)) {
+    throw new ApiError(provider || "unknown", 400, `Unknown provider: ${provider}`);
+  }
+
+  // Ollama and keyless compat servers need no key; the others name the missing variable before any request.
+  const apiKey = getApiKey(normProvider);
+  if (!apiKey && normProvider !== "compat-api" && normProvider !== "ollama") {
+    throw new ApiError(provider, 401, `Missing ${getKeyEnvVarName(normProvider)}`);
+  }
+
+  const base = (baseUrl || resolveBaseUrl(normProvider, config)).replace(/\/+$/, "");
+  const modelName = model.trim();
+  /** @type {Record<string, string>} */
+  const headers = { "Content-Type": "application/json" };
+  let url;
+  let body;
+  let parse;
+
+  if (normProvider === "anthropic-api") {
+    url = `${base.endsWith("/v1") ? base : `${base}/v1`}/messages`;
+    headers["x-api-key"] = /** @type {string} */ (apiKey);
+    headers["anthropic-version"] = "2023-06-01";
+    body = anthropicRequest({ model: modelName, system, messages, tools, effort });
+    parse = parseAnthropicReply;
+  } else if (normProvider === "gemini-api") {
+    // Authenticate with the header only: query strings land in proxy logs.
+    url = `${base.endsWith("/v1beta") ? base : `${base}/v1beta`}/models/${encodeURIComponent(modelName)}:generateContent`;
+    headers["x-goog-api-key"] = /** @type {string} */ (apiKey);
+    body = geminiRequest({ system, messages, tools, effort });
+    parse = parseGeminiReply;
+  } else {
+    url = `${base}/chat/completions`;
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    body = openAiRequest({ model: modelName, system, messages, tools, effort });
+    parse = parseOpenAiReply;
+  }
+
+  return (async () => {
+    const data = await postJson({ provider, normProvider, url, headers, body, apiKey, timeoutMs, signal });
+    try {
+      return parse(data);
+    } catch (err) {
+      throw new ApiError(provider, 502, `Unusable reply from ${normProvider}: ${err instanceof Error ? err.message : err}`);
+    }
   })();
 }

@@ -1,20 +1,18 @@
 /**
- * ollama-client.js — Orchestrator client adapter for Ollama local runner (`ollama`).
+ * ollama-client.js — Lead client for a local Ollama server.
+ *
+ * Talks to Ollama's OpenAI-compatible API (`/v1/chat/completions`, at
+ * OLLAMA_HOST) rather than driving `ollama run`, which has no way to call the
+ * worker tools. The loop lives in api-lead.js. The model must support tool
+ * calling; Ollama says so when it does not.
  */
 
-import { GenericAppClient } from "./generic-client.js";
+import { ApiLeadClient } from "../api/api-lead.js";
 
-export class OllamaAppClient extends GenericAppClient {
+export class OllamaAppClient extends ApiLeadClient {
+  defaultModel = "llama3.1";
+
   constructor(options = {}) {
-    super({
-      ...options,
-      command: "ollama",
-      bin: options.bin || process.env.OLLAMA_BIN || "ollama",
-    });
-  }
-
-  buildTurn(prompt, { model } = {}) {
-    // ollama run takes no --effort flag; effort stays a no-op.
-    return { args: ["run", model || "llama3.1", prompt] };
+    super({ ...options, provider: "ollama" });
   }
 }

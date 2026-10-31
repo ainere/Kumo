@@ -73,7 +73,7 @@ const ORCHESTRATORS = {
   opencode: {
     id: "opencode",
     name: "OpenCode CLI",
-    delegates: false,
+    delegates: true,
     createClient: (opts) => new OpenCodeAppClient(opts),
   },
   commandcode: {
@@ -85,7 +85,7 @@ const ORCHESTRATORS = {
   copilot: {
     id: "copilot",
     name: "GitHub Copilot CLI",
-    delegates: false,
+    delegates: true,
     createClient: (opts) => new CopilotAppClient(opts),
   },
   cursor: {
@@ -97,32 +97,32 @@ const ORCHESTRATORS = {
   ollama: {
     id: "ollama",
     name: "Ollama Local",
-    delegates: false,
+    delegates: true,
     createClient: (opts) => new OllamaAppClient(opts),
   },
   "openai-api": {
     id: "openai-api",
     name: "OpenAI API",
-    delegates: false,
+    delegates: true,
     createClient: (opts) =>
       new OpenAIApiClient({ ...opts, provider: "openai-api", config: opts.config || loadConfig() }),
   },
   "anthropic-api": {
     id: "anthropic-api",
     name: "Anthropic API",
-    delegates: false,
+    delegates: true,
     createClient: (opts) => new AnthropicApiClient({ ...opts, config: opts.config || loadConfig() }),
   },
   "gemini-api": {
     id: "gemini-api",
     name: "Google Gemini API",
-    delegates: false,
+    delegates: true,
     createClient: (opts) => new GeminiApiClient({ ...opts, config: opts.config || loadConfig() }),
   },
   "compat-api": {
     id: "compat-api",
     name: "OpenAI-Compatible API",
-    delegates: false,
+    delegates: true,
     createClient: (opts) =>
       new OpenAIApiClient({ ...opts, provider: "compat-api", config: opts.config || loadConfig() }),
   },
@@ -143,10 +143,13 @@ function genericEntry(id) {
 /**
  * Whether an orchestrator provider can reach Kumo's worker tools.
  *
- * Only Codex (bridge passed as a thread config override), Claude Code
- * (`--mcp-config`) and Antigravity (`.agents/mcp_config.json`) are wired to the
- * MCP bridge. The others run each prompt through a CLI or HTTP API with no tool
- * access, so they answer on their own and never delegate.
+ * Codex (bridge passed as a thread config override), Claude Code
+ * (`--mcp-config`), Antigravity (`.agents/mcp_config.json`), GitHub Copilot
+ * (`--additional-mcp-config`) and OpenCode (`OPENCODE_CONFIG_CONTENT`) are wired
+ * to the MCP bridge by their CLIs. The direct-API providers and Ollama have no
+ * agent of their own, so Kumo runs the tool loop for them (api-lead.js). The
+ * rest run each prompt through a CLI with no tool access, so they answer on
+ * their own and never delegate.
  *
  * @param {string} id
  * @returns {boolean}
