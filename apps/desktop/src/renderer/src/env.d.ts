@@ -18,6 +18,28 @@ interface KumoBridge {
       /** A scene file was added, changed or removed; the scene page serves the new set. */
       onChanged(listener: () => void): () => void;
     };
+    workbench: {
+      popout(tab: import("./types").WorkbenchTab): Promise<import("./types").WorkbenchTab[]>;
+      closePopout(tab: import("./types").WorkbenchTab): Promise<import("./types").WorkbenchTab[]>;
+      listPopouts(): Promise<import("./types").WorkbenchTab[]>;
+      onPopoutsChanged(listener: (tabs: import("./types").WorkbenchTab[]) => void): () => void;
+      /** The main window says which session the pop-outs show. */
+      publishSession(sessionId: string | null): Promise<void>;
+      session(): Promise<string | null>;
+      onSession(listener: (sessionId: string | null) => void): () => void;
+      /** A pop-out hands the main window something only it can do. */
+      relay(message: import("./types").WorkbenchMessage): Promise<void>;
+      onMessage(listener: (message: import("./types").WorkbenchMessage) => void): () => void;
+    };
+    browser: {
+      navigate(url: string): Promise<import("./types").BrowserViewState>;
+      bounds(bounds: { x: number; y: number; width: number; height: number; visible: boolean }): Promise<import("./types").BrowserViewState>;
+      back(): Promise<import("./types").BrowserViewState>;
+      forward(): Promise<import("./types").BrowserViewState>;
+      reload(): Promise<import("./types").BrowserViewState>;
+      state(): Promise<import("./types").BrowserViewState>;
+      onState(listener: (state: import("./types").BrowserViewState) => void): () => void;
+    };
   };
 }
 

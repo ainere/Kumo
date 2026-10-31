@@ -19,11 +19,12 @@
  * The renderer's only door to the rest of the app. It exposes two things:
  * `kumo.invoke(command, args)` / `kumo.onEvent(cb)` over the engine's
  * MessagePort, and `kumo.app.*` for the folder picker, native theme, window
- * controls and the scenes folder.
+ * controls, scenes folder, workbench pop-outs and browser view.
  * The engine validates every command; nothing else is reachable from the page.
  */
 
 import { contextBridge, ipcRenderer } from "electron";
+import type { BrowserViewState, WorkbenchMessage, WorkbenchTab } from "../main/index";
 import type { SceneList } from "../main/user-scenes";
 
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void };
@@ -89,6 +90,26 @@ ipcRenderer.on("kumo:scenes-changed", () => {
   for (const listener of sceneListeners) listener();
 });
 
+const popoutListeners = new Set<(tabs: WorkbenchTab[]) => void>();
+ipcRenderer.on("kumo:popouts-changed", (_event, tabs: WorkbenchTab[]) => {
+  for (const listener of popoutListeners) listener(tabs);
+});
+
+const browserListeners = new Set<(state: BrowserViewState) => void>();
+ipcRenderer.on("kumo:browser-state", (_event, state: BrowserViewState) => {
+  for (const listener of browserListeners) listener(state);
+});
+
+const sessionListeners = new Set<(sessionId: string | null) => void>();
+ipcRenderer.on("kumo:workbench-session", (_event, sessionId: string | null) => {
+  for (const listener of sessionListeners) listener(sessionId);
+});
+
+const messageListeners = new Set<(message: WorkbenchMessage) => void>();
+ipcRenderer.on("kumo:workbench-message", (_event, message: WorkbenchMessage) => {
+  for (const listener of messageListeners) listener(message);
+});
+
 contextBridge.exposeInMainWorld("kumo", {
   invoke(command: string, args?: unknown): Promise<unknown> {
     const request = { id: nextId++, command: String(command), args: args ?? {} };
@@ -122,6 +143,45 @@ contextBridge.exposeInMainWorld("kumo", {
       onChanged(listener: () => void): () => void {
         sceneListeners.add(listener);
         return () => sceneListeners.delete(listener);
+      },
+    },
+    workbench: {
+      popout: (tab: WorkbenchTab): Promise<WorkbenchTab[]> =>
+        ipcRenderer.invoke("kumo:app", { action: "workbench", op: "popout", tab }),
+      closePopout: (tab: WorkbenchTab): Promise<WorkbenchTab[]> =>
+        ipcRenderer.invoke("kumo:app", { action: "workbench", op: "closePopout", tab }),
+      listPopouts: (): Promise<WorkbenchTab[]> =>
+        ipcRenderer.invoke("kumo:app", { action: "workbench", op: "listPopouts" }),
+      onPopoutsChanged(listener: (tabs: WorkbenchTab[]) => void): () => void {
+        popoutListeners.add(listener);
+        return () => popoutListeners.delete(listener);
+      },
+      publishSession: (sessionId: string | null): Promise<void> =>
+        ipcRenderer.invoke("kumo:app", { action: "workbench", op: "publishSession", sessionId }),
+      session: (): Promise<string | null> => ipcRenderer.invoke("kumo:app", { action: "workbench", op: "session" }),
+      onSession(listener: (sessionId: string | null) => void): () => void {
+        sessionListeners.add(listener);
+        return () => sessionListeners.delete(listener);
+      },
+      relay: (message: WorkbenchMessage): Promise<void> =>
+        ipcRenderer.invoke("kumo:app", { action: "workbench", op: "relay", message }),
+      onMessage(listener: (message: WorkbenchMessage) => void): () => void {
+        messageListeners.add(listener);
+        return () => messageListeners.delete(listener);
+      },
+    },
+    browser: {
+      navigate: (url: string): Promise<BrowserViewState> =>
+        ipcRenderer.invoke("kumo:app", { action: "browser", op: "navigate", url }),
+      bounds: (bounds: { x: number; y: number; width: number; height: number; visible: boolean }): Promise<BrowserViewState> =>
+        ipcRenderer.invoke("kumo:app", { action: "browser", op: "bounds", bounds }),
+      back: (): Promise<BrowserViewState> => ipcRenderer.invoke("kumo:app", { action: "browser", op: "back" }),
+      forward: (): Promise<BrowserViewState> => ipcRenderer.invoke("kumo:app", { action: "browser", op: "forward" }),
+      reload: (): Promise<BrowserViewState> => ipcRenderer.invoke("kumo:app", { action: "browser", op: "reload" }),
+      state: (): Promise<BrowserViewState> => ipcRenderer.invoke("kumo:app", { action: "browser", op: "state" }),
+      onState(listener: (state: BrowserViewState) => void): () => void {
+        browserListeners.add(listener);
+        return () => browserListeners.delete(listener);
       },
     },
   },

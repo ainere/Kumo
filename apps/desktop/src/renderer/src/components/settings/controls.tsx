@@ -23,6 +23,7 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
+import { setState } from "../../store";
 
 /** Settings' top bar slot: a page's actions are portaled into it, beside "Back to chat". */
 export const SettingsActionContext = createContext<HTMLElement | null>(null);
@@ -441,6 +442,7 @@ export function Modal({
 
   useEffect(() => {
     dialogStack.push(id);
+    setState({ dialogOpen: true });
     const returnTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const target = initialFocus?.current ?? ref.current?.querySelector<HTMLElement>(FOCUSABLE) ?? ref.current;
     target?.focus({ preventScroll: true });
@@ -475,6 +477,7 @@ export function Modal({
       document.removeEventListener("keydown", onKey, true);
       const at = dialogStack.lastIndexOf(id);
       if (at !== -1) dialogStack.splice(at, 1);
+      setState({ dialogOpen: dialogStack.length > 0 });
       if (returnTo?.isConnected) returnTo.focus({ preventScroll: true });
     };
     // Once per open dialog: onClose is read through a ref.

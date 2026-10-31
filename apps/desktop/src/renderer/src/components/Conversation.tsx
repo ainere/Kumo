@@ -2,7 +2,7 @@ import { Fragment, memo, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatElapsed, providerLabel, toolLabel, useNow } from "../lib";
-import { resolveApproval, toastFailure, useStore } from "../store";
+import { resolveApproval, revealDiff, toastFailure, useStore } from "../store";
 import type { Approval, Message } from "../types";
 
 const Markdown = memo(function Markdown({ text }: { text: string }) {
@@ -139,6 +139,18 @@ export function ApprovalCard({ approval }: { approval: Approval }) {
   );
 }
 
+/** Approvals are answered in the Diff tab, next to the changes. The chat points there. */
+function ApprovalNotice({ approval }: { approval: Approval }) {
+  return (
+    <section className="approval-notice glass-strong" data-part="approval-notice" aria-label="Approval needed">
+      <span className="approval-notice-text">Approval needed · {approval.tool}</span>
+      <button className="btn primary" onClick={() => revealDiff()}>
+        Review
+      </button>
+    </section>
+  );
+}
+
 export function Conversation() {
   const messages = useStore((s) => s.messages);
   const turnMeta = useStore((s) => s.turnMeta);
@@ -172,7 +184,7 @@ export function Conversation() {
           );
         })}
         {approvals.map((a) => (
-          <ApprovalCard key={a.approvalId} approval={a} />
+          <ApprovalNotice key={a.approvalId} approval={a} />
         ))}
       </div>
     </div>

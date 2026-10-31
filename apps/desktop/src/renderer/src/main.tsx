@@ -20,12 +20,13 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "./styles/tokens.css";
 import "./styles/app.css";
+import "./styles/workbench.css";
 import "./theme";
 
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
-import { boot, getState, handleEvent, setState, toast } from "./store";
+import { POPOUT_TAB, boot, bootPopout, getState, handleEvent, setState, toast } from "./store";
 import type { KumoEvent } from "./types";
 
 window.kumo.onEvent((event) => handleEvent(event as KumoEvent));
@@ -36,6 +37,8 @@ window.kumo.onEngineRestart(() => {
   // (ENGINE_RESTARTED) because this notice covers them.
   const turnLost = getState().busy;
   setState({ session: null, busy: false, tools: {}, toolOrder: [], approvals: [] });
+  // A pop-out waits to hear which session the main window opened next.
+  if (POPOUT_TAB) return;
   toast("warning", turnLost ? "The engine restarted, so the running turn was lost." : "The engine restarted.");
   void boot();
 });
@@ -46,4 +49,4 @@ createRoot(document.getElementById("root")!).render(
   </StrictMode>
 );
 
-void boot();
+void (POPOUT_TAB ? bootPopout() : boot());

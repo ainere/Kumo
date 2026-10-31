@@ -74,7 +74,11 @@ export const SessionSettingsSchema = z.object({
   roles: RolesSchema,
 });
 
+// Events with an empty `sessionId` belong to the app, not to one session.
 export const EventSchemas = {
+  "prefs.changed": z.object({ ...base, type: z.literal("prefs.changed"), prefs: z.record(z.string(), z.unknown()) }),
+  "terminal.output": z.object({ ...base, type: z.literal("terminal.output"), terminalId: z.string(), data: z.string() }),
+  "terminal.exit": z.object({ ...base, type: z.literal("terminal.exit"), terminalId: z.string(), exitCode: z.number() }),
   "session.ready": z.object({
     ...base,
     type: z.literal("session.ready"),

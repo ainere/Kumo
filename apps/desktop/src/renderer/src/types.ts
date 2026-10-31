@@ -19,6 +19,8 @@ export interface SessionSnapshot {
   settings: SessionSettings;
   busy: boolean;
   quotas: Quotas;
+  /** What is waiting for an answer: a pop-out opened later still has to show it. */
+  approvals?: Approval[];
 }
 
 export interface Project {
@@ -239,3 +241,105 @@ export interface Toast {
   kind: "warning" | "notice" | "error";
   text: string;
 }
+
+// ── the Workbench ──
+
+export type WorkbenchTab = "workers" | "files" | "diff" | "terminal" | "browser" | "plan";
+
+export interface WorkspaceFileEntry {
+  path: string;
+  name: string;
+  kind: "file" | "dir";
+}
+
+export interface WorkspaceFileList {
+  workspace: string;
+  files: WorkspaceFileEntry[];
+  truncated: boolean;
+}
+
+export interface WorkspaceFileContent {
+  path: string;
+  content: string;
+  size: number;
+  mtime: number;
+  binary: boolean;
+  truncated: boolean;
+  totalLines: number;
+}
+
+export interface DiffLine {
+  type: "add" | "del" | "context";
+  oldLine: number | null;
+  newLine: number | null;
+  text: string;
+}
+
+export interface DiffHunk {
+  header: string;
+  lines: DiffLine[];
+}
+
+export interface DiffFile {
+  path: string;
+  /** Where a renamed file came from. */
+  oldPath?: string;
+  status: "modified" | "added" | "deleted" | "untracked" | "renamed";
+  additions: number;
+  deletions: number;
+  hunks: DiffHunk[];
+  /** Why the lines are missing or cut short: a binary file, a very large diff. */
+  note?: string;
+}
+
+export interface WorkspaceDiff {
+  /** False outside a git repository: there is nothing to compare against. */
+  git: boolean;
+  files: DiffFile[];
+  /** More changed than the app reads at once. */
+  truncated: boolean;
+}
+
+export interface InlineReviewComment {
+  id: string;
+  file: string;
+  line: number;
+  lineType: "add" | "del" | "context";
+  code: string;
+  comment: string;
+}
+
+export interface TerminalInfo {
+  terminalId: string;
+  /** The shell's file name. */
+  shell: string;
+  /** Recent output, to replay into a tab that wasn't showing. */
+  buffer: string;
+  exitCode: number | null;
+}
+
+export interface BrowserViewState {
+  url: string;
+  title: string;
+  loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  /** Why the page didn't load; the tab says so instead of showing nothing. */
+  error: { url: string; description: string } | null;
+}
+
+/** What a pop-out asks the main window to do. */
+export type WorkbenchMessage = { kind: "insert"; text: string } | { kind: "openFile"; path: string };
+
+export interface LocalhostServer {
+  port: number;
+  url: string;
+}
+
+export interface PlanItem {
+  id: string;
+  text: string;
+  done: boolean;
+  source?: "user" | "lead" | "file";
+}
+

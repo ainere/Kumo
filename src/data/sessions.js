@@ -439,13 +439,15 @@ export function deleteChat(workspacePath, chatId) {
   const filtered = chats.filter((c) => c.id !== chatId);
   saveChatIndex(workspacePath, filtered);
 
-  const turnFile = path.join(getSessionDir(workspacePath), `${chatId}.json`);
-  try {
-    if (fs.existsSync(turnFile)) {
-      fs.unlinkSync(turnFile);
+  for (const name of [`${chatId}.json`, `${chatId}.plan.json`]) {
+    const file = path.join(getSessionDir(workspacePath), name);
+    try {
+      if (fs.existsSync(file)) {
+        fs.unlinkSync(file);
+      }
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
   }
   return listChats(workspacePath);
 }
@@ -487,6 +489,9 @@ export function moveChat(fromWorkspace, toWorkspace, chatId) {
   const toFile = path.join(toDir, `${chatId}.json`);
   const hasLog = fs.existsSync(fromFile);
   if (hasLog) fs.copyFileSync(fromFile, toFile);
+  const fromPlan = path.join(getSessionDir(fromResolved), `${chatId}.plan.json`);
+  const hasPlan = fs.existsSync(fromPlan);
+  if (hasPlan) fs.copyFileSync(fromPlan, path.join(toDir, `${chatId}.plan.json`));
 
   // A retry after a partial move finds the chat in the destination already.
   const toChats = loadChatIndex(toResolved).filter((c) => c.id !== chatId);
@@ -494,12 +499,12 @@ export function moveChat(fromWorkspace, toWorkspace, chatId) {
   saveChatIndex(toResolved, toChats);
   saveChatIndex(fromResolved, fromChats);
 
-  // The move is done; a leftover source log is only clutter, so it is reported, not thrown.
-  if (hasLog) {
+  // The move is done; a leftover source file is only clutter, so it is reported, not thrown.
+  for (const file of [...(hasLog ? [fromFile] : []), ...(hasPlan ? [fromPlan] : [])]) {
     try {
-      fs.unlinkSync(fromFile);
+      fs.unlinkSync(file);
     } catch (err) {
-      console.warn(`[Warning] Moved chat ${chatId}, but could not remove its old history file ${fromFile}: ${err instanceof Error ? err.message : err}`);
+      console.warn(`[Warning] Moved chat ${chatId}, but could not remove its old file ${file}: ${err instanceof Error ? err.message : err}`);
     }
   }
 

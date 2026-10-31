@@ -213,6 +213,7 @@ export function resolveBinary(name) {
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf-8",
       timeout: 5000,
+      windowsHide: true,
     });
     const lines = String(out)
       .split(/\r?\n/)

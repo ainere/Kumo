@@ -92,7 +92,7 @@ function groupRuns(runs: Run[], custom: ReadonlyArray<{ id: string; name?: strin
 // ── pieces ──
 
 /** Marks which edges of a sideways-scrolling strip hide tabs (data-fade="start|end|both"). */
-function useEdgeFade(ref: { current: HTMLElement | null }): void {
+export function useEdgeFade(ref: { current: HTMLElement | null }): void {
   useLayoutEffect(() => {
     const strip = ref.current;
     if (!strip) return;
@@ -276,10 +276,9 @@ export function WorkersPanel({ dock }: { dock: Exclude<Prefs["dock"], "hidden"> 
   const labelOf = new Map(groups.map((g) => [g.key, g.label]));
 
   return (
-    <aside className="workers glass" data-part="workers" data-dock={dock} aria-label="Workers">
+    <div className="workers-embedded" data-dock={dock}>
       <div className="workers-head">
-        <span>Workers</span>
-        <span className="muted small workers-state">{running ? `${running} running` : runs.length ? "idle" : ""}</span>
+        {runs.length > 0 && <span className="muted small workers-state">{running ? `${running} running` : "idle"}</span>}
         {runs.length > 0 && (
           <div
             ref={strip}
@@ -340,6 +339,6 @@ export function WorkersPanel({ dock }: { dock: Exclude<Prefs["dock"], "hidden"> 
           ))}
         </div>
       )}
-    </aside>
+    </div>
   );
 }

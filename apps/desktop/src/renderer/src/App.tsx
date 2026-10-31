@@ -17,6 +17,7 @@
 
 import { useEffect } from "react";
 import { Toasts, TurnStatus, Welcome } from "./components/Chrome";
+import { CommandPalette } from "./components/CommandPalette";
 import { Composer, EmptyState } from "./components/Composer";
 import { Conversation } from "./components/Conversation";
 import { Onboarding } from "./components/Onboarding";
@@ -26,8 +27,8 @@ import { hasOpenDialog } from "./components/settings/controls";
 import { SettingsView } from "./components/settings/SettingsView";
 import { Sidebar } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
-import { WorkersPanel } from "./components/WorkersPanel";
-import { getState, openSettings, useStore } from "./store";
+import { PopoutWorkbenchView, Workbench } from "./components/workbench/Workbench";
+import { POPOUT_TAB, getState, openSettings, useStore, workbenchVisible } from "./store";
 import { applyPrefs } from "./theme";
 
 const isMac = window.kumo.app.platform === "darwin";
@@ -36,6 +37,7 @@ export function App() {
   const phase = useStore((s) => s.phase);
   const prefs = useStore((s) => s.prefs);
   const empty = useStore((s) => s.messages.length === 0 && s.toolOrder.length === 0);
+  const showWorkbench = useStore(workbenchVisible);
   const settings = useStore((s) => s.view === "settings" && s.phase !== "loading");
 
   useEffect(() => {
@@ -44,6 +46,7 @@ export function App() {
 
   // Ctrl+, (Cmd+, on macOS) opens Settings from anywhere.
   useEffect(() => {
+    if (POPOUT_TAB) return;
     const onKey = (e: KeyboardEvent) => {
       const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
       if (!mod || e.altKey || e.shiftKey || e.key !== ",") return;
@@ -55,8 +58,23 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  if (POPOUT_TAB) {
+    return (
+      <>
+        <SceneLayer />
+        <div className="shell">
+          <TitleBar popoutTab={POPOUT_TAB} />
+          <div className="stage">
+            <PopoutWorkbenchView tab={POPOUT_TAB} />
+          </div>
+        </div>
+        <Toasts />
+      </>
+    );
+  }
+
   const dock = prefs?.dock ?? "right";
-  const workers = phase === "ready" && !empty && dock !== "hidden" ? dock : null;
+  const workers = showWorkbench ? dock : null;
 
   // While Settings is open, the chat stays mounted under it, hidden and inert:
   // its scroll position, draft and Workers panel come back as they were.
@@ -90,9 +108,9 @@ export function App() {
                     <Composer />
                   </>
                 )}
-                {workers === "bottom" && <WorkersPanel dock="bottom" />}
+                {workers === "bottom" && <Workbench dock="bottom" />}
               </main>
-              {workers === "right" && <WorkersPanel dock="right" />}
+              {workers === "right" && <Workbench dock="right" />}
             </div>
           )}
           {settings && <SettingsView />}
@@ -100,9 +118,10 @@ export function App() {
       </div>
       {workers === "floating" && (
         <div className="floating-layer" {...covered}>
-          <WorkersPanel dock="floating" />
+          <Workbench dock="floating" />
         </div>
       )}
+      <CommandPalette />
       <Toasts />
       <TurnStatus />
       <ProviderSwitchModal />

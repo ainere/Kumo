@@ -1,15 +1,65 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getSafetyModeOption, modelDisplayName, SAFETY_MODE_OPTIONS } from "../lib";
-import { interrupt, openSettings, send, updateSettings, useStore } from "../store";
+import {
+  interrupt,
+  openSettings,
+  refreshWorkspaceFiles,
+  send,
+  setState,
+  updateSettings,
+  useStore,
+} from "../store";
 import { IconArrowUp, IconCheck, IconStop, SafetyIcon } from "./icons";
+import { useFileSearch } from "./workbench/useFileSearch";
 
 export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
   const busy = useStore((s) => s.busy);
   const settings = useStore((s) => s.session?.settings);
+  const fileCount = useStore((s) => s.workspaceFiles.length);
+  const composerInsert = useStore((s) => s.composerInsert);
   const [text, setText] = useState("");
   const [safetyMenuOpen, setSafetyMenuOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState<{ query: string; start: number; end: number } | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
   const input = useRef<HTMLTextAreaElement>(null);
   const safetyMenuRef = useRef<HTMLDivElement>(null);
+  const lastInsertSeq = useRef(0);
+  const mentionMenu = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!composerInsert || composerInsert.seq === lastInsertSeq.current) return;
+    lastInsertSeq.current = composerInsert.seq;
+    setText((prev) => {
+      const sep = prev && !/\s$/.test(prev) ? " " : "";
+      return `${prev}${sep}${composerInsert.text}`;
+    });
+    setState({ composerInsert: null });
+    setTimeout(() => input.current?.focus(), 0);
+  }, [composerInsert]);
+
+  const mentionCandidates = useFileSearch(mentionQuery ? mentionQuery.query : null, 8);
+
+  useEffect(() => {
+    mentionMenu.current?.querySelector('[data-selected="true"]')?.scrollIntoView({ block: "nearest" });
+  }, [mentionIndex]);
+
+  const applyMention = (filePath: string) => {
+    if (!mentionQuery) return;
+    const before = text.slice(0, mentionQuery.start);
+    const after = text.slice(mentionQuery.end);
+    const nextText = `${before}@${filePath} ${after.replace(/^\s+/, "")}`;
+    setText(nextText);
+    setMentionQuery(null);
+    setMentionIndex(0);
+    setTimeout(() => {
+      const el = input.current;
+      if (el) {
+        const pos = before.length + filePath.length + 2;
+        el.focus();
+        el.setSelectionRange(pos, pos);
+      }
+    }, 0);
+  };
 
   useEffect(() => {
     if (!safetyMenuOpen) return;
@@ -66,6 +116,31 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
           submit();
         }}
       >
+        {mentionQuery && mentionCandidates.length > 0 && (
+          <div ref={mentionMenu} className="mention-menu menu-surface" data-part="mention-menu" role="listbox" aria-label="Mention file">
+            {mentionCandidates.map((file, idx) => {
+              const selected = idx === Math.min(mentionIndex, mentionCandidates.length - 1);
+              return (
+                <button
+                  key={file.path}
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  className="mention-item"
+                  data-part="mention-item"
+                  data-selected={selected}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    applyMention(file.path);
+                  }}
+                >
+                  <span className="mention-at">@</span>
+                  <span className="mention-path">{file.path}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
         <label className="sr-only" htmlFor="prompt">
           Message
         </label>
@@ -76,8 +151,47 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
           value={text}
           autoFocus={autoFocus}
           placeholder={busy ? "Working… press Esc to stop" : "Ask kumo to build, fix or explain something"}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            const val = e.target.value;
+            setText(val);
+            const caret = e.target.selectionStart ?? val.length;
+            const prefix = val.slice(0, caret);
+            const match = /(?:^|\s)@([a-zA-Z0-9_./-]*)$/.exec(prefix);
+            if (match) {
+              const q = match[1];
+              const atPos = caret - q.length - 1;
+              setMentionQuery({ query: q, start: atPos, end: caret });
+              setMentionIndex(0);
+              if (fileCount === 0) void refreshWorkspaceFiles();
+            } else {
+              setMentionQuery(null);
+            }
+          }}
           onKeyDown={(e) => {
+            if (mentionQuery && mentionCandidates.length > 0) {
+              const len = mentionCandidates.length;
+              const cur = Math.min(mentionIndex, len - 1);
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setMentionIndex((cur + 1) % len);
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setMentionIndex((cur - 1 + len) % len);
+                return;
+              }
+              if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                applyMention(mentionCandidates[cur].path);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setMentionQuery(null);
+                return;
+              }
+            }
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               submit();
@@ -148,7 +262,7 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
             </div>
           )}
           <span className="spacer" />
-          <span className="hints">↵ send · ⇧↵ newline</span>
+          <span className="hints">@ file · ↵ send · ⇧↵ newline</span>
           {busy ? (
             <button type="button" className="send-btn" aria-label="Stop" onClick={() => void interrupt()}>
               <IconStop />

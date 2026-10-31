@@ -46,6 +46,39 @@ export const IconClose = () => (
   </svg>
 );
 
+export const IconSearch = () => (
+  <svg {...base}>
+    <circle cx="7" cy="7" r="4.25" />
+    <path d="M10.25 10.25L13.5 13.5" />
+  </svg>
+);
+
+export const IconPanelRight = () => (
+  <svg {...base}>
+    <rect x="2.25" y="3" width="11.5" height="10" rx="1.75" />
+    <path d="M9.75 3v10" />
+  </svg>
+);
+
+export const IconSplit = () => (
+  <svg {...base}>
+    <rect x="2.25" y="3" width="11.5" height="10" rx="1.75" />
+    <path d="M2.25 8h11.5" />
+  </svg>
+);
+
+export const IconPopOut = () => (
+  <svg {...base}>
+    <path d="M9 3h4v4M13 3L7.5 8.5M6.5 3.5h-2A1.5 1.5 0 0 0 3 5v6.5A1.5 1.5 0 0 0 4.5 13H11a1.5 1.5 0 0 0 1.5-1.5v-2" />
+  </svg>
+);
+
+export const IconArrowRight = () => (
+  <svg {...base}>
+    <path d="M3 8h10M9 4l4 4-4 4" />
+  </svg>
+);
+
 export const IconRefresh = () => (
   <svg {...base}>
     <path d="M13 8a5 5 0 1 1-1.5-3.5M13 3v2.5h-2.5" />

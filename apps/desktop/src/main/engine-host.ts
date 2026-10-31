@@ -48,7 +48,7 @@ const testClientModule =
 const manager = new SessionManager(
   testClientModule ? { sessionOptions: { createClient: testClientModule.createClient } } : {}
 );
-const run: (name: string, args?: unknown) => Promise<unknown> = createCommandRouter(manager);
+const run: ((name: string, args?: unknown) => Promise<unknown>) & { dispose: () => void } = createCommandRouter(manager);
 const ports = new Set<MessagePortMain>();
 
 manager.on("event", (event: unknown) => {
@@ -78,6 +78,7 @@ process.parentPort.on("message", ({ data, ports: transferred }) => {
 });
 
 const shutdown = async () => {
+  run.dispose();
   await manager.closeAll().catch(() => {});
   process.exit(0);
 };

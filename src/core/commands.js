@@ -43,12 +43,23 @@ import {
   deleteChat,
   moveChat,
   reorderChats,
+  isRegisteredProject,
 } from "../data/sessions.js";
 import { VERSION } from "../version.js";
 import { loadPrefs, savePrefs, PrefsSchema } from "./prefs.js";
 import { listAccounts, signIn, signOut, testEndpoint } from "./accounts.js";
 import { getCatalog } from "./catalog.js";
 import { runDoctor, repairDoctor, doctorReport } from "./doctor.js";
+import {
+  listWorkspaceFiles,
+  readWorkspaceFile,
+  getWorkspaceDiff,
+  TerminalManager,
+  detectLocalhostServers,
+  getWorkspacePlan,
+  updateWorkspacePlan,
+} from "./workbench.js";
+import { makeEvent } from "./events.js";
 import { SESSION_SETTING_KEYS, snapshotSettings } from "./settings.js";
 import { QuotaMonitor } from "./quota-monitor.js";
 import { loadConfig, setConfigValue, normalizeConfigValue, ALLOWED_PROVIDERS } from "../config/settings.js";
@@ -143,6 +154,7 @@ function updateGlobalConfig(patch) {
 
 /** A provider id from the renderer; the engine checks it against its own table. */
 const providerArg = z.string().min(1).max(64);
+const terminalSize = { cols: z.number().int().min(2).max(1000), rows: z.number().int().min(1).max(1000) };
 const refreshOnly = z.object({ refresh: z.boolean().optional() }).strict();
 /** The doctor's workspace-specific checks (worker logs) run only when one is open. */
 const doctorOpts = z.object({ workspace: z.string().min(1).max(4096).optional() }).strict();
@@ -204,6 +216,53 @@ export const CommandSchemas = {
   "doctor.run": doctorOpts,
   "doctor.repair": z.object({ id: z.string().min(1).max(64), workspace: z.string().min(1).max(4096).optional() }).strict(),
   "doctor.report": doctorOpts,
+  "workspace.files": z
+    .object({
+      workspace: z.string().min(1).max(4096),
+      query: z.string().max(256).optional(),
+      maxFiles: z.number().int().min(1).max(5000).optional(),
+    })
+    .strict(),
+  "workspace.readFile": z
+    .object({
+      workspace: z.string().min(1).max(4096),
+      filePath: z.string().min(1).max(1024),
+    })
+    .strict(),
+  "workspace.diff": z.object({ workspace: z.string().min(1).max(4096) }).strict(),
+  "terminal.open": z.object({ workspace: z.string().min(1).max(4096), ...terminalSize }).strict(),
+  "terminal.restart": z.object({ workspace: z.string().min(1).max(4096), ...terminalSize }).strict(),
+  "terminal.input": z.object({ terminalId: id, data: z.string().min(1).max(65_536) }).strict(),
+  "terminal.resize": z.object({ terminalId: id, ...terminalSize }).strict(),
+  "browser.detectLocalhost": z
+    .object({
+      extraPorts: z.array(z.number().int().min(1024).max(65535)).max(32).optional(),
+    })
+    .strict(),
+  "plan.get": z
+    .object({
+      workspace: z.string().min(1).max(4096),
+      chatId: id.nullable().optional(),
+    })
+    .strict(),
+  "plan.update": z
+    .object({
+      workspace: z.string().min(1).max(4096),
+      chatId: id.nullable().optional(),
+      items: z
+        .array(
+          z
+            .object({
+              id: z.string().min(1).max(128),
+              text: z.string().min(1).max(500),
+              done: z.boolean(),
+              source: z.enum(["user", "lead", "file"]).optional(),
+            })
+            .strict()
+        )
+        .max(200),
+    })
+    .strict(),
 };
 
 /** @typedef {keyof typeof CommandSchemas} CommandName */
@@ -221,6 +280,7 @@ export function sessionSnapshot(s) {
     settings: { ...s.settings },
     busy: s.busy,
     quotas: s.quotas.snapshotAll(),
+    approvals: s.listPendingApprovals(),
   };
 }
 
@@ -228,7 +288,7 @@ export function sessionSnapshot(s) {
  * @param {import("./session-manager.js").SessionManager} manager
  * @param {{ quotaOptions?: Partial<ConstructorParameters<typeof QuotaMonitor>[0]> }} [opts]
  *   quotaOptions: how the engine's own quota monitor reads usage (tests stub the probes)
- * @returns {(name: string, args?: unknown) => Promise<unknown>}
+ * @returns {((name: string, args?: unknown) => Promise<unknown>) & { dispose: () => void }}
  */
 export function createCommandRouter(manager, opts = {}) {
   /** @param {string} sessionId */
@@ -245,6 +305,37 @@ export function createCommandRouter(manager, opts = {}) {
    * @returns {string[]}
    */
   const openWorkspaces = () => manager.list().map((s) => s.workspace);
+
+  /**
+   * Ensure `workspace` is an open session workspace or a registered project.
+   *
+   * @param {string} workspace
+   * @returns {string}
+   */
+  const assertAllowedWorkspace = (workspace) => {
+    const resolved = path.resolve(workspace);
+    const norm = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    const isOpen = openWorkspaces().some(
+      (w) => (process.platform === "win32" ? path.resolve(w).toLowerCase() : path.resolve(w)) === norm
+    );
+    if (!isOpen && !isRegisteredProject(resolved)) {
+      throw new Error(`Workspace '${workspace}' is not an open or registered project.`);
+    }
+    return resolved;
+  };
+
+  /**
+   * Publish what belongs to the app rather than to one session. A test's
+   * stand-in manager has no event stream.
+   *
+   * @param {import("./events.js").EventType} type
+   * @param {Record<string, unknown>} payload
+   */
+  const broadcast = (type, payload) => {
+    manager.emit?.("event", makeEvent(type, "", /** @type {any} */ (payload)));
+  };
+
+  const terminals = new TerminalManager(broadcast);
 
   /**
    * The engine's own quota monitor, for when no session is open. It has no
@@ -265,7 +356,12 @@ export function createCommandRouter(manager, opts = {}) {
   const handlers = {
     "app.info": () => ({ version: VERSION, platform: process.platform }),
     "prefs.get": () => loadPrefs(),
-    "prefs.set": ({ patch }) => savePrefs(patch),
+    "prefs.set": ({ patch }) => {
+      const prefs = savePrefs(patch);
+      // Every window draws from these, pop-outs included.
+      broadcast("prefs.changed", { prefs });
+      return prefs;
+    },
     "projects.list": () => listProjects(),
     "projects.listChats": ({ workspace }) => listChats(workspace),
     "projects.create": ({ name, parentDir }) => createProject(name, parentDir),
@@ -325,12 +421,36 @@ export function createCommandRouter(manager, opts = {}) {
     "doctor.run": ({ workspace }) => runDoctor({ workspace, openWorkspaces: openWorkspaces() }),
     "doctor.repair": ({ id: repairId, workspace }) => repairDoctor(repairId, { workspace, openWorkspaces: openWorkspaces() }),
     "doctor.report": ({ workspace }) => doctorReport({ workspace, openWorkspaces: openWorkspaces() }),
+    "workspace.files": ({ workspace, query, maxFiles }) =>
+      listWorkspaceFiles(assertAllowedWorkspace(workspace), { query, maxFiles }),
+    "workspace.readFile": ({ workspace, filePath }) =>
+      readWorkspaceFile(assertAllowedWorkspace(workspace), filePath),
+    "workspace.diff": ({ workspace }) => getWorkspaceDiff(assertAllowedWorkspace(workspace)),
+    "terminal.open": ({ workspace, cols, rows }) => terminals.open(assertAllowedWorkspace(workspace), { cols, rows }),
+    "terminal.restart": ({ workspace, cols, rows }) => terminals.restart(assertAllowedWorkspace(workspace), { cols, rows }),
+    "terminal.input": ({ terminalId, data }) => {
+      terminals.input(terminalId, data);
+      return null;
+    },
+    "terminal.resize": ({ terminalId, cols, rows }) => {
+      terminals.resize(terminalId, { cols, rows });
+      return null;
+    },
+    "browser.detectLocalhost": ({ extraPorts }) => detectLocalhostServers(extraPorts ?? []),
+    "plan.get": ({ workspace, chatId }) => getWorkspacePlan(assertAllowedWorkspace(workspace), chatId),
+    "plan.update": ({ workspace, chatId, items }) =>
+      updateWorkspacePlan(assertAllowedWorkspace(workspace), chatId, items),
   };
 
-  return async function run(name, args) {
+  /**
+   * @param {string} name
+   * @param {unknown} [args]
+   */
+  const run = async (name, args) => {
     if (!Object.hasOwn(CommandSchemas, name)) throw new Error(`Unknown command '${name}'.`);
     const command = /** @type {CommandName} */ (name);
     const parsed = CommandSchemas[command].parse(args ?? {});
     return handlers[command](parsed);
   };
+  return Object.assign(run, { dispose: () => terminals.closeAll() });
 }

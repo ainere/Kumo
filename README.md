@@ -70,9 +70,10 @@ A Windows-first Electron app on the same engine as the CLI. Glass panels sit ove
 </tr>
 </table>
 
-- **Studio layout:** projects, chats and usage on the left, the conversation in the middle, and a Workers panel you can dock right, bottom, floating or hide.
+- **Studio layout:** projects, chats and usage on the left, the conversation in the middle, and a tabbed **Workbench** you can dock right, bottom, floating, split in two, pop out into its own window, or hide.
 - **One usage bar per subscription:** the light fill is what's left of the 5-hour window and the darker fill on top is the weekly window, with both reset times under the bar. Bars refresh every 10 seconds (`quotaPollMs`), Claude's included, through Claude Code's own `/usage`.
-- **Workers by role:** the Workers panel has a tab for each role that ran (scout, builder, reviewer, …). A role with a worker still running shows a timer and animated dots, and each run expands to its live output.
+- **Workbench (6 panels):** **Workers** (live runs grouped by role with timers and expandable output), **Files** (the project's file tree and a code viewer, refreshed after worker writes), **Diff** (uncommitted changes, approvals, and inline review comments you send back to the lead), **Terminal** (a real shell for the project that keeps running while you look elsewhere), **Browser** (your dev server in the app, found automatically), and **Plan** (the chat's task list, from the lead's checklists or `PLAN.md`).
+- **Command Palette (`Ctrl+K`), Quick Open (`Ctrl+P`) and `@` Mentions:** jump to any panel, dock layout, session action or file from the keyboard, or type `@` in the composer to mention a file.
 - **Settings:** one glass page for Accounts (sign in through each CLI's own login, usage per subscription, API keys read from the environment), Models, Roles (a model per role, and custom roles of your own), Appearance (any accent color, scenes, frame rate, dock and glass), General (your name and standing instructions, safety mode, chimes, notices) and Doctor (health checks, one-click repairs and a report to paste into an issue). Ctrl+, opens it.
 - **First run:** a three-step setup over the live scene: sign in to your CLIs, pick the lead and the shared worker, and choose a project folder.
 - **Scenes:** Clouds, Night sky, or your own: drop a `defineScene` script (`.js` or `.ts`) into `~/.kumo/scenes/` and it shows up in Settings › Appearance, and reloads when you save it. Scenes run sandboxed, with no network and no access to your chats.

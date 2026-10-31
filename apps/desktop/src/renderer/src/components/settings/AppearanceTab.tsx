@@ -650,7 +650,7 @@ export function AppearanceTab() {
       </Section>
 
       <Section label="Layout">
-        <Row label="Workers panel" hint="Where the panel of running workers sits, or hide it.">
+        <Row label="Workbench" hint="Where the Workbench sits, or hide it.">
           <Segmented
             value={prefs?.dock ?? "right"}
             options={[

@@ -387,7 +387,7 @@ export class Session extends EventEmitter {
     this.tools = new ToolTracker();
     /** @type {Map<string, LiveLogTailer>} */
     this._tailers = new Map();
-    /** @type {Map<string, { kind: "write"|"orchestrator", paths?: string[], resolve: (approved: boolean, reason?: string) => void }>} */
+    /** @type {Map<string, { kind: "write"|"orchestrator", tool: string, preview: string, paths?: string[], resolve: (approved: boolean, reason?: string) => void }>} */
     this.pendingApprovals = new Map();
     /** @type {Set<string>} bridge approval files already asked about */
     this._seenApprovalFiles = new Set();
@@ -938,6 +938,11 @@ export class Session extends EventEmitter {
 
   // ── approvals ──
 
+  /** What is waiting for an answer now, for a window that opened after it was asked. */
+  listPendingApprovals() {
+    return [...this.pendingApprovals].map(([approvalId, { kind, tool, preview }]) => ({ approvalId, kind, tool, preview }));
+  }
+
   /**
    * @param {any} cl
    * @param {any} req
@@ -953,16 +958,15 @@ export class Session extends EventEmitter {
       return;
     }
     const approvalId = randomUUID();
+    const tool = `${this.settings.orchestratorProvider}: ${req.method}`;
+    const preview = String(req.description || "");
     this.pendingApprovals.set(approvalId, {
       kind: "orchestrator",
+      tool,
+      preview,
       resolve: (approved) => (approved ? req.approve() : req.decline()),
     });
-    this._emit("approval.requested", {
-      approvalId,
-      kind: "orchestrator",
-      tool: `${this.settings.orchestratorProvider}: ${req.method}`,
-      preview: String(req.description || ""),
-    });
+    this._emit("approval.requested", { approvalId, kind: "orchestrator", tool, preview });
   }
 
   /**
@@ -980,6 +984,8 @@ export class Session extends EventEmitter {
       const approvalId = previewId && !this.pendingApprovals.has(previewId) ? previewId : randomUUID();
       this.pendingApprovals.set(approvalId, {
         kind: "write",
+        tool: String(tool || "worker"),
+        preview: String(previewText || ""),
         paths: diffPathsOf(String(previewText || "")),
         resolve: (approved, reason) =>
           resolve(approved ? { approved: true } : { approved: false, reason: reason || "the operator declined the change" }),
@@ -1062,6 +1068,8 @@ export class Session extends EventEmitter {
       const decisionFile = path.join(dir, `${previewId}.decision.json`);
       this.pendingApprovals.set(approvalId, {
         kind: "write",
+        tool: String(record?.tool || "worker"),
+        preview: String(record?.previewText || ""),
         paths: diffPathsOf(String(record?.previewText || "")),
         resolve: (approved) => {
           try {

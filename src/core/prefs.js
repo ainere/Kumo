@@ -39,10 +39,21 @@ const ModeColorsSchema = z
   .object({ ground: hex.optional(), text: hex.optional(), muted: hex.optional(), glass: hex.optional() })
   .strict();
 
+export const WORKBENCH_TABS = /** @type {const} */ (["workers", "files", "diff", "terminal", "browser", "plan"]);
+const WorkbenchTabSchema = z.enum(WORKBENCH_TABS);
+
 export const PrefsSchema = z.object({
   mode: z.enum(["system", "light", "dark"]),
   scene: z.string().min(1).max(64),
   dock: z.enum(["right", "bottom", "floating", "hidden"]),
+  /** The active tab in the primary workbench pane. */
+  workbenchTab: WorkbenchTabSchema,
+  /** The active tab in the secondary split pane; null when not split. */
+  workbenchSplitTab: WorkbenchTabSchema.nullable(),
+  /** Width in px of the right-docked workbench. */
+  workbenchWidth: z.number().int().min(260).max(960),
+  /** Height in px of the bottom-docked workbench. */
+  workbenchHeight: z.number().int().min(140).max(640),
   glassBlur: z.number().int().min(0).max(40),
   glassOpacity: z.number().int().min(15).max(90),
   accent: hex.nullable(),
@@ -74,6 +85,10 @@ export const DEFAULT_PREFS = {
   mode: "system",
   scene: "clouds",
   dock: "right",
+  workbenchTab: "workers",
+  workbenchSplitTab: null,
+  workbenchWidth: 420,
+  workbenchHeight: 220,
   glassBlur: 18,
   glassOpacity: 46,
   accent: null,

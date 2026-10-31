@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { basename } from "../lib";
-import { closeSettings, openSettings, savePrefs, useStore } from "../store";
+import { closeSettings, openPalette, openSettings, savePrefs, toggleWorkbenchVisible, useStore, workbenchVisible } from "../store";
 import { useAppliedTheme } from "../theme";
-import { IconGear, IconMoon, IconSun } from "./icons";
+import type { WorkbenchTab } from "../types";
+import { IconGear, IconMoon, IconPanelRight, IconSearch, IconSun } from "./icons";
 import { settingsTabLabel } from "./settings/SettingsView";
+import { workbenchTabLabel } from "./workbench/Workbench";
 
 const isMac = window.kumo.app.platform === "darwin";
 
@@ -48,12 +50,13 @@ function WindowControls() {
   );
 }
 
-export function TitleBar() {
+export function TitleBar({ popoutTab }: { popoutTab?: WorkbenchTab | null } = {}) {
   const phase = useStore((s) => s.phase);
   const session = useStore((s) => s.session);
   const chats = useStore((s) => s.chats);
   const settings = useStore((s) => s.view === "settings" && s.phase !== "loading");
   const tab = useStore((s) => s.settingsTab);
+  const workbenchOpen = useStore(workbenchVisible);
   const appliedTheme = useAppliedTheme();
   const chat = session ? chats.find((c) => c.id === session.chatId) : undefined;
 
@@ -67,7 +70,20 @@ export function TitleBar() {
       {isMac && <div className="window-controls-space" aria-hidden="true" />}
       <span className="brand">kumo</span>
       <span className="brand-kanji">雲</span>
-      {settings ? (
+      {popoutTab ? (
+        <>
+          <span className="divider-v" />
+          <nav className="crumb crumbs" aria-label="Breadcrumb">
+            <span>Workbench</span>
+            <span className="crumb-sep" aria-hidden="true">
+              ›
+            </span>
+            <span className="crumb-current" aria-current="page">
+              {workbenchTabLabel(popoutTab)}
+            </span>
+          </nav>
+        </>
+      ) : settings ? (
         <>
           <span className="divider-v" />
           <nav className="crumb crumbs" aria-label="Breadcrumb">
@@ -92,8 +108,33 @@ export function TitleBar() {
         )
       )}
       <span className="spacer" />
-      {phase !== "loading" && (
+      {phase !== "loading" && !popoutTab && (
         <>
+          <button
+            type="button"
+            className="icon-btn"
+            data-part="palette-button"
+            aria-label="Command palette"
+            data-tooltip={`Command palette (${isMac ? "⌘K" : "Ctrl+K"})`}
+            data-tooltip-pos="bottom"
+            onClick={() => openPalette("commands")}
+          >
+            <IconSearch />
+          </button>
+          {phase === "ready" && (
+            <button
+              type="button"
+              className="icon-btn"
+              data-part="workbench-toggle"
+              aria-label="Toggle workbench"
+              aria-pressed={workbenchOpen}
+              data-tooltip={`Toggle workbench (${isMac ? "⌘B" : "Ctrl+B"})`}
+              data-tooltip-pos="bottom"
+              onClick={() => toggleWorkbenchVisible()}
+            >
+              <IconPanelRight />
+            </button>
+          )}
           <button
             type="button"
             className="icon-btn"

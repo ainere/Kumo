@@ -28,10 +28,14 @@ import type {
   Approval,
   CatalogProvider,
   Chat,
+  DiffFile,
   GlobalConfig,
+  InlineReviewComment,
   KumoEvent,
+  LocalhostServer,
   Message,
   MessagePart,
+  PlanItem,
   Prefs,
   Project,
   Quotas,
@@ -42,6 +46,11 @@ import type {
   ToolView,
   Turn,
   TurnOutcome,
+  WorkbenchTab,
+  WorkspaceDiff,
+  WorkspaceFileContent,
+  WorkspaceFileEntry,
+  WorkspaceFileList,
 } from "./types";
 
 /** What a restored turn adds to the transcript besides its messages. */
@@ -85,7 +94,59 @@ export interface State {
   signingIn: string | null;
   /** Why the last load of each Settings list failed; cleared when one succeeds. */
   loadErrors: Partial<Record<"accounts" | "catalog" | "globalConfig", string>>;
+  /** Command palette ("commands", Ctrl+K) or Quick Open ("files", Ctrl+P); null when closed. */
+  paletteMode: "commands" | "files" | null;
+  /** Whether the user explicitly toggled the Workbench open while on an empty chat. */
+  workbenchForcedOpen: boolean;
+  /** Tabs currently popped out into standalone windows. */
+  popoutTabs: WorkbenchTab[];
+  /** Cached file entries for the active workspace. */
+  workspaceFiles: WorkspaceFileEntry[];
+  /** Currently opened file in the Workbench Files tab. */
+  selectedFile: WorkspaceFileContent | null;
+  /** Working tree diff files in the active workspace. */
+  workspaceDiff: DiffFile[];
+  /** Queued inline diff review comments to send back to the lead. */
+  reviewComments: InlineReviewComment[];
+  /** Detected localhost dev servers for the Browser tab. */
+  localhostServers: LocalhostServer[];
+  /** Plan checklist items for the active chat. */
+  planItems: PlanItem[];
+  /** Pending snippet/mention to insert into the Composer textarea. */
+  composerInsert: { text: string; seq: number } | null;
+  /** The file list stopped at its cap, so a search has to ask the engine. */
+  filesTruncated: boolean;
+  /** False when the workspace isn't a git repository. */
+  diffIsGit: boolean;
+  /** More changed than the engine reads at once. */
+  diffTruncated: boolean;
+  /** The Workbench's edge is being dragged. */
+  workbenchResizing: boolean;
+  /** A modal dialog is open. */
+  dialogOpen: boolean;
 }
+
+/** What a project's Workbench holds, cleared on moving to another project. */
+const EMPTY_WORKBENCH = {
+  workspaceFiles: [],
+  filesTruncated: false,
+  selectedFile: null,
+  workspaceDiff: [],
+  diffIsGit: true,
+  diffTruncated: false,
+  reviewComments: [],
+  planItems: [],
+} satisfies Partial<State>;
+
+const WORKBENCH_TABS: readonly WorkbenchTab[] = ["workers", "files", "diff", "terminal", "browser", "plan"];
+
+function readPopoutTab(): WorkbenchTab | null {
+  const raw = new URLSearchParams(window.location.search).get("popout");
+  return WORKBENCH_TABS.find((tab) => tab === raw) ?? null;
+}
+
+/** The tab this window shows, when it is a pop-out. */
+export const POPOUT_TAB = readPopoutTab();
 
 const MAX_TOOL_OUTPUT = 120_000;
 
@@ -112,6 +173,14 @@ let state: State = {
   providerSwitch: null,
   signingIn: null,
   loadErrors: {},
+  paletteMode: null,
+  workbenchForcedOpen: false,
+  popoutTabs: [],
+  localhostServers: [],
+  composerInsert: null,
+  workbenchResizing: false,
+  dialogOpen: false,
+  ...EMPTY_WORKBENCH,
 };
 
 const listeners = new Set<() => void>();
@@ -281,6 +350,7 @@ export async function refreshChat(): Promise<void> {
     invoke<Chat[]>("session.listChats", { sessionId: session.id }),
   ]);
   setState({ ...restoreLog(log), chats, approvals: [] });
+  void refreshPlan();
 }
 
 async function refreshProjects(): Promise<void> {
@@ -293,9 +363,18 @@ export async function openWorkspace(workspace: string, chatId?: string): Promise
   const snapshot = current
     ? await invoke<SessionSnapshot>("session.setWorkspace", { sessionId: current.id, workspace, chatId })
     : await invoke<SessionSnapshot>("session.create", { workspace, chatId });
-  setState({ session: snapshot, busy: snapshot.busy, quotas: snapshot.quotas, phase: "ready" });
+  setState({
+    session: snapshot,
+    busy: snapshot.busy,
+    quotas: snapshot.quotas,
+    phase: "ready",
+    ...(sameDir(current?.workspace, snapshot.workspace) ? {} : EMPTY_WORKBENCH),
+  });
+  void window.kumo.app.workbench.publishSession(snapshot.id);
   await savePrefs({ lastWorkspace: snapshot.workspace });
   void refreshQuotas();
+  void refreshWorkspaceFiles();
+  void refreshWorkspaceDiff();
   await Promise.all([refreshChat(), refreshProjects()]);
 }
 
@@ -350,17 +429,20 @@ export async function boot(): Promise<void> {
   }
 }
 
-export async function send(prompt: string): Promise<void> {
+/** Resolves false when the prompt never reached the lead. */
+export async function send(prompt: string): Promise<boolean> {
   const session = state.session;
-  if (!session || state.busy) return;
+  if (!session || state.busy) return false;
   // Busy at once, so a second Enter can't send before turn.started arrives;
   // session.send resolves when the turn is over.
   setState({ busy: true });
   try {
     const outcome = await invoke<TurnOutcome>("session.send", { sessionId: session.id, prompt });
     if (!outcome.ok && outcome.interrupted) toast("notice", "Turn interrupted.");
+    return true;
   } catch (err) {
     toastFailure(err);
+    return false;
   } finally {
     setState({ busy: false });
   }
@@ -524,6 +606,7 @@ export async function deleteProject(workspace: string): Promise<void> {
         await openWorkspace(updated[0].path);
       } else {
         setState({ session: null, chats: [], phase: "no-project" });
+        void window.kumo.app.workbench.publishSession(null);
       }
     }
   } catch {
@@ -535,6 +618,7 @@ export async function deleteProject(workspace: string): Promise<void> {
         void openWorkspace(remaining[0].path);
       } else {
         setState({ session: null, chats: [], phase: "no-project" });
+        void window.kumo.app.workbench.publishSession(null);
       }
     }
   }
@@ -947,6 +1031,11 @@ const updateTool = (toolId: string, fn: (t: ToolView) => ToolView) =>
   setState((s) => (s.tools[toolId] ? { tools: { ...s.tools, [toolId]: fn(s.tools[toolId]) } } : {}));
 
 export function handleEvent(event: KumoEvent): void {
+  // App-wide events have no session. Terminal output goes to the tab showing it.
+  if (!event.sessionId) {
+    if (event.type === "prefs.changed") setState({ prefs: { ...(event.prefs as Prefs), ...unsavedPreview } });
+    return;
+  }
   if (state.session && event.sessionId !== state.session.id) return;
   switch (event.type) {
     case "turn.started":
@@ -968,12 +1057,15 @@ export function handleEvent(event: KumoEvent): void {
     case "turn.completed":
       updateLead(event.turnId, (m) => ({ ...m, streaming: false, thinking: false }));
       setState({ busy: false });
-      if (state.prefs?.sounds) chime("done", state.prefs.soundVolume);
+      if (state.prefs?.sounds && !POPOUT_TAB) chime("done", state.prefs.soundVolume);
       void refreshChatList();
+      scheduleWorkspaceRefresh();
+      void refreshPlan();
       break;
     case "turn.failed":
       updateLead(event.turnId, (m) => ({ ...m, streaming: false, thinking: false, failed: event.reason }));
       setState({ busy: false });
+      scheduleWorkspaceRefresh();
       break;
     case "tool.started":
       setState((s) => ({
@@ -1008,15 +1100,17 @@ export function handleEvent(event: KumoEvent): void {
       break;
     case "tool.completed":
       updateTool(event.toolId, (t) => ({ ...t, status: event.ok ? "done" : "failed", elapsedMs: event.elapsedMs }));
+      scheduleWorkspaceRefresh();
       break;
     case "approval.requested":
       setState((s) => ({
         approvals: [...s.approvals, { approvalId: event.approvalId, kind: event.kind, tool: event.tool, preview: event.preview }],
       }));
-      if (state.prefs?.sounds) chime("approval", state.prefs.soundVolume);
+      if (state.prefs?.sounds && !POPOUT_TAB) chime("approval", state.prefs.soundVolume);
       break;
     case "approval.resolved":
       setState((s) => ({ approvals: s.approvals.filter((a) => a.approvalId !== event.approvalId) }));
+      scheduleWorkspaceRefresh();
       break;
     case "quota.updated":
       setState({
@@ -1026,18 +1120,25 @@ export function handleEvent(event: KumoEvent): void {
     case "settings.changed":
       setState((s) => (s.session ? { session: { ...s.session, settings: event.settings } } : {}));
       break;
-    case "chat.changed":
+    case "chat.changed": {
+      const moved = state.session !== null && !sameDir(state.session.workspace, event.workspace);
       setState((s) => (s.session ? { session: { ...s.session, chatId: event.chatId, workspace: event.workspace } } : {}));
       void refreshChat();
+      if (moved) {
+        setState(EMPTY_WORKBENCH);
+        scheduleWorkspaceRefresh();
+      }
       break;
+    }
+    // Said once, in the main window: a pop-out sees the same events.
     case "session.warning":
-      toast("warning", event.message);
+      if (!POPOUT_TAB) toast("warning", event.message);
       break;
     case "session.notice":
-      toast("notice", event.message);
+      if (!POPOUT_TAB) toast("notice", event.message);
       break;
     case "session.error":
-      toast("error", event.message);
+      if (!POPOUT_TAB) toast("error", event.message);
       break;
     default:
       break;
@@ -1047,4 +1148,317 @@ export function handleEvent(event: KumoEvent): void {
 async function refreshChatList(): Promise<void> {
   if (!state.session) return;
   setState({ chats: await invoke<Chat[]>("session.listChats", { sessionId: state.session.id }) });
+}
+
+// ── the Workbench ──
+
+if (POPOUT_TAB) {
+  window.kumo.app.workbench.onSession((sessionId) => void attachSession(sessionId));
+} else {
+  window.kumo.app.workbench.onMessage((message) => {
+    if (message.kind === "insert") insertIntoComposer(message.text);
+    else void openWorkspaceFile(message.path, true);
+  });
+}
+void window.kumo.app.workbench
+  .listPopouts()
+  .then((tabs) => setState({ popoutTabs: tabs }))
+  .catch(() => {});
+window.kumo.app.workbench.onPopoutsChanged((tabs) => setState({ popoutTabs: tabs }));
+
+/** A pop-out shows the main window's session. Starting one here would mean a second lead on a chat of its own. */
+async function attachSession(sessionId: string | null): Promise<void> {
+  if (!sessionId) {
+    setState({ session: null, phase: "no-project", ...EMPTY_WORKBENCH });
+    return;
+  }
+  try {
+    const snapshot = await invoke<SessionSnapshot>("session.snapshot", { sessionId });
+    const moved = !sameDir(state.session?.workspace, snapshot.workspace);
+    setState({
+      session: snapshot,
+      busy: snapshot.busy,
+      quotas: snapshot.quotas,
+      phase: "ready",
+      ...(moved ? EMPTY_WORKBENCH : {}),
+    });
+    void refreshWorkspaceFiles();
+    void refreshWorkspaceDiff();
+    await refreshChat();
+    // Asked for now, not from the snapshot above: one may have come or gone while
+    // the chat loaded, and a pop-out's Diff tab can be the only place to answer it.
+    const latest = await invoke<SessionSnapshot>("session.snapshot", { sessionId });
+    setState({ approvals: latest.approvals ?? [] });
+  } catch (err) {
+    toastFailure(err);
+    setState({ session: null, phase: "no-project" });
+  }
+}
+
+export async function bootPopout(): Promise<void> {
+  setState({ prefs: await invoke<Prefs>("prefs.get") });
+  await attachSession(await window.kumo.app.workbench.session());
+}
+
+/** Whether the Workbench shows: a fresh chat keeps the welcome screen clear until asked. */
+export const workbenchVisible = (s: State): boolean =>
+  s.phase === "ready" &&
+  (s.prefs?.dock ?? "right") !== "hidden" &&
+  (s.messages.length > 0 || s.toolOrder.length > 0 || s.workbenchForcedOpen);
+
+export function openPalette(mode: "commands" | "files"): void {
+  setState({ paletteMode: mode });
+  if (mode === "files" && state.workspaceFiles.length === 0) {
+    void refreshWorkspaceFiles();
+  }
+}
+
+export function closePalette(): void {
+  if (state.paletteMode !== null) setState({ paletteMode: null });
+}
+
+type ShownDock = Exclude<Prefs["dock"], "hidden">;
+
+/** Where the Workbench was when it was hidden, so showing it puts it back there. */
+let lastDock: ShownDock = "right";
+
+function shownDock(): ShownDock {
+  const dock = state.prefs?.dock;
+  return dock && dock !== "hidden" ? dock : lastDock;
+}
+
+export function setWorkbenchTab(tab: WorkbenchTab, pane: "primary" | "split" = "primary"): void {
+  const primary = state.prefs?.workbenchTab ?? "workers";
+  const split = state.prefs?.workbenchSplitTab ?? null;
+  const patch: Partial<Prefs> = { dock: shownDock() };
+  // The two panes never show the same tab: picking the other's trades places.
+  if (pane === "split") {
+    patch.workbenchSplitTab = tab;
+    if (tab === primary && split) patch.workbenchTab = split;
+  } else {
+    patch.workbenchTab = tab;
+    if (tab === split) patch.workbenchSplitTab = primary;
+  }
+  setState({ workbenchForcedOpen: true, view: "chat" });
+  void savePrefs(patch);
+  if (tab === "files") void refreshWorkspaceFiles();
+  else if (tab === "diff") void refreshWorkspaceDiff();
+  else if (tab === "plan") void refreshPlan();
+  else if (tab === "browser") void detectLocalhost();
+}
+
+export function toggleWorkbenchSplit(): void {
+  if (state.prefs?.workbenchSplitTab) {
+    void savePrefs({ workbenchSplitTab: null });
+    return;
+  }
+  const primary = state.prefs?.workbenchTab ?? "workers";
+  void savePrefs({ workbenchSplitTab: primary === "files" ? "diff" : "files" });
+}
+
+export function toggleWorkbenchVisible(): void {
+  if (workbenchVisible(state)) {
+    if (state.messages.length === 0 && state.toolOrder.length === 0) {
+      setState({ workbenchForcedOpen: false });
+    } else {
+      lastDock = shownDock();
+      void savePrefs({ dock: "hidden" });
+    }
+    return;
+  }
+  setState({ workbenchForcedOpen: true });
+  if (state.prefs?.dock === "hidden") void savePrefs({ dock: lastDock });
+}
+
+/** Take the user to the Diff tab, wherever it is: approvals are answered there. */
+export function revealDiff(): void {
+  if (state.popoutTabs.includes("diff")) void popoutWorkbenchTab("diff");
+  else setWorkbenchTab("diff");
+}
+
+export async function popoutWorkbenchTab(tab: WorkbenchTab): Promise<void> {
+  try {
+    setState({ popoutTabs: await window.kumo.app.workbench.popout(tab) });
+  } catch (err) {
+    toastFailure(err);
+  }
+}
+
+export async function closePopoutTab(tab: WorkbenchTab): Promise<void> {
+  try {
+    setState({ popoutTabs: await window.kumo.app.workbench.closePopout(tab) });
+  } catch (err) {
+    toastFailure(err);
+  }
+}
+
+// Files change outside the app too: look again when the user comes back to it.
+window.addEventListener("focus", () => scheduleWorkspaceRefresh());
+
+let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Workers finish in bursts: refresh once they've settled, not once per worker. */
+function scheduleWorkspaceRefresh(): void {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => {
+    void refreshWorkspaceFiles();
+    void refreshWorkspaceDiff();
+  }, 350);
+}
+
+export async function refreshWorkspaceFiles(): Promise<void> {
+  const workspace = state.session?.workspace;
+  if (!workspace) return;
+  try {
+    const res = await invoke<WorkspaceFileList>("workspace.files", { workspace });
+    if (state.session?.workspace !== workspace) return;
+    setState({ workspaceFiles: res.files, filesTruncated: res.truncated });
+    // The open file may be what just changed, or may be gone.
+    const openPath = state.selectedFile?.path;
+    if (openPath) {
+      const updated = await invoke<WorkspaceFileContent>("workspace.readFile", { workspace, filePath: openPath }).catch(
+        () => null
+      );
+      if (state.session?.workspace === workspace && state.selectedFile?.path === openPath) {
+        setState({ selectedFile: updated });
+      }
+    }
+  } catch {
+    /* ignore background refresh errors */
+  }
+}
+
+/** Files matching `query` when the list in memory stopped at its cap. */
+export async function searchWorkspaceFiles(query: string): Promise<WorkspaceFileEntry[]> {
+  const workspace = state.session?.workspace;
+  if (!workspace) return [];
+  const res = await invoke<WorkspaceFileList>("workspace.files", { workspace, query, maxFiles: 200 });
+  return res.files;
+}
+
+export async function openWorkspaceFile(filePath: string, switchTab = false): Promise<void> {
+  // Showing it in the Files tab is the main window's job; a pop-out's own Files tab reads it here.
+  if (switchTab && POPOUT_TAB) {
+    void window.kumo.app.workbench.relay({ kind: "openFile", path: filePath });
+    return;
+  }
+  const workspace = state.session?.workspace;
+  if (!workspace) return;
+  try {
+    const file = await invoke<WorkspaceFileContent>("workspace.readFile", { workspace, filePath });
+    setState({ selectedFile: file });
+    if (switchTab) setWorkbenchTab("files");
+  } catch (err) {
+    toastFailure(err);
+  }
+}
+
+export async function refreshWorkspaceDiff(): Promise<void> {
+  const workspace = state.session?.workspace;
+  if (!workspace) return;
+  try {
+    const res = await invoke<WorkspaceDiff>("workspace.diff", { workspace });
+    if (state.session?.workspace !== workspace) return;
+    setState({ workspaceDiff: res.files, diffIsGit: res.git, diffTruncated: res.truncated });
+  } catch {
+    /* ignore background diff errors */
+  }
+}
+
+let commentSeq = 1;
+export function addReviewComment(item: Omit<InlineReviewComment, "id">): void {
+  const id = `rc-${Date.now()}-${commentSeq++}`;
+  setState((s) => ({
+    reviewComments: [...s.reviewComments, { ...item, id }],
+  }));
+}
+
+export function removeReviewComment(id: string): void {
+  setState((s) => ({
+    reviewComments: s.reviewComments.filter((c) => c.id !== id),
+  }));
+}
+
+export function clearReviewComments(): void {
+  setState({ reviewComments: [] });
+}
+
+export async function sendReviewCommentsToLead(): Promise<void> {
+  const comments = state.reviewComments;
+  if (comments.length === 0) return;
+  const lines = [
+    "Please address the following inline code review comments on the current changes:",
+    "",
+    ...comments.map(
+      (c, i) =>
+        `${i + 1}. \`${c.file}:${c.line}\` (${c.lineType === "del" ? "removed line" : "line"} \`${c.code.trim()}\`):\n   > ${c.comment}`
+    ),
+  ];
+  const prompt = lines.join("\n");
+  setState({ reviewComments: [] });
+  if (state.busy) {
+    insertIntoComposer(prompt);
+    toast("notice", "A turn is running, so your review is in the composer.");
+  } else if (!(await send(prompt))) {
+    // Nothing reached the lead: the comments aren't done with.
+    setState((s) => ({ reviewComments: [...comments, ...s.reviewComments] }));
+  }
+}
+
+/** Ports the terminal has mentioned, scanned along with the usual ones. */
+const seenPorts = new Set<number>();
+
+export async function detectLocalhost(extraPorts: number[] = []): Promise<void> {
+  for (const port of extraPorts) seenPorts.add(port);
+  try {
+    const res = await invoke<{ servers: LocalhostServer[] }>("browser.detectLocalhost", {
+      extraPorts: [...seenPorts].slice(-32),
+    });
+    setState({ localhostServers: res.servers });
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function refreshPlan(): Promise<void> {
+  const session = state.session;
+  if (!session) return;
+  try {
+    const res = await invoke<{ items: PlanItem[] }>("plan.get", {
+      workspace: session.workspace,
+      chatId: session.chatId,
+    });
+    if (state.session?.chatId === session.chatId) setState({ planItems: res.items });
+  } catch {
+    /* ignore */
+  }
+}
+
+let planSaves = 0;
+
+export async function savePlanItems(items: PlanItem[]): Promise<void> {
+  const session = state.session;
+  setState({ planItems: items });
+  if (!session) return;
+  const save = ++planSaves;
+  try {
+    const res = await invoke<{ items: PlanItem[] }>("plan.update", {
+      workspace: session.workspace,
+      chatId: session.chatId,
+      items,
+    });
+    // A newer save has its own answer coming: this one would undo what the user just did.
+    if (save === planSaves) setState({ planItems: res.items });
+  } catch (err) {
+    toastFailure(err);
+  }
+}
+
+let insertSeq = 1;
+export function insertIntoComposer(text: string): void {
+  if (POPOUT_TAB) {
+    void window.kumo.app.workbench.relay({ kind: "insert", text });
+    return;
+  }
+  setState({ composerInsert: { text, seq: insertSeq++ }, view: "chat" });
 }

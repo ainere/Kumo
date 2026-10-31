@@ -5,6 +5,36 @@ export const dirname = (path: string): string => path.replace(/[\\/]+[^\\/]+[\\/
 
 /** Workspace paths from different sources: compare without case or slash style (Windows). */
 const normDir = (path: string) => path.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+function fileMatch(path: string, name: string, query: string): number | null {
+  if (name === query) return 0;
+  if (name.startsWith(query)) return 1;
+  if (name.includes(query)) return 2;
+  if (path.includes(query)) return 3;
+  let at = -1;
+  for (const ch of query) {
+    at = path.indexOf(ch, at + 1);
+    if (at === -1) return null;
+  }
+  return 4;
+}
+
+/**
+ * The best matches for what was typed: the file's name over its folders, the
+ * start of a name over the middle, and letters in order ("wbjs" finds
+ * workbench.js) last. Shorter paths win ties.
+ */
+export function rankFiles<T extends { path: string; name: string }>(files: T[], query: string, limit: number): T[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return files.slice(0, limit);
+  const scored: Array<{ file: T; score: number }> = [];
+  for (const file of files) {
+    const score = fileMatch(file.path.toLowerCase(), file.name.toLowerCase(), q);
+    if (score !== null) scored.push({ file, score });
+  }
+  scored.sort((a, b) => a.score - b.score || a.file.path.length - b.file.path.length);
+  return scored.slice(0, limit).map((s) => s.file);
+}
+
 export const sameDir = (a: string | null | undefined, b: string | null | undefined): boolean =>
   Boolean(a && b && normDir(a) === normDir(b));
 
