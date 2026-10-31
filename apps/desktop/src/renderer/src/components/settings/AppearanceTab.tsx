@@ -575,6 +575,7 @@ export function AppearanceTab() {
   const scene = prefs?.scene ?? "clouds";
   const broken = user.filter((u) => u.error).length;
   const themeList = useStore((s) => s.themes);
+  const panelList = useStore((s) => s.panels);
   const activeTheme = themeList?.themes.find((t) => t.id === prefs?.theme);
 
   return (
@@ -687,6 +688,21 @@ export function AppearanceTab() {
             ]}
             onChange={(dock) => void save({ dock })}
           />
+        </Row>
+        <Row
+          label="Custom panels"
+          part="custom-panels"
+          hint={
+            <>
+              Your own Workbench tabs, from <span className="settings-path">{panelList?.dir ?? "your panels folder"}</span>.
+              Start one with <code>kumo panel new</code>.
+            </>
+          }
+        >
+          <button type="button" className="btn sm" onClick={() => void window.kumo.app.panels.openFolder()}>
+            <IconFolder />
+            Open folder
+          </button>
         </Row>
       </Section>
 

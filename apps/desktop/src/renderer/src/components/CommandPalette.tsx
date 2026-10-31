@@ -21,7 +21,7 @@ import {
 } from "../store";
 import { useAppliedTheme } from "../theme";
 import { hasOpenDialog } from "./settings/controls";
-import { WORKBENCH_TAB_DEFS, workbenchTabLabel } from "./workbench/Workbench";
+import { useWorkbenchTabs, workbenchTabLabel } from "./workbench/Workbench";
 import { useFileSearch } from "./workbench/useFileSearch";
 
 const isMac = window.kumo.app.platform === "darwin";
@@ -45,6 +45,7 @@ export function CommandPalette() {
   const session = useStore((s) => s.session);
   const visible = useStore(workbenchVisible);
   const appliedTheme = useAppliedTheme();
+  const tabs = useWorkbenchTabs();
 
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -99,7 +100,7 @@ export function CommandPalette() {
     const items: CommandItem[] = [];
     if (session) {
       const current = prefs?.workbenchTab ?? "workers";
-      for (const t of WORKBENCH_TAB_DEFS) {
+      for (const t of tabs) {
         items.push({ id: `wb-${t.id}`, group: "Workbench", label: `Open ${t.label}`, run: () => setWorkbenchTab(t.id) });
       }
       items.push(
@@ -156,7 +157,7 @@ export function CommandPalette() {
       { id: "settings-doctor", group: "Settings", label: "Doctor", run: () => openSettings("doctor") }
     );
     return items;
-  }, [prefs?.workbenchSplitTab, prefs?.workbenchTab, session, appliedTheme.mode, visible]);
+  }, [prefs?.workbenchSplitTab, prefs?.workbenchTab, session, appliedTheme.mode, visible, tabs]);
 
   const filteredCommands = useMemo(() => {
     const q = query.trim().toLowerCase();

@@ -27,6 +27,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { BrowserViewState, WorkbenchMessage, WorkbenchTab } from "../main/index";
 import type { SceneList } from "../main/user-scenes";
 import type { ThemeList } from "../main/user-themes";
+import type { PanelList } from "../main/user-panels";
 
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void };
 type Request = { id: number; command: string; args: unknown };
@@ -96,6 +97,11 @@ ipcRenderer.on("kumo:themes-changed", () => {
   for (const listener of themeListeners) listener();
 });
 
+const panelListeners = new Set<() => void>();
+ipcRenderer.on("kumo:panels-changed", () => {
+  for (const listener of panelListeners) listener();
+});
+
 const popoutListeners = new Set<(tabs: WorkbenchTab[]) => void>();
 ipcRenderer.on("kumo:popouts-changed", (_event, tabs: WorkbenchTab[]) => {
   for (const listener of popoutListeners) listener(tabs);
@@ -159,6 +165,14 @@ contextBridge.exposeInMainWorld("kumo", {
       onChanged(listener: () => void): () => void {
         themeListeners.add(listener);
         return () => themeListeners.delete(listener);
+      },
+    },
+    panels: {
+      list: (): Promise<PanelList> => ipcRenderer.invoke("kumo:app", { action: "panels", op: "list" }),
+      openFolder: (): Promise<void> => ipcRenderer.invoke("kumo:app", { action: "panels", op: "openFolder" }),
+      onChanged(listener: () => void): () => void {
+        panelListeners.add(listener);
+        return () => panelListeners.delete(listener);
       },
     },
     workbench: {

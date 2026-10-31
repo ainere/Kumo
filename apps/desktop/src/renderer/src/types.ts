@@ -269,7 +269,22 @@ export interface ThemeList {
 
 // ── the Workbench ──
 
-export type WorkbenchTab = "workers" | "files" | "diff" | "terminal" | "browser" | "plan";
+/** A built-in tab, or `panel:<id>` for a custom panel. */
+export type WorkbenchTab = "workers" | "files" | "diff" | "terminal" | "browser" | "plan" | `panel:${string}`;
+
+export interface UserPanel {
+  id: string;
+  name: string;
+  /** Where its page is served. */
+  src: string;
+  /** Why part of it was left out, else null. */
+  error: string | null;
+}
+
+export interface PanelList {
+  dir: string;
+  panels: UserPanel[];
+}
 
 export interface WorkspaceFileEntry {
   path: string;

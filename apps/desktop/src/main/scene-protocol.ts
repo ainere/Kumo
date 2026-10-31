@@ -38,6 +38,7 @@
  */
 
 import { protocol } from "electron";
+import { PANEL_SCHEME } from "./user-panels";
 import { readUserScene, scanUserScenes } from "./user-scenes";
 import runtime from "./scenes/runtime.js?raw";
 import clouds from "./scenes/clouds.js?raw";
@@ -94,9 +95,11 @@ const BASE_HEADERS = {
   "Cache-Control": "no-store",
 };
 
-/** Before app ready: the scheme needs standard-URL and secure-context rules. */
-export function registerSceneScheme(): void {
-  protocol.registerSchemesAsPrivileged([{ scheme: SCENE_SCHEME, privileges: { standard: true, secure: true } }]);
+/** Before app ready, and only once: both frame schemes need standard-URL and secure-context rules. */
+export function registerFrameSchemes(): void {
+  protocol.registerSchemesAsPrivileged(
+    [SCENE_SCHEME, PANEL_SCHEME].map((scheme) => ({ scheme, privileges: { standard: true, secure: true } }))
+  );
 }
 
 export function handleSceneScheme(): void {

@@ -32,6 +32,7 @@ import { statusCommand } from "./commands/status.js";
 import { graphCommand } from "./commands/graph.js";
 import { roleListCommand, roleSetCommand, roleAddCommand, roleRemoveCommand } from "./commands/role.js";
 import { themeNewCommand } from "./commands/theme.js";
+import { panelNewCommand } from "./commands/panel.js";
 import { badge } from "./utils/ui.js";
 
 export { VERSION };
@@ -128,6 +129,13 @@ export function createCli() {
     .command("new <name>")
     .description("Create a starter theme in the themes folder, to pick in Settings › Appearance")
     .action(failing((name) => themeNewCommand(name)));
+
+  // Panel command: start a desktop custom panel
+  const panel = program.command("panel").description("Work with desktop custom panels");
+  panel
+    .command("new <name>")
+    .description("Create a starter panel in the panels folder; it shows up as a Workbench tab")
+    .action(failing((name) => panelNewCommand(name)));
 
   // Role command: which model runs the lead and each worker role
   const role = program

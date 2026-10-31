@@ -40,7 +40,14 @@ const ModeColorsSchema = z
   .strict();
 
 export const WORKBENCH_TABS = /** @type {const} */ (["workers", "files", "diff", "terminal", "browser", "plan"]);
-const WorkbenchTabSchema = z.enum(WORKBENCH_TABS);
+const PANEL_TAB = /^panel:[a-z0-9][a-z0-9-]{0,63}$/;
+/** @typedef {(typeof WORKBENCH_TABS)[number] | `panel:${string}`} WorkbenchTabId */
+/** A built-in tab, or a custom panel from the user's panels folder. */
+const WorkbenchTabSchema = /** @type {z.ZodType<WorkbenchTabId>} */ (
+  /** @type {unknown} */ (
+    z.custom((value) => typeof value === "string" && (WORKBENCH_TABS.some((tab) => tab === value) || PANEL_TAB.test(value)))
+  )
+);
 
 export const PrefsSchema = z.object({
   mode: z.enum(["system", "light", "dark"]),

@@ -45,6 +45,7 @@ import type {
   Toast,
   ToolView,
   Turn,
+  PanelList,
   ThemeList,
   TurnOutcome,
   WorkbenchTab,
@@ -127,6 +128,10 @@ export interface State {
   dialogOpen: boolean;
   /** The theme packages in the user's folder; null until read. */
   themes: ThemeList | null;
+  /** The custom panels in the user's folder; null until read. */
+  panels: PanelList | null;
+  /** Counts changes in the panels folder, so an edited panel's frame reloads. */
+  panelsRevision: number;
 }
 
 /** What a project's Workbench holds, cleared on moving to another project. */
@@ -145,6 +150,7 @@ const WORKBENCH_TABS: readonly WorkbenchTab[] = ["workers", "files", "diff", "te
 
 function readPopoutTab(): WorkbenchTab | null {
   const raw = new URLSearchParams(window.location.search).get("popout");
+  if (raw && /^panel:[a-z0-9-]+$/.test(raw)) return raw as WorkbenchTab;
   return WORKBENCH_TABS.find((tab) => tab === raw) ?? null;
 }
 
@@ -184,6 +190,8 @@ let state: State = {
   workbenchResizing: false,
   dialogOpen: false,
   themes: null,
+  panels: null,
+  panelsRevision: 0,
   ...EMPTY_WORKBENCH,
 };
 
@@ -1164,14 +1172,21 @@ async function refreshChatList(): Promise<void> {
   setState({ chats: await invoke<Chat[]>("session.listChats", { sessionId: state.session.id }) });
 }
 
-// ── theme packages ──
+// ── theme packages and custom panels ──
 
 async function refreshThemes(): Promise<void> {
   setState({ themes: await window.kumo.app.themes.list() });
 }
 
+async function refreshPanels(): Promise<void> {
+  const panels = await window.kumo.app.panels.list();
+  setState((s) => ({ panels, panelsRevision: s.panelsRevision + 1 }));
+}
+
 void refreshThemes().catch(() => {});
 window.kumo.app.themes.onChanged(() => void refreshThemes().catch(() => {}));
+void refreshPanels().catch(() => {});
+window.kumo.app.panels.onChanged(() => void refreshPanels().catch(() => {}));
 
 // ── the Workbench ──
 

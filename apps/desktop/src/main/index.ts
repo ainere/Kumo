@@ -39,7 +39,9 @@ import {
 import type { UtilityProcess } from "electron";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SCENE_SCHEME, handleSceneScheme, registerSceneScheme } from "./scene-protocol";
+import { handlePanelScheme } from "./panel-protocol";
+import { SCENE_SCHEME, handleSceneScheme, registerFrameSchemes } from "./scene-protocol";
+import { PANEL_SCHEME, ensureUserPanelsDir, listUserPanels, watchUserPanels } from "./user-panels";
 import { ensureUserScenesDir, listUserScenes, watchUserScenes } from "./user-scenes";
 import { ensureUserThemesDir, listUserThemes, watchUserThemes } from "./user-themes";
 
@@ -51,13 +53,14 @@ const engineRoot = process.env.KUMO_ENGINE_ROOT || resolve(here, "../../../../sr
 const GROUND = { dark: "#05070D", light: "#F5F6F8" } as const;
 
 export const WORKBENCH_TABS = ["workers", "files", "diff", "terminal", "browser", "plan"] as const;
-export type WorkbenchTab = (typeof WORKBENCH_TABS)[number];
+export type WorkbenchTab = (typeof WORKBENCH_TABS)[number] | `panel:${string}`;
 
 let win: BrowserWindow | null = null;
 let engine: UtilityProcess | null = null;
 let quitting = false;
 let stopWatchingScenes: (() => void) | null = null;
 let stopWatchingThemes: (() => void) | null = null;
+let stopWatchingPanels: (() => void) | null = null;
 const popoutWindows = new Map<WorkbenchTab, BrowserWindow>();
 /** Shown notifications: one that gets garbage collected loses its click. */
 const liveNotifications = new Set<Notification>();
@@ -68,7 +71,7 @@ let browserError: BrowserLoadError | null = null;
 /** The main window's session: pop-outs show this one, they never start their own. */
 let sharedSession: string | null = null;
 
-registerSceneScheme();
+registerFrameSchemes();
 
 const effectiveMode = (): "dark" | "light" => (nativeTheme.shouldUseDarkColors ? "dark" : "light");
 
@@ -247,10 +250,11 @@ function attachWindowGuards(target: BrowserWindow): void {
   target.webContents.on("will-navigate", (event, url) => {
     if (url !== target.webContents.getURL()) event.preventDefault();
   });
-  // A scene may only ever show its own page; it can't navigate its frame
-  // somewhere that has network access.
+  // A scene or panel may only ever show its own pages; it can't navigate its
+  // frame somewhere that has network access.
   target.webContents.on("will-frame-navigate", (event) => {
-    if (!event.isMainFrame && !event.url.startsWith(`${SCENE_SCHEME}://`)) event.preventDefault();
+    if (event.isMainFrame) return;
+    if (!event.url.startsWith(`${SCENE_SCHEME}://`) && !event.url.startsWith(`${PANEL_SCHEME}://`)) event.preventDefault();
   });
 }
 
@@ -377,6 +381,7 @@ type AppRequest =
   | { action: "window"; op: WindowOp }
   | { action: "scenes"; op: SceneOp }
   | { action: "themes"; op: SceneOp }
+  | { action: "panels"; op: SceneOp }
   | { action: "workbench"; op: WorkbenchOp; tab?: WorkbenchTab; sessionId?: string | null; message?: WorkbenchMessage }
   | { action: "browser"; op: BrowserOp; url?: string; bounds?: BrowserBounds };
 
@@ -386,7 +391,7 @@ const WORKBENCH_OPS: readonly string[] = ["popout", "closePopout", "listPopouts"
 const BROWSER_OPS: readonly string[] = ["navigate", "bounds", "back", "forward", "reload", "state"];
 
 function isWorkbenchTab(v: unknown): v is WorkbenchTab {
-  return typeof v === "string" && (WORKBENCH_TABS as readonly string[]).includes(v);
+  return typeof v === "string" && ((WORKBENCH_TABS as readonly string[]).includes(v) || /^panel:[a-z0-9][a-z0-9-]{0,63}$/.test(v));
 }
 
 function isWorkbenchMessage(v: unknown): v is WorkbenchMessage {
@@ -408,7 +413,7 @@ function isAppRequest(value: unknown): value is AppRequest {
   if (v.action === "pickFolder") return true;
   if (v.action === "notify") return typeof v.title === "string" && typeof v.body === "string";
   if (v.action === "window") return typeof v.op === "string" && WINDOW_OPS.includes(v.op);
-  if (v.action === "scenes" || v.action === "themes") return typeof v.op === "string" && SCENE_OPS.includes(v.op);
+  if (v.action === "scenes" || v.action === "themes" || v.action === "panels") return typeof v.op === "string" && SCENE_OPS.includes(v.op);
   if (v.action === "workbench") {
     if (typeof v.op !== "string" || !WORKBENCH_OPS.includes(v.op)) return false;
     if (v.op === "popout" || v.op === "closePopout") return isWorkbenchTab(v.tab);
@@ -464,6 +469,12 @@ ipcMain.handle("kumo:app", async (event, request: unknown) => {
   if (request.action === "themes") {
     if (request.op === "list") return listUserThemes();
     const failure = await shell.openPath(ensureUserThemesDir());
+    if (failure) throw new Error(failure);
+    return;
+  }
+  if (request.action === "panels") {
+    if (request.op === "list") return listUserPanels();
+    const failure = await shell.openPath(ensureUserPanelsDir());
     if (failure) throw new Error(failure);
     return;
   }
@@ -558,6 +569,12 @@ app.whenReady().then(() => {
   browserSes.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   browserSes.setPermissionCheckHandler(() => false);
   handleSceneScheme();
+  handlePanelScheme();
+  stopWatchingPanels = watchUserPanels(() => {
+    for (const target of [win, ...popoutWindows.values()]) {
+      if (target && !target.isDestroyed()) target.webContents.send("kumo:panels-changed");
+    }
+  });
   stopWatchingThemes = watchUserThemes(() => {
     for (const target of [win, ...popoutWindows.values()]) {
       if (target && !target.isDestroyed()) target.webContents.send("kumo:themes-changed");
@@ -583,6 +600,8 @@ app.on("before-quit", (event) => {
   stopWatchingScenes = null;
   stopWatchingThemes?.();
   stopWatchingThemes = null;
+  stopWatchingPanels?.();
+  stopWatchingPanels = null;
   if (quitting || !engine) {
     quitting = true;
     return;

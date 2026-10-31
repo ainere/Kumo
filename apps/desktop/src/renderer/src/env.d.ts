@@ -28,6 +28,14 @@ interface KumoBridge {
       /** Something in the themes folder changed. */
       onChanged(listener: () => void): () => void;
     };
+    panels: {
+      /** The user's panels folder (created if missing) and the panels in it. */
+      list(): Promise<import("./types").PanelList>;
+      /** Opens the panels folder in the system file manager. */
+      openFolder(): Promise<void>;
+      /** Something in the panels folder changed. */
+      onChanged(listener: () => void): () => void;
+    };
     workbench: {
       popout(tab: import("./types").WorkbenchTab): Promise<import("./types").WorkbenchTab[]>;
       closePopout(tab: import("./types").WorkbenchTab): Promise<import("./types").WorkbenchTab[]>;

@@ -1,7 +1,8 @@
-import { Suspense, lazy, useEffect, useLayoutEffect, useRef } from "react";
+import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import {
   closePopoutTab,
+  getState,
   popoutWorkbenchTab,
   previewPrefs,
   setState,
@@ -15,6 +16,7 @@ import { WorkersPanel, useEdgeFade } from "../WorkersPanel";
 import { BrowserTab } from "./BrowserTab";
 import { DiffTab } from "./DiffTab";
 import { FilesTab } from "./FilesTab";
+import { PanelTab } from "./PanelTab";
 import { PlanTab } from "./PlanTab";
 
 // xterm is big and most sessions never open the Terminal tab.
@@ -29,8 +31,24 @@ export const WORKBENCH_TAB_DEFS: ReadonlyArray<{ id: WorkbenchTab; label: string
   { id: "plan", label: "Plan" },
 ];
 
+const panelIdOf = (tab: WorkbenchTab): string | null => (tab.startsWith("panel:") ? tab.slice("panel:".length) : null);
+
 export function workbenchTabLabel(tab: WorkbenchTab): string {
+  const panelId = panelIdOf(tab);
+  if (panelId) return getState().panels?.panels.find((p) => p.id === panelId)?.name ?? panelId;
   return WORKBENCH_TAB_DEFS.find((d) => d.id === tab)?.label ?? tab;
+}
+
+/** The built-in tabs, then the user's own panels. */
+export function useWorkbenchTabs(): ReadonlyArray<{ id: WorkbenchTab; label: string }> {
+  const panels = useStore((s) => s.panels);
+  return useMemo(
+    () => [
+      ...WORKBENCH_TAB_DEFS,
+      ...(panels?.panels ?? []).map((p): { id: WorkbenchTab; label: string } => ({ id: `panel:${p.id}`, label: p.name })),
+    ],
+    [panels]
+  );
 }
 
 const DEFAULT_WIDTH = 420;
@@ -71,6 +89,8 @@ function WorkbenchPaneBody({
       </div>
     );
   }
+  const panelId = panelIdOf(tab);
+  if (panelId) return <PanelTab panelId={panelId} />;
   switch (tab) {
     case "workers":
       return <WorkersPanel dock={dock} />;
@@ -217,8 +237,13 @@ export function Workbench({ dock }: { dock: Exclude<Prefs["dock"], "hidden"> }) 
   );
   const openTasks = useStore((s) => s.planItems.filter((i) => !i.done).length);
 
-  const primaryTab: WorkbenchTab = prefs?.workbenchTab ?? "workers";
-  const rawSplitTab = prefs?.workbenchSplitTab ?? null;
+  const tabs = useWorkbenchTabs();
+  const panelsRead = useStore((s) => s.panels !== null);
+  // A panel removed from its folder gives its place back.
+  const known = (tab: WorkbenchTab) => !panelsRead || tabs.some((t) => t.id === tab);
+  const savedTab: WorkbenchTab = prefs?.workbenchTab ?? "workers";
+  const primaryTab: WorkbenchTab = known(savedTab) ? savedTab : "workers";
+  const rawSplitTab = prefs?.workbenchSplitTab && known(prefs.workbenchSplitTab) ? prefs.workbenchSplitTab : null;
   const splitTab: WorkbenchTab | null =
     rawSplitTab && rawSplitTab !== primaryTab ? rawSplitTab : rawSplitTab ? (primaryTab === "files" ? "diff" : "files") : null;
 
@@ -306,7 +331,7 @@ export function Workbench({ dock }: { dock: Exclude<Prefs["dock"], "hidden"> }) 
 
       <div className="wb-nav-bar" data-part="workbench-nav">
         <TabStrip
-          tabs={WORKBENCH_TAB_DEFS}
+          tabs={tabs}
           active={primaryTab}
           pane="primary"
           label="Workbench panels"
@@ -337,7 +362,7 @@ export function Workbench({ dock }: { dock: Exclude<Prefs["dock"], "hidden"> }) 
           <div className="wb-pane wb-pane-split" data-part="workbench-pane" data-pane="split" data-tab={splitTab}>
             <div className="wb-split-head">
               <TabStrip
-                tabs={WORKBENCH_TAB_DEFS.filter((t) => t.id !== primaryTab)}
+                tabs={tabs.filter((t) => t.id !== primaryTab)}
                 active={splitTab}
                 pane="split"
                 label="Second workbench panel"

@@ -772,6 +772,24 @@
   margin: 0;
 }
 
+/* A custom panel: the frame fills the tab, and draws what it likes inside */
+.wb-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.wb-panel-frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--chip);
+}
+
 /* Plan Tab */
 .wb-plan-progress {
   height: 4px;

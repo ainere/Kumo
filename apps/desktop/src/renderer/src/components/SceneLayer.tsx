@@ -17,7 +17,8 @@ type Rect = { x: number; y: number; w: number; h: number };
 type Layout = { workers: Rect | null; composer: Rect | null };
 type Theme = { mode: "dark" | "light"; grid: boolean; accent: string; reducedMotion: boolean };
 
-function feedEvent(e: KumoEvent): Record<string, unknown> | null {
+/** What a scene or a custom panel is told of an event: activity only, never chat text. */
+export function feedEvent(e: KumoEvent): Record<string, unknown> | null {
   switch (e.type) {
     case "turn.started":
     case "turn.completed":
