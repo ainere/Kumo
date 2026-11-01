@@ -55,13 +55,25 @@ const LeadMessage = memo(function LeadMessage({ message }: { message: Message })
     : settings
       ? `${providerLabel(settings.orchestratorProvider)} · ${settings.orchestratorModel}`
       : "lead";
+  const trace = message.reasoning.trim();
+  const activity = message.streaming ? trace.slice(trace.lastIndexOf("\n") + 1) : "";
   return (
     <article className="msg-lead glass" data-part="message-lead" aria-busy={message.streaming}>
       <div className="msg-meta">
         <span className={message.streaming ? "dot pulse" : "dot"} />
         <span>{lead}</span>
-        {message.thinking && <span className="thinking">thinking…</span>}
+        {(message.thinking || activity !== "") && (
+          <span className="thinking" data-part="activity">
+            {activity || "thinking…"}
+          </span>
+        )}
       </div>
+      {trace !== "" && (
+        <details className="msg-trace" data-part="trace">
+          <summary>Trace</summary>
+          <div className="msg-trace-body">{trace}</div>
+        </details>
+      )}
       {message.parts.map((part, i) =>
         part.kind === "tool" ? <ToolCard key={part.toolId} toolId={part.toolId} /> : <Markdown key={i} text={part.text} />
       )}

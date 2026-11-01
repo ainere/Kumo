@@ -56,6 +56,51 @@ function workerCallOf(update) {
   };
 }
 
+/** How the tools `agy` works with read in a trace. Anything else goes by its own name. */
+const ACTIVITY_VERBS = {
+  read_file: "Reading",
+  view_file: "Reading",
+  list_dir: "Listing",
+  grep_search: "Searching for",
+  find_by_name: "Looking for",
+  run_command: "Running",
+  write_to_file: "Writing",
+  replace_file_content: "Editing",
+  multi_replace_file_content: "Editing",
+  sed_file: "Editing",
+  read_url_content: "Reading",
+  search_web: "Searching the web for",
+};
+
+/** The parameters that say what a tool is working on, best first. */
+const ACTIVITY_TARGETS = ["CommandLine", "Command", "Query", "Pattern", "SearchPath", "AbsolutePath", "TargetFile", "Path", "DirectoryPath", "Url"];
+
+const MAX_ACTIVITY_CHARS = 90;
+
+/**
+ * A line saying what the lead is doing. `agy` keeps its thinking to itself and
+ * reports only how long it took, but it does say which tool it's on, so this is
+ * all a Gemini lead's trace can hold. Worker calls have cards of their own.
+ *
+ * @param {Record<string, any>} update
+ * @returns {string|null}
+ */
+function activityLine(update) {
+  if (update.step_type === "agent_response" && update.state === "DONE") {
+    const seconds = Math.round(update.duration_seconds ?? 0);
+    return update.usage?.thinking_tokens > 0 && seconds > 0 ? `Thought for ${seconds}s` : null;
+  }
+  if (update.step_type !== "tool" || update.state !== "ACTIVE" || update.tool_name === "call_mcp_tool") return null;
+  const params = update.tool_info?.parameters ?? {};
+  const key = ACTIVITY_TARGETS.find((name) => typeof params[name] === "string" && params[name]);
+  const target = key ? params[key] : "";
+  // Reading the worker tools' own definitions isn't work on the task.
+  if (/[\\/]antigravity-cli[\\/]mcp[\\/]/.test(target)) return null;
+  const what = key && /path|file/i.test(key) ? path.win32.basename(target) : target.replace(/\s+/g, " ").trim();
+  const verb = ACTIVITY_VERBS[update.tool_name] ?? String(update.tool_name ?? "Working").replaceAll("_", " ");
+  return `${verb} ${what.slice(0, MAX_ACTIVITY_CHARS)}`.trim();
+}
+
 function getTaskSignature(raw) {
   if (!raw) return "";
   if (typeof raw === "string") {
@@ -370,9 +415,13 @@ export class AgyAppClient extends EventEmitter {
         this.emit("reasoning", update.text_delta || update.thinking || "");
       }
 
+      const activity = activityLine(update);
+      if (activity) this.emit("reasoning", `${activity}\n`);
+
       // 3. Tool invocation
       const isToolEvent = update.step_type === "tool_call" || update.tool_call || update.step_type === "call_mcp_tool";
-      if (isToolEvent && update.state === "DONE") {
+      const failed = update.state === "ERROR";
+      if (isToolEvent && (update.state === "DONE" || failed)) {
         const toolName = update.tool_name || update.tool || update.name || "worker_tool";
         let callId = update.id || update.call_id;
         const queue = this._pendingToolCallIds.get(toolName) || [];
@@ -405,6 +454,7 @@ export class AgyAppClient extends EventEmitter {
             type: "mcp_tool_call",
             name: toolName,
             arguments: update.tool_input || update.args || {},
+            ...(failed ? { status: "failed", error: update.tool_info?.error?.message || "the worker call failed" } : {}),
           },
         });
       } else if (isToolEvent) {

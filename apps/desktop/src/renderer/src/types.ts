@@ -228,6 +228,8 @@ export interface Message {
   turnId: string | null;
   streaming: boolean;
   thinking: boolean;
+  /** What the lead thought or did along the way: its reasoning, or for a lead that keeps that private, its steps. */
+  reasoning: string;
   failed: string | null;
 }
 

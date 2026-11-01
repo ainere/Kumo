@@ -326,6 +326,9 @@ export function dismissToast(id: number): void {
   setState((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
 }
 
+/** What one message keeps of a live trace: as much as a saved turn does. */
+const MAX_TRACE_CHARS = 20_000;
+
 const message = (id: string, kind: Message["kind"], text: string, turnId: string | null = null): Message => ({
   id,
   kind,
@@ -334,6 +337,7 @@ const message = (id: string, kind: Message["kind"], text: string, turnId: string
   turnId,
   streaming: false,
   thinking: false,
+  reasoning: "",
   failed: null,
 });
 
@@ -372,7 +376,11 @@ function restoreLog(log: Turn[]): Restored {
       out.toolOrder.push(toolId);
       toolParts.push({ kind: "tool", toolId });
     }
-    out.messages.push(message(`u${i}`, "user", turn.prompt, turnId), { ...lead, parts: [...toolParts, ...lead.parts] });
+    out.messages.push(message(`u${i}`, "user", turn.prompt, turnId), {
+      ...lead,
+      parts: [...toolParts, ...lead.parts],
+      reasoning: turn.reasoning ?? "",
+    });
     if (turn.replayed || turn.provider) {
       out.turnMeta[turnId] = { replayed: Boolean(turn.replayed), provider: turn.provider ?? null, model: turn.model ?? null };
     }
@@ -1134,7 +1142,7 @@ export function handleEvent(event: KumoEvent): void {
       updateLead(event.turnId, (m) => ({ ...m, text: m.text + event.text, parts: appendText(m.parts, event.text), thinking: false }));
       break;
     case "turn.reasoning":
-      updateLead(event.turnId, (m) => ({ ...m, thinking: m.text === "" }));
+      updateLead(event.turnId, (m) => ({ ...m, thinking: m.text === "", reasoning: (m.reasoning + event.text).slice(-MAX_TRACE_CHARS) }));
       break;
     case "turn.completed":
       updateLead(event.turnId, (m) => ({ ...m, streaming: false, thinking: false }));
