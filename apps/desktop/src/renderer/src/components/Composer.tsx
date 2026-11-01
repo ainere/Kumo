@@ -11,8 +11,9 @@ import {
   updateSettings,
   useStore,
 } from "../store";
+import { randomPlaceholder } from "../composerPlaceholders";
 import type { ComposerAttachment } from "../types";
-import { IconArrowUp, IconCheck, IconClose, IconFile, IconStop, SafetyIcon } from "./icons";
+import { IconArrowUp, IconCheck, IconClose, IconFile, IconPlus, IconStop, SafetyIcon } from "./icons";
 import { useFileSearch } from "./workbench/useFileSearch";
 
 /** The engine's limits (src/core/attachments.js), checked here so a file is turned down before it's read. */
@@ -75,8 +76,12 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
   const [mentionIndex, setMentionIndex] = useState(0);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [dragging, setDragging] = useState(false);
+  const [safetyPlacement, setSafetyPlacement] = useState<"below" | "above">("below");
+  const [placeholder, setPlaceholder] = useState(randomPlaceholder);
   const input = useRef<HTMLTextAreaElement>(null);
+  const filePicker = useRef<HTMLInputElement>(null);
   const safetyMenuRef = useRef<HTMLDivElement>(null);
+  const safetyMenu = useRef<HTMLDivElement>(null);
   const lastInsertSeq = useRef(0);
   const mentionMenu = useRef<HTMLDivElement>(null);
 
@@ -136,6 +141,17 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
       window.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("keydown", onKeyDown, true);
     };
+  }, [safetyMenuOpen]);
+
+  // The options sit under the box, so the menu opens down into the room there; at the bottom of a
+  // chat there's none, and it opens up instead. Measured before paint, so it never flashes.
+  useLayoutEffect(() => {
+    if (!safetyMenuOpen) return;
+    const wrap = safetyMenuRef.current;
+    const menu = safetyMenu.current;
+    if (!wrap || !menu) return;
+    const room = window.innerHeight - wrap.getBoundingClientRect().bottom;
+    setSafetyPlacement(room >= menu.offsetHeight + 16 ? "below" : "above");
   }, [safetyMenuOpen]);
 
   // Settings covers the chat: a menu left open would still be open when it comes back.
@@ -200,6 +216,7 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
     const attached = attachments;
     setText("");
     setAttachments([]);
+    setPlaceholder(randomPlaceholder);
     void send(prompt, attached).then((sent) => {
       if (sent) return;
       // It never started, so nothing should be lost: a pasted image exists nowhere else.
@@ -270,139 +287,180 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
             ))}
           </div>
         )}
-        <label className="sr-only" htmlFor="prompt">
-          Message
-        </label>
-        <textarea
-          id="prompt"
-          ref={input}
-          rows={1}
-          value={text}
-          autoFocus={autoFocus}
-          placeholder={busy ? "Working… press Esc to stop" : "Ask kumo to build, fix or explain something"}
-          onChange={(e) => {
-            const val = e.target.value;
-            setText(val);
-            const caret = e.target.selectionStart ?? val.length;
-            const prefix = val.slice(0, caret);
-            const match = /(?:^|\s)@([a-zA-Z0-9_./-]*)$/.exec(prefix);
-            if (match) {
-              const q = match[1];
-              const atPos = caret - q.length - 1;
-              setMentionQuery({ query: q, start: atPos, end: caret });
-              setMentionIndex(0);
-              if (fileCount === 0) void refreshWorkspaceFiles();
-            } else {
-              setMentionQuery(null);
-            }
-          }}
-          onKeyDown={(e) => {
-            if (mentionQuery && mentionCandidates.length > 0) {
-              const len = mentionCandidates.length;
-              const cur = Math.min(mentionIndex, len - 1);
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setMentionIndex((cur + 1) % len);
-                return;
-              }
-              if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setMentionIndex((cur - 1 + len) % len);
-                return;
-              }
-              if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                applyMention(mentionCandidates[cur].path);
-                return;
-              }
-              if (e.key === "Escape") {
-                e.preventDefault();
-                setMentionQuery(null);
-                return;
-              }
-            }
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              submit();
-            } else if (e.key === "Escape" && busy) {
-              e.preventDefault();
-              void interrupt();
-            }
-          }}
-        />
         <div className="composer-row">
-          {settings && (
-            <button
-              type="button"
-              className="composer-btn lead-btn"
-              aria-label={`Lead model: ${modelDisplayName(settings.orchestratorModel)}`}
-              onClick={() => openSettings("models")}
-            >
-              Lead: {modelDisplayName(settings.orchestratorModel)}
-            </button>
+          <input
+            ref={filePicker}
+            type="file"
+            multiple
+            hidden
+            tabIndex={-1}
+            onChange={(e) => {
+              const picked = [...(e.target.files ?? [])];
+              // Cleared so picking the same file again still fires a change.
+              e.target.value = "";
+              if (picked.length === 0) return;
+              void addFiles(picked);
+              input.current?.focus();
+            }}
+          />
+          <button
+            type="button"
+            className="attach-btn"
+            aria-label="Attach files"
+            title="Attach files"
+            onClick={() => filePicker.current?.click()}
+          >
+            <IconPlus />
+          </button>
+          <label className="sr-only" htmlFor="prompt">
+            Message
+          </label>
+          <textarea
+            id="prompt"
+            ref={input}
+            rows={1}
+            value={text}
+            autoFocus={autoFocus}
+            placeholder={busy ? "Working… press Esc to stop" : placeholder}
+            onChange={(e) => {
+              const val = e.target.value;
+              setText(val);
+              const caret = e.target.selectionStart ?? val.length;
+              const prefix = val.slice(0, caret);
+              const match = /(?:^|\s)@([a-zA-Z0-9_./-]*)$/.exec(prefix);
+              if (match) {
+                const q = match[1];
+                const atPos = caret - q.length - 1;
+                setMentionQuery({ query: q, start: atPos, end: caret });
+                setMentionIndex(0);
+                if (fileCount === 0) void refreshWorkspaceFiles();
+              } else {
+                setMentionQuery(null);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (mentionQuery && mentionCandidates.length > 0) {
+                const len = mentionCandidates.length;
+                const cur = Math.min(mentionIndex, len - 1);
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setMentionIndex((cur + 1) % len);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setMentionIndex((cur - 1 + len) % len);
+                  return;
+                }
+                if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  applyMention(mentionCandidates[cur].path);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setMentionQuery(null);
+                  return;
+                }
+              }
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                submit();
+              } else if (e.key === "Escape" && busy) {
+                e.preventDefault();
+                void interrupt();
+              }
+            }}
+          />
+          {!text && (
+            <span className="hints">
+              <span className="hint">
+                <kbd>@</kbd>file
+              </span>
+              <span className="hint">
+                <kbd>↵</kbd>send
+              </span>
+              <span className="hint">
+                <kbd>⇧↵</kbd>new line
+              </span>
+            </span>
           )}
-          {settings && (
-            <div className="safety-dropdown-wrap" ref={safetyMenuRef}>
-              <button
-                type="button"
-                className="composer-btn safety-btn"
-                aria-label={`Safety mode: ${activeSafety.label}`}
-                aria-haspopup="menu"
-                aria-expanded={safetyMenuOpen}
-                onClick={() => setSafetyMenuOpen((o) => !o)}
-              >
-                <SafetyIcon type={activeSafety.iconType} className="safety-btn-icon" />
-                <span>{activeSafety.shortLabel}</span>
-              </button>
-              {safetyMenuOpen && (
-                <div className="safety-menu" role="menu" aria-label="Permission safety modes">
-                  {SAFETY_MODE_OPTIONS.map((opt) => {
-                    const isSelected = opt.id === activeSafety.id;
-                    return (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        className="safety-menu-item"
-                        data-active={isSelected}
-                        role="menuitemradio"
-                        aria-checked={isSelected}
-                        onClick={() => {
-                          setSafetyMenuOpen(false);
-                          void updateSettings({ safetyMode: opt.id });
-                        }}
-                      >
-                        <span className="safety-menu-icon">
-                          <SafetyIcon type={opt.iconType} />
-                        </span>
-                        <span className="safety-menu-content">
-                          <span className="safety-menu-title">{opt.label}</span>
-                          <span className="safety-menu-desc">{opt.desc}</span>
-                        </span>
-                        {isSelected && (
-                          <span className="safety-menu-check">
-                            <IconCheck />
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-          <span className="spacer" />
-          <span className="hints">@ file · ↵ send · ⇧↵ newline</span>
           {busy ? (
             <button type="button" className="send-btn" aria-label="Stop" onClick={() => void interrupt()}>
               <IconStop />
             </button>
           ) : (
-            <button type="submit" className="send-btn" aria-label="Send" disabled={!text.trim()}>
+            <button type="submit" className="send-btn" aria-label="Send" disabled={!text.trim() && attachments.length === 0}>
               <IconArrowUp />
             </button>
           )}
         </div>
       </form>
+      {settings && (
+        <div className="composer-options" data-part="composer-options">
+          <button
+            type="button"
+            className="composer-btn lead-btn"
+            aria-label={`Lead model: ${modelDisplayName(settings.orchestratorModel)}`}
+            onClick={() => openSettings("models")}
+          >
+            Lead: {modelDisplayName(settings.orchestratorModel)}
+          </button>
+          <div className="safety-dropdown-wrap" ref={safetyMenuRef}>
+            <button
+              type="button"
+              className="composer-btn safety-btn"
+              aria-label={`Safety mode: ${activeSafety.label}`}
+              aria-haspopup="menu"
+              aria-expanded={safetyMenuOpen}
+              onClick={() => setSafetyMenuOpen((o) => !o)}
+            >
+              <SafetyIcon type={activeSafety.iconType} className="safety-btn-icon" />
+              <span>{activeSafety.shortLabel}</span>
+            </button>
+            {safetyMenuOpen && (
+              <div
+                ref={safetyMenu}
+                className="safety-menu"
+                data-placement={safetyPlacement}
+                role="menu"
+                aria-label="Permission safety modes"
+              >
+                {SAFETY_MODE_OPTIONS.map((opt) => {
+                  const isSelected = opt.id === activeSafety.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      className="safety-menu-item"
+                      data-active={isSelected}
+                      role="menuitemradio"
+                      aria-checked={isSelected}
+                      onClick={() => {
+                        setSafetyMenuOpen(false);
+                        void updateSettings({ safetyMode: opt.id });
+                      }}
+                    >
+                      <span className="safety-menu-icon">
+                        <SafetyIcon type={opt.iconType} />
+                      </span>
+                      <span className="safety-menu-content">
+                        <span className="safety-menu-title">{opt.label}</span>
+                        <span className="safety-menu-desc">{opt.desc}</span>
+                      </span>
+                      {isSelected && (
+                        <span className="safety-menu-check">
+                          <IconCheck />
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
