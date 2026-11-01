@@ -39,7 +39,7 @@ const ModeColorsSchema = z
   .object({ ground: hex.optional(), text: hex.optional(), muted: hex.optional(), glass: hex.optional() })
   .strict();
 
-export const WORKBENCH_TABS = /** @type {const} */ (["workers", "files", "diff", "terminal", "browser", "plan"]);
+export const WORKBENCH_TABS = /** @type {const} */ (["workers", "files", "diff", "terminal", "browser", "plan", "compare"]);
 const PANEL_TAB = /^panel:[a-z0-9][a-z0-9-]{0,63}$/;
 /** @typedef {(typeof WORKBENCH_TABS)[number] | `panel:${string}`} WorkbenchTabId */
 /** A built-in tab, or a custom panel from the user's panels folder. */

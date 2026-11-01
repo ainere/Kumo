@@ -28,9 +28,13 @@ import type {
   Approval,
   CatalogProvider,
   Chat,
+  Checkpoint,
+  CheckpointView,
+  CompareState,
   DiffFile,
   GlobalConfig,
   InlineReviewComment,
+  KeepResult,
   KumoEvent,
   LocalhostServer,
   Message,
@@ -39,6 +43,7 @@ import type {
   Prefs,
   Project,
   Quotas,
+  RewindResult,
   SessionSnapshot,
   SettingsTab,
   SignInResult,
@@ -108,6 +113,14 @@ export interface State {
   selectedFile: WorkspaceFileContent | null;
   /** Working tree diff files in the active workspace. */
   workspaceDiff: DiffFile[];
+  /** The open chat's turn checkpoints, newest first. */
+  checkpoints: Checkpoint[];
+  /** A turn the Diff tab is showing instead of uncommitted changes. */
+  checkpointView: CheckpointView | null;
+  /** The session's open comparison. */
+  compare: CompareState | null;
+  /** The Compare tab is showing, with or without a comparison to show. */
+  compareOpen: boolean;
   /** Queued inline diff review comments to send back to the lead. */
   reviewComments: InlineReviewComment[];
   /** Detected localhost dev servers for the Browser tab. */
@@ -153,13 +166,17 @@ const EMPTY_WORKBENCH = {
   filesTruncated: false,
   selectedFile: null,
   workspaceDiff: [],
+  checkpoints: [],
+  checkpointView: null,
+  compare: null,
+  compareOpen: false,
   diffIsGit: true,
   diffTruncated: false,
   reviewComments: [],
   planItems: [],
 } satisfies Partial<State>;
 
-const WORKBENCH_TABS: readonly WorkbenchTab[] = ["workers", "files", "diff", "terminal", "browser", "plan"];
+const WORKBENCH_TABS: readonly WorkbenchTab[] = ["workers", "files", "diff", "terminal", "browser", "plan", "compare"];
 
 function readPopoutTab(): WorkbenchTab | null {
   const raw = new URLSearchParams(window.location.search).get("popout");
@@ -382,6 +399,8 @@ export async function refreshChat(): Promise<void> {
   if (state.session?.id !== session.id) return;
   setState({ ...restoreLog(log), chats, approvals: [] });
   void refreshPlan();
+  void refreshCheckpoints();
+  void refreshCompare();
 }
 
 async function refreshProjects(): Promise<void> {
@@ -860,7 +879,9 @@ export function closeSettings(): void {
   // After React has drawn the chat back (no longer inert), so the opener can take focus.
   if (opener) {
     setTimeout(() => {
-      if (opener.isConnected && !opener.closest("[inert]")) opener.focus({ preventScroll: true });
+      // Not over somewhere the user has already moved to: Enter meant for the composer would land on the opener.
+      const free = document.activeElement === null || document.activeElement === document.body;
+      if (free && opener.isConnected && !opener.closest("[inert]")) opener.focus({ preventScroll: true });
     }, 0);
   }
 }
@@ -1187,6 +1208,7 @@ export function handleEvent(event: KumoEvent): void {
     case "chat.changed": {
       const moved = state.session !== null && !sameDir(state.session.workspace, event.workspace);
       setState((s) => (s.session ? { session: { ...s.session, chatId: event.chatId, workspace: event.workspace } } : {}));
+      setState({ checkpointView: null });
       void refreshChat();
       if (moved) {
         setState(EMPTY_WORKBENCH);
@@ -1194,6 +1216,13 @@ export function handleEvent(event: KumoEvent): void {
       }
       break;
     }
+    case "checkpoints.changed":
+      void refreshCheckpoints();
+      break;
+    case "compare.changed":
+      // Over in every window showing it, a pop-out included.
+      setState({ compare: event.compare as CompareState | null, ...(event.compare === null ? { compareOpen: false } : {}) });
+      break;
     // Said once, in the main window: a pop-out sees the same events.
     case "session.warning":
       if (!POPOUT_TAB) toast("warning", event.message);
@@ -1235,6 +1264,10 @@ const SESSION_KEYS = [
   "filesTruncated",
   "selectedFile",
   "workspaceDiff",
+  "checkpoints",
+  "checkpointView",
+  "compare",
+  "compareOpen",
   "diffIsGit",
   "diffTruncated",
   "reviewComments",
@@ -1436,6 +1469,7 @@ async function attachSession(sessionId: string | null): Promise<void> {
       busy: snapshot.busy,
       quotas: snapshot.quotas,
       phase: "ready",
+      checkpointView: null,
       ...(moved ? EMPTY_WORKBENCH : {}),
     });
     void refreshWorkspaceFiles();
@@ -1618,6 +1652,138 @@ export async function refreshWorkspaceDiff(): Promise<void> {
     setState({ workspaceDiff: res.files, diffIsGit: res.git, diffTruncated: res.truncated });
   } catch {
     /* ignore background diff errors */
+  }
+}
+
+export async function refreshCheckpoints(): Promise<void> {
+  const session = state.session;
+  if (!session) return;
+  try {
+    const checkpoints = await invoke<Checkpoint[]>("session.checkpoints", { sessionId: session.id });
+    if (state.session?.id === session.id) setState({ checkpoints });
+  } catch {
+    /* ignore background refresh errors */
+  }
+}
+
+/** Load a diff for the Diff tab to show in place of uncommitted changes. */
+async function loadCheckpointView(checkpointId: string, mode: CheckpointView["mode"]): Promise<void> {
+  const session = state.session;
+  if (!session) return;
+  const { chatId } = session;
+  try {
+    const command = mode === "turn" ? "session.turnDiff" : "session.rewindPreview";
+    const res = await invoke<Omit<CheckpointView, "checkpointId" | "mode">>(command, { sessionId: session.id, checkpointId });
+    if (state.session?.id === session.id && state.session.chatId === chatId) setState({ checkpointView: { checkpointId, mode, ...res } });
+  } catch (err) {
+    toastFailure(err);
+  }
+}
+
+export function showTurnDiff(checkpointId: string): Promise<void> {
+  return loadCheckpointView(checkpointId, "turn");
+}
+
+export function showRewindPreview(checkpointId: string): Promise<void> {
+  return loadCheckpointView(checkpointId, "rewind");
+}
+
+export function showUncommittedDiff(): void {
+  setState({ checkpointView: null });
+  void refreshWorkspaceDiff();
+}
+
+export async function rewindToCheckpoint(checkpointId: string, previewed?: string): Promise<void> {
+  const session = state.session;
+  if (!session) return;
+  try {
+    const { failed } = await invoke<RewindResult>("session.rewind", { sessionId: session.id, checkpointId, previewed });
+    if (failed.length > 0) {
+      toast("warning", `${failed.length} file${failed.length === 1 ? " was" : "s were"} left as they are. You can undo this rewind from the same list.`);
+    }
+    if (state.session?.id === session.id) showUncommittedDiff();
+    scheduleWorkspaceRefresh();
+  } catch (err) {
+    toastFailure(err);
+  }
+}
+
+async function refreshCompare(): Promise<void> {
+  const session = state.session;
+  if (!session) return;
+  try {
+    const compare = await invoke<CompareState | null>("session.compare", { sessionId: session.id });
+    if (state.session?.id === session.id) setState({ compare });
+  } catch {
+    /* ignore background refresh errors */
+  }
+}
+
+export function openCompare(): void {
+  setState({ compareOpen: true });
+  setWorkbenchTab("compare");
+}
+
+/** Put the tab away. Only an empty one can be: a comparison stays until it's kept or discarded. */
+export function closeCompare(): void {
+  setState({ compareOpen: false });
+}
+
+export async function startCompare(brief: string, targets: { provider: string; model: string; effort?: string }[]): Promise<void> {
+  const session = state.session;
+  if (!session) return;
+  try {
+    await invoke("session.compareStart", {
+      sessionId: session.id,
+      brief,
+      targets: targets.map(({ provider, model, effort }) => ({ provider, model, ...(effort ? { effort } : {}) })),
+    });
+  } catch (err) {
+    toastFailure(err);
+  }
+}
+
+export async function loadCompareDiff(side: number): Promise<WorkspaceDiff | null> {
+  const session = state.session;
+  if (!session) return null;
+  try {
+    const res = await invoke<Omit<WorkspaceDiff, "git">>("session.compareDiff", { sessionId: session.id, side });
+    return { git: true, ...res };
+  } catch (err) {
+    toastFailure(err);
+    return null;
+  }
+}
+
+export async function keepCompareSide(side: number): Promise<void> {
+  const session = state.session;
+  if (!session) return;
+  try {
+    const { conflicts, failed } = await invoke<KeepResult>("session.compareKeep", { sessionId: session.id, side });
+    if (conflicts.length > 0) {
+      const [first] = conflicts;
+      const others = conflicts.length > 1 ? ` and ${conflicts.length - 1} more` : "";
+      toast("warning", `Nothing was kept: ${first}${others} changed since this began, or can't be replaced safely.`);
+      return;
+    }
+    if (failed.length > 0) {
+      toast("warning", `Kept, but ${failed.length} file${failed.length === 1 ? " is" : "s are"} in use and didn't change. You can rewind this from Diff.`);
+    }
+    if (state.session?.id !== session.id) return;
+    setWorkbenchTab("diff");
+    scheduleWorkspaceRefresh();
+  } catch (err) {
+    toastFailure(err);
+  }
+}
+
+export async function discardCompare(): Promise<void> {
+  const session = state.session;
+  if (!session) return;
+  try {
+    await invoke("session.compareDiscard", { sessionId: session.id });
+  } catch (err) {
+    toastFailure(err);
   }
 }
 

@@ -80,9 +80,26 @@ const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
  * own `.git/config` can name commands for git to run. A downloaded project
  * mustn't get code execution just by being looked at, so these turn off what
  * would run one, and `autoRefreshIndex` keeps a background diff from writing
- * the index under a worker's `git add`. See also {@link localFilterOverrides}.
+ * the index under a worker's `git add`. Hooks fire from plumbing too:
+ * `update-ref` runs `reference-transaction`. Settings of a submodule's own are
+ * out of reach of all of this, so git never goes into one. See also
+ * {@link localFilters}.
  */
-const GIT_SAFE_CONFIG = ["-c", "core.quotePath=false", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
+const GIT_SAFE_CONFIG = [
+  "-c",
+  "core.quotePath=false",
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.hooksPath=NUL",
+  "-c",
+  "diff.autoRefreshIndex=false",
+  "-c",
+  "submodule.recurse=false",
+];
+
+/** Without this, a blob missing from a "partial clone" is fetched, running whatever `core.sshCommand` says. */
+const GIT_SAFE_ENV = { GIT_NO_LAZY_FETCH: "1" };
 
 export const DEFAULT_LOCALHOST_PORTS = /** @type {const} */ ([3000, 4173, 4200, 5173, 8000, 8080, 8888]);
 
@@ -93,7 +110,7 @@ export const DEFAULT_LOCALHOST_PORTS = /** @type {const} */ ([3000, 4173, 4200, 
  * @param {string} p
  * @returns {string}
  */
-function realpathSafe(p) {
+export function realpathSafe(p) {
   try {
     return fs.realpathSync.native(p);
   } catch {
@@ -112,7 +129,7 @@ function realpathSafe(p) {
  * @param {string} candidate
  * @returns {boolean}
  */
-function isInsideRoot(rootReal, candidate) {
+export function isInsideRoot(rootReal, candidate) {
   const rel = path.relative(rootReal, candidate);
   if (!rel) return true;
   if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return false;
@@ -134,7 +151,7 @@ function toPosix(rel) {
 const inIgnoredDir = (rel) => rel.split("/").some((part) => IGNORED_DIRS.has(part));
 
 /** @param {string} text */
-const splitNul = (text) => text.split("\0").filter(Boolean);
+export const splitNul = (text) => text.split("\0").filter(Boolean);
 
 /**
  * Run git in `cwd`. Output past `maxBytes` is cut off and flagged, so a huge
@@ -142,10 +159,11 @@ const splitNul = (text) => text.split("\0").filter(Boolean);
  *
  * @param {string} cwd
  * @param {string[]} args
- * @param {number} [maxBytes]
+ * @param {{ maxBytes?: number, timeoutMs?: number, env?: Record<string, string>, input?: string }} [opts]
+ *   env: added to this process's environment
  * @returns {Promise<{ ok: boolean, stdout: string, truncated: boolean }>}
  */
-function runGit(cwd, args, maxBytes = MAX_GIT_OUTPUT) {
+export function runGit(cwd, args, { maxBytes = MAX_GIT_OUTPUT, timeoutMs = GIT_TIMEOUT_MS, env, input } = {}) {
   return new Promise((resolve) => {
     /** @type {Buffer[]} */
     const chunks = [];
@@ -155,9 +173,13 @@ function runGit(cwd, args, maxBytes = MAX_GIT_OUTPUT) {
       cwd,
       // The engine has no console: without this, each call flashes one on Windows.
       windowsHide: true,
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "ignore"],
+      env: { ...process.env, ...GIT_SAFE_ENV, ...env },
     });
-    const timer = setTimeout(() => proc.kill(), GIT_TIMEOUT_MS);
+    // Git may exit without reading it all, which is its answer, not a crash here.
+    proc.stdin?.on("error", () => {});
+    proc.stdin?.end(input);
+    const timer = setTimeout(() => proc.kill(), timeoutMs);
     /** @param {boolean} ok */
     const finish = (ok) => {
       clearTimeout(timer);
@@ -188,17 +210,14 @@ function runGit(cwd, args, maxBytes = MAX_GIT_OUTPUT) {
  */
 
 /**
- * New files git isn't ignoring, minus heavy folders and anything reached
- * through a link: git walks a Windows junction as if it were a folder, so
- * without this the listing runs outside the project or round a loop forever.
- * Null outside a repository.
+ * A check for whether a folder, relative to `rootReal` and in forward slashes,
+ * is a link or lies under one. Node sees a Windows junction as a link; git sees
+ * a plain folder and will read, write and delete through it.
  *
  * @param {string} rootReal
- * @returns {Promise<string[] | null>}
+ * @returns {(dir: string) => Promise<boolean>}
  */
-async function listUntracked(rootReal) {
-  const res = await runGit(rootReal, ["ls-files", "-o", "--exclude-standard", "-z"]);
-  if (!res.ok) return null;
+export function linkedFolders(rootReal) {
   /** @type {Map<string, Promise<boolean>>} */
   const checked = new Map();
   /** @param {string} dir */
@@ -215,6 +234,23 @@ async function listUntracked(rootReal) {
     }
     return verdict;
   };
+  return throughLink;
+}
+
+/**
+ * New files git isn't ignoring, minus heavy folders and anything reached
+ * through a link: git walks a Windows junction as if it were a folder, so
+ * without this the listing runs outside the project or round a loop forever.
+ * Null outside a repository, and when the listing can't be trusted to be whole.
+ *
+ * @param {string} rootReal
+ * @param {{ timeoutMs?: number }} [opts]
+ * @returns {Promise<string[] | null>}
+ */
+export async function listUntracked(rootReal, opts = {}) {
+  const res = await runGit(rootReal, ["ls-files", "-o", "--exclude-standard", "-z"], opts);
+  if (!res.ok || res.truncated) return null;
+  const throughLink = linkedFolders(rootReal);
   const candidates = splitNul(res.stdout).filter((p) => !inIgnoredDir(p));
   const linked = await Promise.all(
     candidates.map((p) => {
@@ -732,22 +768,71 @@ function untrackedDiff(rootReal, rel) {
  * whose filter lives only in its `.git/config`, as git-crypt's does, shows the
  * filtered files as changed here.
  *
+ * The overrides go through the environment, not `-c`, which splits at the first
+ * `=`: a driver named `x=y` would slip past it. Any git call that can write an
+ * index needs them, because rewriting one compares files by content.
+ *
  * @param {string} rootReal
- * @returns {Promise<string[]>}
+ * @returns {Promise<{ env: Record<string, string>, drivers: Set<string> }>}
  */
-async function localFilterOverrides(rootReal) {
+export async function localFilters(rootReal) {
   const res = await runGit(rootReal, ["config", "--show-scope", "--name-only", "--get-regexp", "^filter\\."]);
   /** @type {Set<string>} */
   const drivers = new Set();
   for (const line of res.stdout.split(/\r?\n/)) {
     const [scope, key] = line.split("\t");
     if (!key || scope === "global" || scope === "system") continue;
-    const driver = /^filter\.(.+)\.[^.]+$/.exec(key)?.[1];
-    if (driver) drivers.add(driver);
+    // The name may be empty: `[filter ""]` is a driver like any other.
+    const driver = /^filter\.(.*)\.[^.]+$/.exec(key)?.[1];
+    if (driver !== undefined) drivers.add(driver);
   }
-  return [...drivers].flatMap((driver) =>
-    [`clean=`, `smudge=`, `process=`, `required=false`].flatMap((setting) => ["-c", `filter.${driver}.${setting}`])
-  );
+  const settings = [...drivers].flatMap((driver) => [
+    [`filter.${driver}.clean`, ""],
+    [`filter.${driver}.smudge`, ""],
+    [`filter.${driver}.process`, ""],
+    [`filter.${driver}.required`, "false"],
+  ]);
+  /** @type {Record<string, string>} */
+  const env = settings.length > 0 ? { GIT_CONFIG_COUNT: String(settings.length) } : {};
+  settings.forEach(([key, value], i) => {
+    env[`GIT_CONFIG_KEY_${i}`] = key;
+    env[`GIT_CONFIG_VALUE_${i}`] = value;
+  });
+  return { env, drivers };
+}
+
+/**
+ * How every diff here is asked for. Whatever the user's git config says, the
+ * parser needs these prefixes. A submodule's changed files stay out of it:
+ * finding them runs that submodule's own filters, which nothing here can reach.
+ */
+const DIFF_ARGS = [
+  "--no-color",
+  "--no-ext-diff",
+  "--no-textconv",
+  "--ignore-submodules=dirty",
+  "--relative",
+  "--find-renames",
+  "--unified=3",
+  "--src-prefix=a/",
+  "--dst-prefix=b/",
+];
+
+/**
+ * The difference between two trees git already holds. Reads no working files,
+ * so unlike {@link getWorkspaceDiff} it runs no filters. Paths are relative to
+ * `rootReal`, and changes outside it are left out.
+ *
+ * @param {string} rootReal
+ * @param {string} from
+ * @param {string} to
+ * @returns {Promise<{ files: DiffFile[], truncated: boolean }>}
+ */
+export async function diffTrees(rootReal, from, to) {
+  const diff = await runGit(rootReal, ["diff", from, to, ...DIFF_ARGS]);
+  const files = parseUnifiedDiff(diff.stdout);
+  for (const file of files) capDiffLines(file);
+  return { files, truncated: diff.truncated || !diff.ok };
 }
 
 /**
@@ -765,22 +850,9 @@ export async function getWorkspaceDiff(workspace) {
 
   const [head, filters] = await Promise.all([
     runGit(rootReal, ["rev-parse", "--verify", "--quiet", "HEAD"]),
-    localFilterOverrides(rootReal),
+    localFilters(rootReal),
   ]);
-  const diff = await runGit(rootReal, [
-    ...filters,
-    "diff",
-    head.ok ? "HEAD" : EMPTY_TREE,
-    "--no-color",
-    "--no-ext-diff",
-    "--no-textconv",
-    "--relative",
-    "--find-renames",
-    "--unified=3",
-    // Whatever the user's git config says, the parser needs these prefixes.
-    "--src-prefix=a/",
-    "--dst-prefix=b/",
-  ]);
+  const diff = await runGit(rootReal, ["diff", head.ok ? "HEAD" : EMPTY_TREE, ...DIFF_ARGS], { env: filters.env });
 
   const files = parseUnifiedDiff(diff.stdout);
   // A diff that stopped partway (too much output, or git timing out) isn't the whole picture.

@@ -497,6 +497,142 @@
   max-height: 160px;
 }
 
+.wb-turn-trigger {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+}
+.wb-turn-trigger svg {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  transition: transform 140ms ease;
+}
+.wb-turn-trigger[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+.wb-turn-trigger-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wb-diff-summary {
+  flex: 0 0 auto;
+}
+/* The list holds prompts, not paths. */
+.wb-turn-row .wb-diff-filepath {
+  font-family: inherit;
+  font-size: 12px;
+}
+.wb-turn-row .wb-diff-stats {
+  flex: 0 0 auto;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.wb-compare,
+.wb-compare-setup {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  container-type: inline-size;
+}
+.wb-compare-brief {
+  flex: 0 0 auto;
+  height: auto;
+  padding: 7px 9px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.45;
+}
+.wb-compare-pickers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.wb-compare-pickers .model-trigger {
+  max-width: none;
+}
+.wb-compare-note {
+  margin: 0;
+  line-height: 1.45;
+}
+.wb-compare-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.wb-compare-title {
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-compare-sides {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+/* A narrow dock stacks them: two columns of code wouldn't fit a line of either. */
+@container (max-width: 560px) {
+  .wb-compare-sides,
+  .wb-compare-pickers {
+    grid-template-columns: 1fr;
+  }
+}
+.wb-compare-side {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--chip);
+  overflow: hidden;
+}
+.wb-compare-side-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--border);
+}
+.wb-compare-side-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.wb-compare-model {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-compare-error {
+  flex: 0 1 auto;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--bad);
+  white-space: pre-wrap;
+}
+.wb-compare-files {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
 .wb-review-banner {
   display: flex;
   align-items: center;

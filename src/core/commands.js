@@ -59,6 +59,7 @@ import {
   getWorkspacePlan,
   updateWorkspacePlan,
 } from "./workbench.js";
+import { dropCheckpoints } from "./checkpoints.js";
 import { makeEvent } from "./events.js";
 import { SESSION_SETTING_KEYS, snapshotSettings } from "./settings.js";
 import { QuotaMonitor } from "./quota-monitor.js";
@@ -201,6 +202,24 @@ export const CommandSchemas = {
     .object({ sessionId: id, approvalId: id, approved: z.boolean(), reason: z.string().max(500).optional() })
     .strict(),
   "session.exportMarkdown": z.object({ sessionId: id, filename: exportFilename.optional() }).strict(),
+  "session.checkpoints": sessionOnly,
+  "session.turnDiff": z.object({ sessionId: id, checkpointId: id }).strict(),
+  "session.rewindPreview": z.object({ sessionId: id, checkpointId: id }).strict(),
+  "session.rewind": z.object({ sessionId: id, checkpointId: id, previewed: z.string().min(1).max(64).optional() }).strict(),
+  "session.compare": sessionOnly,
+  "session.compareStart": z
+    .object({
+      sessionId: id,
+      // What a worker tool takes as its task.
+      brief: z.string().trim().min(1).max(8000),
+      targets: z
+        .array(z.object({ provider: z.string().min(1).max(64), model: z.string().min(1).max(120), effort: z.string().max(32).optional() }).strict())
+        .length(2),
+    })
+    .strict(),
+  "session.compareDiff": z.object({ sessionId: id, side: z.number().int().min(0).max(1) }).strict(),
+  "session.compareKeep": z.object({ sessionId: id, side: z.number().int().min(0).max(1) }).strict(),
+  "session.compareDiscard": sessionOnly,
   "session.refreshQuotas": sessionOnly,
   "session.stop": sessionOnly,
   "quotas.refresh": z.object({}).strict(),
@@ -335,6 +354,22 @@ export function createCommandRouter(manager, opts = {}) {
   };
 
   /**
+   * Drop a chat's checkpoints from its repository. Best effort: what it keeps
+   * is only unused refs, and a chat has to stay deletable after its folder is
+   * gone.
+   *
+   * @param {string} workspace
+   * @param {string} chatId
+   */
+  const forgetCheckpoints = async (workspace, chatId) => {
+    try {
+      await dropCheckpoints(assertAllowedWorkspace(workspace), chatId);
+    } catch {
+      /* not a folder the app knows */
+    }
+  };
+
+  /**
    * Publish what belongs to the app rather than to one session. A test's
    * stand-in manager has no event stream.
    *
@@ -377,23 +412,33 @@ export function createCommandRouter(manager, opts = {}) {
     "projects.create": ({ name, parentDir }) => createProject(name, parentDir),
     "projects.reorder": ({ order }) => reorderProjects(order),
     "projects.rename": ({ workspace, name }) => renameProject(workspace, name),
-    "projects.delete": ({ workspace }) => removeProject(workspace),
+    "projects.delete": async ({ workspace }) => {
+      // By chat: a project inside another's repository shares its refs, and those aren't this one's to drop.
+      await Promise.all(listChats(workspace).map((chat) => forgetCheckpoints(workspace, chat.id)));
+      return removeProject(workspace);
+    },
     "projects.addFolder": ({ workspace, folder }) => addAccessibleFolder(workspace, folder),
     "projects.removeFolder": ({ workspace, folder }) => removeAccessibleFolder(workspace, folder),
     "projects.setAccessibleFolders": ({ workspace, folders }) => setAccessibleFolders(workspace, folders),
     "chat.rename": ({ workspace, chatId, title }) => renameChat(workspace, chatId, title),
-    "chat.delete": ({ workspace, chatId, sessionId }) => {
+    "chat.delete": async ({ workspace, chatId, sessionId }) => {
       assertChatFree(chatId, sessionId ? manager.get(sessionId) : undefined);
-      return deleteChat(workspace, chatId);
+      // First: this is what checks the id, and git gets it next.
+      const chats = deleteChat(workspace, chatId);
+      await forgetCheckpoints(workspace, chatId);
+      return chats;
     },
-    "chat.move": ({ fromWorkspace, toWorkspace, chatId, sessionId }) => {
+    "chat.move": async ({ fromWorkspace, toWorkspace, chatId, sessionId }) => {
       assertChatFree(chatId, sessionId ? manager.get(sessionId) : undefined);
-      return moveChat(fromWorkspace, toWorkspace, chatId);
+      const moved = moveChat(fromWorkspace, toWorkspace, chatId);
+      // The trees are in the old folder's repository, so the chat can't take them along.
+      if (moved.ok) await forgetCheckpoints(fromWorkspace, chatId);
+      return moved;
     },
     "chat.reorder": ({ workspace, order }) => reorderChats(workspace, order),
     "session.create": async ({ workspace, chatId }) => {
       assertChatFree(chatId);
-      return sessionSnapshot(await manager.create({ workspace, chatId, interactive: true }));
+      return sessionSnapshot(await manager.create({ workspace, chatId, interactive: true, checkpoints: true }));
     },
     "session.snapshot": ({ sessionId }) => sessionSnapshot(session(sessionId)),
     "session.send": ({ sessionId, prompt }) => session(sessionId).send(prompt),
@@ -422,6 +467,18 @@ export function createCommandRouter(manager, opts = {}) {
       session(sessionId).resolveApproval(approvalId, approved, reason),
     "session.exportMarkdown": ({ sessionId, filename }) =>
       session(sessionId).exportMarkdown(filename, { dir: loadPrefs().exportDir ?? undefined }),
+    "session.checkpoints": ({ sessionId }) => session(sessionId).listCheckpoints(),
+    "session.turnDiff": ({ sessionId, checkpointId }) => session(sessionId).turnDiff(checkpointId),
+    "session.rewindPreview": ({ sessionId, checkpointId }) => session(sessionId).rewindPreview(checkpointId),
+    "session.rewind": ({ sessionId, checkpointId, previewed }) => session(sessionId).rewind(checkpointId, previewed),
+    "session.compare": ({ sessionId }) => session(sessionId).compareState(),
+    "session.compareStart": ({ sessionId, brief, targets }) => session(sessionId).startCompare(brief, targets),
+    "session.compareDiff": ({ sessionId, side }) => session(sessionId).compareDiff(side),
+    "session.compareKeep": ({ sessionId, side }) => session(sessionId).keepCompare(side),
+    "session.compareDiscard": async ({ sessionId }) => {
+      await session(sessionId).discardCompare();
+      return null;
+    },
     "session.refreshQuotas": ({ sessionId }) => session(sessionId).refreshQuotas(),
     "session.stop": async ({ sessionId }) => {
       await manager.close(sessionId);

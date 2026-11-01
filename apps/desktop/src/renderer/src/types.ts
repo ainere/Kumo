@@ -1,8 +1,10 @@
 // The engine's event contract and settings, typed from src/core (JSDoc + zod).
+import type { Checkpoint } from "../../../../../src/core/checkpoints.js";
+import type { CompareSide, CompareState } from "../../../../../src/core/compare.js";
 import type { KumoEvent, SessionSettings } from "../../../../../src/core/events.js";
 import type { Prefs } from "../../../../../src/core/prefs.js";
 
-export type { KumoEvent, SessionSettings, Prefs };
+export type { Checkpoint, CompareSide, CompareState, KumoEvent, SessionSettings, Prefs };
 
 export type Limits = Record<string, unknown> | null;
 /**
@@ -270,7 +272,7 @@ export interface ThemeList {
 // ── the Workbench ──
 
 /** A built-in tab, or `panel:<id>` for a custom panel. */
-export type WorkbenchTab = "workers" | "files" | "diff" | "terminal" | "browser" | "plan" | `panel:${string}`;
+export type WorkbenchTab = "workers" | "files" | "diff" | "terminal" | "browser" | "plan" | "compare" | `panel:${string}`;
 
 export interface UserPanel {
   id: string;
@@ -338,6 +340,35 @@ export interface WorkspaceDiff {
   files: DiffFile[];
   /** More changed than the app reads at once. */
   truncated: boolean;
+}
+
+/** What the Diff tab shows in place of uncommitted changes. */
+export interface CheckpointView {
+  checkpointId: string;
+  /** One turn's changes, or what rewinding to before that turn would change. */
+  mode: "turn" | "rewind";
+  files: DiffFile[];
+  truncated: boolean;
+  /** The files a preview was taken of: a rewind that no longer finds them does nothing. */
+  tree?: string;
+  /** Files a rewind would leave as they are, because it couldn't bring them back. */
+  blocked?: string[];
+}
+
+export interface KeepResult {
+  restored: number;
+  removed: number;
+  /** Why nothing landed: files that changed since the comparison began, or that can't be replaced safely. */
+  conflicts: string[];
+  /** It landed, except these, which another program had locked. */
+  failed: string[];
+}
+
+export interface RewindResult {
+  restored: number;
+  removed: number;
+  /** Files it couldn't put back. */
+  failed: string[];
 }
 
 export interface InlineReviewComment {

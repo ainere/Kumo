@@ -30,6 +30,7 @@
  *     │                           reasoning, tools and diffPaths are the turn's trace (see TurnTrace in
  *     │                           core/tool-tracker.js), bounded in size. Older logs lack them and `provider`;
  *     │                           readers must treat all of these as optional.
+ *     ├── <chatId>.checkpoints.json — The chat's turn checkpoints (see core/checkpoints.js)
  *     └── live/
  *         ├── live-<runId>.log  — Raw worker stdout/stderr
  *         └── active/<runId>.json — One file per in-flight worker run
@@ -439,7 +440,7 @@ export function deleteChat(workspacePath, chatId) {
   const filtered = chats.filter((c) => c.id !== chatId);
   saveChatIndex(workspacePath, filtered);
 
-  for (const name of [`${chatId}.json`, `${chatId}.plan.json`]) {
+  for (const name of [`${chatId}.json`, `${chatId}.plan.json`, checkpointsName(chatId)]) {
     const file = path.join(getSessionDir(workspacePath), name);
     try {
       if (fs.existsSync(file)) {
@@ -500,7 +501,10 @@ export function moveChat(fromWorkspace, toWorkspace, chatId) {
   saveChatIndex(fromResolved, fromChats);
 
   // The move is done; a leftover source file is only clutter, so it is reported, not thrown.
-  for (const file of [...(hasLog ? [fromFile] : []), ...(hasPlan ? [fromPlan] : [])]) {
+  // Checkpoints stay out of the move: they are trees in the old folder's repository.
+  const fromCheckpoints = path.join(getSessionDir(fromResolved), checkpointsName(chatId));
+  const stale = fs.existsSync(fromCheckpoints) ? [fromCheckpoints] : [];
+  for (const file of [...(hasLog ? [fromFile] : []), ...(hasPlan ? [fromPlan] : []), ...stale]) {
     try {
       fs.unlinkSync(file);
     } catch (err) {
@@ -576,6 +580,43 @@ export function loadTurnLog(workspacePath, chatId) {
     /* ignore */
   }
   return [];
+}
+
+// ── Turn Checkpoints ──
+
+/** @param {string} chatId */
+function checkpointsName(chatId) {
+  return `${chatId}.checkpoints.json`;
+}
+
+/**
+ * A chat's checkpoints, oldest first (see core/checkpoints.js). An unreadable
+ * file reads as none: the trees it named are still in the repository, and
+ * nothing else depends on it.
+ *
+ * @param {string} workspacePath
+ * @param {string} chatId
+ * @returns {import("../core/checkpoints.js").Checkpoint[]}
+ */
+export function loadCheckpoints(workspacePath, chatId) {
+  if (!chatId) return [];
+  assertChatId(chatId);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(getSessionDir(workspacePath), checkpointsName(chatId)), "utf-8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * @param {string} workspacePath
+ * @param {string} chatId
+ * @param {import("../core/checkpoints.js").Checkpoint[]} checkpoints
+ */
+export function saveCheckpoints(workspacePath, chatId, checkpoints) {
+  assertChatId(chatId);
+  atomicWriteJson(path.join(getSessionDir(workspacePath), checkpointsName(chatId)), checkpoints);
 }
 
 // ── Auto-Title ──

@@ -6,6 +6,7 @@ import {
   closeSession,
   cycleSession,
   newChat,
+  openCompare,
   newSession,
   openNewWindow,
   openPalette,
@@ -160,6 +161,7 @@ export function CommandPalette() {
           ? [{ id: "close-session", group: "Session", label: "Close This Session", run: () => void closeSession() }]
           : []),
         { id: "new-chat", group: "Chat", label: "New Chat", run: () => void newChat() },
+        { id: "compare", group: "Chat", label: "Compare Two Models…", run: () => openCompare() },
         {
           id: "export-md",
           group: "Chat",

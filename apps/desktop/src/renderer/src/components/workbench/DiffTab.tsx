@@ -5,12 +5,16 @@ import {
   openWorkspaceFile,
   refreshWorkspaceDiff,
   removeReviewComment,
+  rewindToCheckpoint,
   sendReviewCommentsToLead,
+  showRewindPreview,
+  showTurnDiff,
+  showUncommittedDiff,
   useStore,
 } from "../../store";
-import type { DiffFile, DiffLine } from "../../types";
+import type { Checkpoint, DiffFile, DiffLine } from "../../types";
 import { ApprovalCard } from "../Conversation";
-import { IconClose, IconRefresh } from "../icons";
+import { IconChevronDown, IconClose, IconRefresh } from "../icons";
 
 const STATUS_BADGE: Record<DiffFile["status"], { label: string; cls: string; title: string }> = {
   modified: { label: "M", cls: "mod", title: "Modified" },
@@ -20,13 +24,33 @@ const STATUS_BADGE: Record<DiffFile["status"], { label: string; cls: string; tit
   renamed: { label: "R", cls: "mod", title: "Renamed" },
 };
 
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** How long ago, in the fewest words that do. */
+function age(at: number): string {
+  const minutes = Math.floor((Date.now() - at) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
+}
+
+/** What a checkpoint did, for the list. A turn the app didn't survive has no count. */
+const checkpointDetail = (cp: Checkpoint) =>
+  `${cp.changed === null ? "Didn't finish" : plural(cp.changed, "file")} · ${age(cp.at)}`;
+
 export function DiffTab() {
   const workspace = useStore((s) => s.session?.workspace ?? null);
-  const diffFiles = useStore((s) => s.workspaceDiff);
+  const workspaceDiff = useStore((s) => s.workspaceDiff);
   const isGit = useStore((s) => s.diffIsGit);
-  const truncated = useStore((s) => s.diffTruncated);
+  const workspaceTruncated = useStore((s) => s.diffTruncated);
   const approvals = useStore((s) => s.approvals);
   const reviewComments = useStore((s) => s.reviewComments);
+  const checkpoints = useStore((s) => s.checkpoints);
+  const shownView = useStore((s) => s.checkpointView);
+  const busy = useStore((s) => s.busy);
+  const [turnsOpen, setTurnsOpen] = useState(false);
+  const [rewinding, setRewinding] = useState(false);
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [draftTarget, setDraftTarget] = useState<{
     file: string;
@@ -39,6 +63,13 @@ export function DiffTab() {
   useEffect(() => {
     if (workspace) void refreshWorkspaceDiff();
   }, [workspace]);
+
+  // A checkpoint gone from the list can't be acted on, and leaves no way back from showing it.
+  const view = shownView && checkpoints.some((c) => c.id === shownView.checkpointId) ? shownView : null;
+  const diffFiles = view?.files ?? workspaceDiff;
+  const truncated = view?.truncated ?? workspaceTruncated;
+  const viewing = view ? (checkpoints.find((c) => c.id === view.checkpointId) ?? null) : null;
+  const previewing = view?.mode === "rewind";
 
   const selectedPath =
     activeFile && diffFiles.some((f) => f.path === activeFile) ? activeFile : diffFiles[0]?.path ?? null;
@@ -54,25 +85,126 @@ export function DiffTab() {
   const summary = !isGit
     ? "Not a git repository"
     : diffFiles.length === 0
-      ? "No uncommitted changes"
+      ? view
+        ? "No changes"
+        : "No uncommitted changes"
       : `${diffFiles.length}${truncated ? "+" : ""} changed file${diffFiles.length === 1 ? "" : "s"}`;
+
+  const rewind = async () => {
+    if (!view) return;
+    setRewinding(true);
+    await rewindToCheckpoint(view.checkpointId, view.tree);
+    setRewinding(false);
+  };
 
   return (
     <div className="wb-diff" data-part="workbench-diff">
       <div className="wb-diff-toolbar">
-        <span className="muted small">{summary}</span>
-        {diffFiles.length > 0 && <span className="faint small">Click a line to comment</span>}
+        {checkpoints.length > 0 && (
+          <button
+            type="button"
+            className="wb-mini-btn wb-turn-trigger"
+            data-part="turn-picker"
+            aria-expanded={turnsOpen}
+            aria-controls="wb-turn-list"
+            title={viewing?.label ?? "Uncommitted changes"}
+            onClick={() => setTurnsOpen((open) => !open)}
+          >
+            <span className="wb-turn-trigger-label">{viewing?.label ?? "Uncommitted"}</span>
+            <IconChevronDown />
+          </button>
+        )}
+        <span className="muted small wb-diff-summary">{summary}</span>
+        {diffFiles.length > 0 && !previewing && <span className="faint small">Click a line to comment</span>}
         <span className="spacer" />
+        {view?.mode === "turn" && (
+          <button
+            type="button"
+            className="wb-mini-btn"
+            data-part="rewind"
+            disabled={busy}
+            title={busy ? "Wait for the turn to finish" : "See what going back to before this turn would change"}
+            onClick={() => void showRewindPreview(view.checkpointId)}
+          >
+            {viewing?.kind === "rewind" ? "Undo…" : "Rewind…"}
+          </button>
+        )}
         <button
           type="button"
           className="wb-icon-btn"
           aria-label="Refresh diff"
           title="Refresh diff"
-          onClick={() => void refreshWorkspaceDiff()}
+          onClick={() => {
+            if (view) void (view.mode === "turn" ? showTurnDiff : showRewindPreview)(view.checkpointId);
+            else void refreshWorkspaceDiff();
+          }}
         >
           <IconRefresh />
         </button>
       </div>
+
+      {turnsOpen && (
+        <div id="wb-turn-list" className="wb-diff-filelist" role="listbox" aria-label="Turns" data-part="turn-list">
+          <button
+            type="button"
+            role="option"
+            aria-selected={view === null}
+            className="wb-diff-file-btn wb-turn-row"
+            data-selected={view === null}
+            onClick={() => {
+              setTurnsOpen(false);
+              showUncommittedDiff();
+            }}
+          >
+            <span className="wb-diff-filepath">Uncommitted changes</span>
+          </button>
+          {checkpoints.map((cp) => {
+            const selected = view?.checkpointId === cp.id;
+            return (
+              <button
+                key={cp.id}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                className="wb-diff-file-btn wb-turn-row"
+                data-selected={selected}
+                title={cp.label}
+                onClick={() => {
+                  setTurnsOpen(false);
+                  void showTurnDiff(cp.id);
+                }}
+              >
+                <span className="wb-diff-filepath">{cp.label}</span>
+                <span className="wb-diff-stats faint">{checkpointDetail(cp)}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {previewing && viewing && (
+        <div className="wb-review-banner" data-part="rewind-banner">
+          <span className="wb-review-count">
+            {viewing.kind === "rewind" ? "Undoing this" : "Going back to before this turn"} changes{" "}
+            {plural(diffFiles.length, "file")}. The chat stays as it is.
+            {(view?.blocked?.length ?? 0) > 0 &&
+              ` ${plural(view?.blocked?.length ?? 0, "file")} stay as they are: this can't bring them back.`}
+          </span>
+          <span className="spacer" />
+          <button type="button" className="wb-mini-btn" disabled={rewinding} onClick={() => void showTurnDiff(viewing.id)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="wb-mini-btn primary"
+            data-part="confirm-rewind"
+            disabled={rewinding || busy || diffFiles.length === 0}
+            onClick={() => void rewind()}
+          >
+            {viewing.kind === "rewind" ? "Undo" : "Rewind"}
+          </button>
+        </div>
+      )}
 
       {approvals.map((a) => (
         <ApprovalCard key={a.approvalId} approval={a} />
@@ -177,6 +309,8 @@ export function DiffTab() {
                                   data-part="diff-line"
                                   data-line={lineNo}
                                   onClick={() => {
+                                    // Nothing has happened yet in a preview, so there's nothing to review.
+                                    if (previewing) return;
                                     // Dragging across code to copy it isn't asking to comment.
                                     if (window.getSelection()?.isCollapsed === false) return;
                                     setDraftTarget({

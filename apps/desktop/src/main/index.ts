@@ -55,7 +55,7 @@ const GROUND = { dark: "#05070D", light: "#F5F6F8" } as const;
 // Beside out/, in development and in a package alike.
 const ICON = join(here, "../../resources/icon.ico");
 
-export const WORKBENCH_TABS = ["workers", "files", "diff", "terminal", "browser", "plan"] as const;
+export const WORKBENCH_TABS = ["workers", "files", "diff", "terminal", "browser", "plan", "compare"] as const;
 export type WorkbenchTab = (typeof WORKBENCH_TABS)[number] | `panel:${string}`;
 
 /** A main window and what belongs to it: its pop-outs, its browser page and the session they all show. */

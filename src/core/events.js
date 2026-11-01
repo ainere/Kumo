@@ -105,6 +105,9 @@ export const EventSchemas = {
     title: z.string(),
     resumed: z.boolean(),
   }),
+  "checkpoints.changed": z.object({ ...base, type: z.literal("checkpoints.changed"), chatId: z.string() }),
+  // Null when no comparison is open. Only what src/core/compare.js puts in a CompareState.
+  "compare.changed": z.object({ ...base, type: z.literal("compare.changed"), compare: z.record(z.string(), z.unknown()).nullable() }),
   "turn.started": z.object({ ...base, type: z.literal("turn.started"), turnId: z.string(), prompt: z.string() }),
   "turn.delta": z.object({ ...base, type: z.literal("turn.delta"), turnId: z.string(), text: z.string() }),
   // An empty `text` means "still thinking" (a heartbeat with nothing to show).

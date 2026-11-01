@@ -43,6 +43,18 @@ import { isToolCallItem, toolNameOf, toolArgsOf } from "../providers/orchestrato
 import { emptyRoles, roleForTool, resolveRoleTarget, roleToolSignature } from "../config/roles.js";
 import { runTurn } from "../providers/orchestrators/turn-wait.js";
 import * as defaultStore from "../data/sessions.js";
+import {
+  MAX_CHECKPOINTS,
+  applyChanges,
+  countChanges,
+  diffCheckpoints,
+  dropCheckpoint,
+  keepCheckpoint,
+  previewRestore,
+  restoreTree,
+  snapshotWorkspace,
+} from "./checkpoints.js";
+import { CompareRun, removeStaleWorktrees } from "./compare.js";
 import { makeEvent } from "./events.js";
 import { snapshotSettings, applySettingsPatch } from "./settings.js";
 import { profileText, profilePreamble } from "./profile.js";
@@ -77,8 +89,18 @@ import { ENGINE_ENDPOINT_ENV, SESSION_TOKEN_ENV } from "./ipc/protocol.js";
  *   store?: typeof defaultStore,
  *   id?: string,
  *   chatTaken?: (chatId: string, self: Session) => boolean,
+ *   workspaceBusy?: (workspace: string, self: Session) => boolean,
+ *   filesMoving?: (workspace: string, self: Session) => boolean,
+ *   checkpoints?: boolean,
+ *   connectCompare?: typeof import("../providers/api/api-lead.js").connectBridge,
  * }} SessionOptions
  */
+
+/** How much of a prompt names its checkpoint in a list. */
+const CHECKPOINT_LABEL_CHARS = 120;
+
+/** What a prompt hears in the moment a rewind or a kept comparison is rewriting files. */
+const FILES_MOVING = "Your files are being updated. Try again in a moment.";
 
 /** How often the fallback approval watcher looks for bridge request files. */
 const APPROVAL_POLL_MS = 500;
@@ -364,6 +386,21 @@ export class Session extends EventEmitter {
     this.chatId = opts.chatId || null;
     /** Asks whether another session has a chat open, where sessions run side by side. */
     this.chatTaken = opts.chatTaken || (() => false);
+    /** Asks whether another session is mid-turn in a folder. */
+    this.workspaceBusy = opts.workspaceBusy || (() => false);
+    /** Asks whether another session is rewriting files in a folder. */
+    this.filesMoving = opts.filesMoving || (() => false);
+    /** Whether turns leave checkpoints: only where something can rewind them, which today means the app. */
+    this.checkpoints = Boolean(opts.checkpoints);
+    this._checkpointWarned = false;
+    this.connectCompare = opts.connectCompare;
+    /** @type {CompareRun|null} */
+    this._compare = null;
+    this._compareStarting = false;
+    /** A rewind or a kept comparison is rewriting files. */
+    this.movingFiles = false;
+    /** Stop was pressed before the lead had started, so there was nothing to tell yet. */
+    this._stopAsked = false;
     this.turnCount = 0;
     /** @type {any} */
     this.client = null;
@@ -702,8 +739,10 @@ export class Session extends EventEmitter {
    */
   async send(prompt) {
     if (this.closed) throw new Error("This session is closed.");
-    if (this.busy) throw new Error("A turn is already running.");
+    if (this.busy) throw new Error(this.movingFiles ? FILES_MOVING : "A turn is already running.");
+    if (this.filesMoving(this.workspace, this)) throw new Error(FILES_MOVING);
     this.busy = true;
+    this._stopAsked = false;
     const turnId = randomUUID();
     const startedAt = Date.now();
     /** @type {string[]} */
@@ -718,6 +757,10 @@ export class Session extends EventEmitter {
     let replayed = false;
     /** @type {string|null} the profile text this turn's prompt carries to the lead */
     let profileCarried = null;
+    /** @type {import("./checkpoints.js").Checkpoint|null} */
+    let checkpoint = null;
+    /** @type {string|null} what a rewind left for the lead to hear (see `rewind`) */
+    let rewindNote = null;
     try {
       // Read now, so a change in Settings applies from this turn with no restart.
       const profile = profileText(loadConfig());
@@ -743,14 +786,24 @@ export class Session extends EventEmitter {
       const front = [];
       if (preamble !== null) front.push(preamble, "");
       if (profileCarried !== null) front.push(profilePreamble(profileCarried), "");
+      rewindNote = this.chatId ? this._chatRecord(this.chatId)?.rewindNote || null : null;
+      if (rewindNote !== null) front.push(rewindNote, "");
       const sent = [...front, prompt].join("\n");
 
-      this.activeTurn = runTurn(
-        client,
-        () => client.startTurn(sent, { model: this.settings.orchestratorModel, effort: this.settings.reasoningEffort }),
-        { timeoutMs: this.settings.turnTimeoutMs }
-      );
-      outcome = await this.activeTurn.done;
+      // Last before the lead starts, so what the steps above wrote isn't counted as the turn's.
+      checkpoint = await this._openCheckpoint(turnId, prompt);
+      // That can take a while, and nothing could hear a stop in the meantime.
+      if (this.closed) throw new Error("This session is closed.");
+      if (this._stopAsked) {
+        outcome = { ok: false, reason: "interrupted", interrupted: true };
+      } else {
+        this.activeTurn = runTurn(
+          client,
+          () => client.startTurn(sent, { model: this.settings.orchestratorModel, effort: this.settings.reasoningEffort }),
+          { timeoutMs: this.settings.turnTimeoutMs }
+        );
+        outcome = await this.activeTurn.done;
+      }
     } catch (err) {
       outcome = { ok: false, reason: err instanceof Error ? err.message : String(err) };
     } finally {
@@ -760,6 +813,8 @@ export class Session extends EventEmitter {
       this._turn = null;
       this._stopApprovalWatcher();
       this._settleApprovals("all", null, "the turn ended");
+      // While still busy: a prompt sent now mustn't start writing before this reads the files.
+      if (checkpoint) await this._closeCheckpoint(checkpoint);
       this.busy = false;
     }
 
@@ -770,6 +825,7 @@ export class Session extends EventEmitter {
       // The context reached the lead and the turn is saved; a failed turn leaves it pending for the next prompt.
       if (replayed) this._replayPending = false;
       if (profileCarried !== null) this._profileSent = profileCarried;
+      if (rewindNote !== null && this.chatId) this.store.updateChat(this.workspace, this.chatId, { rewindNote: null });
       this._emit("turn.completed", { turnId, text, elapsedMs });
     } else {
       this._emit("turn.failed", {
@@ -793,7 +849,8 @@ export class Session extends EventEmitter {
 
   /** Ask the running turn to stop; `send` resolves once it has. */
   interrupt() {
-    this.activeTurn?.interrupt();
+    if (this.activeTurn) this.activeTurn.interrupt();
+    else if (this.busy) this._stopAsked = true;
   }
 
   /**
@@ -835,6 +892,314 @@ export class Session extends EventEmitter {
     if (!client) return null;
     if (typeof client.currentThreadId === "function") return client.currentThreadId() || null;
     return null;
+  }
+
+  // ── checkpoints ──
+
+  /**
+   * A turn runs whether or not its checkpoint could be saved, so a failure is
+   * said once and never gets in the way.
+   *
+   * @param {unknown} err
+   */
+  _checkpointFailed(err) {
+    if (this._checkpointWarned) return;
+    this._checkpointWarned = true;
+    this._warn(`Couldn't save a checkpoint, so this work may not rewind: ${err instanceof Error ? err.message : err}`);
+  }
+
+  /**
+   * Note the project's state before something changes it. Written at once, so
+   * a turn the app doesn't survive can still be rewound.
+   *
+   * @param {string} id
+   * @param {string} label
+   * @param {"turn" | "rewind"} [kind]
+   * @returns {Promise<import("./checkpoints.js").Checkpoint|null>}
+   */
+  async _openCheckpoint(id, label, kind = "turn") {
+    const chatId = this.chatId;
+    if (!this.checkpoints || !this.persist || !chatId) return null;
+    try {
+      const start = await snapshotWorkspace(this.workspace);
+      if (!start) return null;
+      /** @type {import("./checkpoints.js").Checkpoint} */
+      const entry = {
+        id,
+        kind,
+        label: label.replace(/\s+/g, " ").trim().slice(0, CHECKPOINT_LABEL_CHARS),
+        at: Date.now(),
+        start,
+        end: null,
+        changed: null,
+      };
+      await keepCheckpoint(this.workspace, chatId, entry);
+      const entries = [...this.store.loadCheckpoints(this.workspace, chatId), entry];
+      const oldest = entries.splice(0, Math.max(0, entries.length - MAX_CHECKPOINTS));
+      this.store.saveCheckpoints(this.workspace, chatId, entries);
+      await Promise.all(oldest.map((old) => dropCheckpoint(this.workspace, chatId, old.id)));
+      return entry;
+    } catch (err) {
+      this._checkpointFailed(err);
+      return null;
+    }
+  }
+
+  /**
+   * Note the state after, and forget a checkpoint that changed nothing.
+   *
+   * @param {import("./checkpoints.js").Checkpoint} entry
+   */
+  async _closeCheckpoint(entry) {
+    const chatId = this.chatId;
+    if (!chatId) return;
+    try {
+      const end = await snapshotWorkspace(this.workspace);
+      if (!end) return;
+      const changed = end === entry.start ? 0 : await countChanges(this.workspace, entry.start, end);
+      const entries = this.store.loadCheckpoints(this.workspace, chatId);
+      if (changed === 0) {
+        this.store.saveCheckpoints(this.workspace, chatId, entries.filter((e) => e.id !== entry.id));
+        await dropCheckpoint(this.workspace, chatId, entry.id);
+      } else {
+        const closed = { ...entry, end, changed };
+        await keepCheckpoint(this.workspace, chatId, closed);
+        this.store.saveCheckpoints(this.workspace, chatId, entries.map((e) => (e.id === entry.id ? closed : e)));
+      }
+      // A turn cut short by the session stopping ends after `session.closed`.
+      if (!this.closed) this._emit("checkpoints.changed", { chatId });
+    } catch (err) {
+      this._checkpointFailed(err);
+    }
+  }
+
+  /**
+   * The open chat's checkpoints, newest first. The running turn's isn't one yet.
+   *
+   * @returns {import("./checkpoints.js").Checkpoint[]}
+   */
+  listCheckpoints() {
+    if (!this.checkpoints || !this.chatId) return [];
+    return this.store
+      .loadCheckpoints(this.workspace, this.chatId)
+      .filter((entry) => entry.id !== this._turn?.id)
+      .reverse();
+  }
+
+  /** @param {string} id */
+  _checkpoint(id) {
+    const entry = this.listCheckpoints().find((e) => e.id === id);
+    if (!entry) throw new Error("This chat has no such checkpoint.");
+    return entry;
+  }
+
+  async _currentTree() {
+    const tree = await snapshotWorkspace(this.workspace);
+    if (!tree) throw new Error("This folder isn't a git repository.");
+    return tree;
+  }
+
+  /**
+   * What one checkpoint's turn changed. A turn cut short never recorded where
+   * it ended, so that one runs up to now.
+   *
+   * @param {string} id
+   */
+  async turnDiff(id) {
+    const entry = this._checkpoint(id);
+    return diffCheckpoints(this.workspace, entry.start, entry.end ?? (await this._currentTree()));
+  }
+
+  /**
+   * What rewinding to a checkpoint would do to the files as they are now. Its
+   * `tree` goes back to `rewind`, so what lands is what was looked at.
+   *
+   * @param {string} id
+   */
+  async rewindPreview(id) {
+    const entry = this._checkpoint(id);
+    const tree = await this._currentTree();
+    return { ...(await previewRestore(this.workspace, tree, entry.start)), tree };
+  }
+
+  /**
+   * Put the project's files back to how they were before a checkpoint. The
+   * conversation stays. The rewind is a checkpoint of its own, so what it
+   * replaces can come back: rewinding to that one undoes it. Files a snapshot
+   * doesn't hold can't, so those stay as they are, in `failed`.
+   *
+   * @param {string} id
+   * @param {string} [previewed] the `tree` of the preview this answers; if the files have moved since, nothing happens
+   * @returns {Promise<{ restored: number, removed: number, failed: string[] }>}
+   */
+  async rewind(id, previewed) {
+    this._assertIdle();
+    const target = this._checkpoint(id);
+    if (this.workspaceBusy(this.workspace, this)) {
+      throw new Error("Another session is working in this folder. Rewind once it finishes.");
+    }
+    this.busy = true;
+    this.movingFiles = true;
+    try {
+      const label = target.kind === "rewind" ? `Undid: ${target.label}` : `Rewound to before: ${target.label}`;
+      const undo = await this._openCheckpoint(randomUUID(), label, "rewind");
+      if (!undo) throw new Error("Couldn't save the current files first, so nothing was rewound.");
+      let result;
+      try {
+        if (previewed && undo.start !== previewed) throw new Error("Files changed after this preview, so nothing was rewound. Look at it again.");
+        result = await restoreTree(this.workspace, undo.start, target.start);
+      } finally {
+        // Also after a failure: whatever it did get through is what this checkpoint can undo.
+        await this._closeCheckpoint(undo);
+      }
+      this._noteFilesChanged(`the user put this project's files back to an earlier state (${undo.label})`);
+      const touched = result.restored + result.removed;
+      this._notice(`${undo.label}. ${touched} file${touched === 1 ? "" : "s"} changed.`);
+      return result;
+    } finally {
+      this.busy = false;
+      this.movingFiles = false;
+    }
+  }
+
+  /**
+   * Leave the lead word that files changed without it. On the chat, not here:
+   * what it remembers is wrong now, even if the app restarts first.
+   *
+   * @param {string} what
+   */
+  _noteFilesChanged(what) {
+    if (!this.chatId) return;
+    this.store.updateChat(this.workspace, this.chatId, {
+      rewindNote: `[Kumo] Since your last turn, ${what}. Files may not match what earlier messages say, so read one again before relying on it.`,
+    });
+  }
+
+  // ── compare ──
+
+  /** What a window needs to draw the comparison, or null with none open. */
+  compareState() {
+    return this._compare ? structuredClone(this._compare.state) : null;
+  }
+
+  /** Settles when both sides of the open comparison have. */
+  compareSettled() {
+    return this._compare?.done ?? Promise.resolve();
+  }
+
+  /**
+   * Have two models take the same brief, each on a copy of the project as it
+   * stands now. Returns at once; `compare.changed` follows them.
+   *
+   * @param {string} brief
+   * @param {import("./compare.js").CompareTarget[]} targets
+   */
+  async startCompare(brief, targets) {
+    this._assertIdle();
+    if (targets.length !== 2) throw new Error("A comparison takes two models.");
+    if (this._compare || this._compareStarting) throw new Error("Finish the comparison that's open first.");
+    this._compareStarting = true;
+    try {
+      const { workspace } = this;
+      const base = await this._currentTree();
+      // That can take a while, and what comes next starts workers nobody would stop.
+      this._assertOpen();
+      if (this.workspace !== workspace) throw new Error("The project changed, so the comparison didn't start.");
+      const root = path.join(this.store.getSessionDir(this.workspace), "compare");
+      void removeStaleWorktrees(this.workspace, root);
+      /** @type {CompareRun} */
+      const run = new CompareRun({
+        workspace: this.workspace,
+        brief,
+        base,
+        root,
+        targets,
+        // Never looser than the session: a side writes only to its worktree, but under a gated mode its worker doesn't write at all.
+        safetyMode: process.env.KUMO_SAFETY_MODE ? stricterSafetyMode(this.settings.safetyMode, process.env.KUMO_SAFETY_MODE) : this.settings.safetyMode,
+        timeoutMs: this.settings.timeoutMs,
+        connect: this.connectCompare,
+        onChange: () => {
+          if (this._compare === run && !this.closed) this._emit("compare.changed", { compare: this.compareState() });
+        },
+      });
+      this._compare = run;
+      this._emit("compare.changed", { compare: this.compareState() });
+      return this.compareState();
+    } finally {
+      this._compareStarting = false;
+    }
+  }
+
+  /** @param {number} index */
+  _compareSide(index) {
+    const side = this._compare?.state.sides[index];
+    if (!side) throw new Error("This comparison has no such side.");
+    return side;
+  }
+
+  /**
+   * What one side changed.
+   *
+   * @param {number} index
+   */
+  async compareDiff(index) {
+    const { tree } = this._compareSide(index);
+    if (!tree || !this._compare) return { files: [], truncated: false };
+    return diffCheckpoints(this.workspace, this._compare.state.base, tree);
+  }
+
+  /**
+   * Bring one side's changes into the project and end the comparison. It's a
+   * checkpoint like a turn, so it can be rewound. Files changed since the
+   * comparison began are left alone; if the side touched one of those, nothing
+   * lands and both sides stay open (`conflicts`). Files a locked program stopped
+   * once it was landing are in `failed`: the rest has landed, so it's over.
+   *
+   * @param {number} index
+   * @returns {Promise<{ restored: number, removed: number, conflicts: string[], failed: string[] }>}
+   */
+  async keepCompare(index) {
+    this._assertIdle();
+    const side = this._compareSide(index);
+    const run = /** @type {CompareRun} */ (this._compare);
+    if (!side.tree) throw new Error("That side has nothing to keep.");
+    if (this.workspaceBusy(this.workspace, this)) {
+      throw new Error("Another session is working in this folder. Keep this once it finishes.");
+    }
+    this.busy = true;
+    this.movingFiles = true;
+    try {
+      const label = `Kept ${side.model}: ${run.state.brief}`;
+      const entry = await this._openCheckpoint(randomUUID(), label);
+      if (!entry) throw new Error("Couldn't save the current files first, so nothing was kept.");
+      let result;
+      try {
+        result = await applyChanges(this.workspace, run.state.base, side.tree, entry.start);
+      } finally {
+        await this._closeCheckpoint(entry);
+      }
+      if (result.conflicts.length > 0) return result;
+      this._noteFilesChanged(`the user kept one side of a comparison (${entry.label})`);
+      await this._closeCompare();
+      this._notice(entry.label);
+      return result;
+    } finally {
+      this.busy = false;
+      this.movingFiles = false;
+    }
+  }
+
+  /** Stop a comparison, if one is open, and let both sides go. */
+  async discardCompare() {
+    await this._closeCompare();
+  }
+
+  async _closeCompare() {
+    const run = this._compare;
+    if (!run) return;
+    this._compare = null;
+    await run.close();
+    if (!this.closed) this._emit("compare.changed", { compare: null });
   }
 
   // ── worker calls ──
@@ -1166,7 +1531,7 @@ export class Session extends EventEmitter {
 
   _assertIdle() {
     this._assertOpen();
-    if (this.busy) throw new Error("A turn is running; wait for it or interrupt it first.");
+    if (this.busy) throw new Error(this.movingFiles ? FILES_MOVING : "A turn is running; wait for it or interrupt it first.");
   }
 
   async _ensureClient() {
@@ -1247,6 +1612,8 @@ export class Session extends EventEmitter {
     const resolved = path.resolve(dir);
     if (!fs.existsSync(resolved)) throw new Error(`Directory not found: ${resolved}`);
     this._saveChatState();
+    // Its worktrees belong to the folder being left.
+    await this._closeCompare();
     this.workspace = resolved;
     // Whatever was pending belonged to the chat that was open; the chat chosen below may arm its own.
     this._replayPending = false;
@@ -1464,6 +1831,7 @@ export class Session extends EventEmitter {
     this._stopApprovalWatcher();
     this._settleApprovals("all", null, "the session closed");
     this.quotas.stop();
+    await this._closeCompare();
     const client = this.client;
     this.client = null;
     if (client) {

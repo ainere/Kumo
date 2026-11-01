@@ -30,8 +30,17 @@ import { EventEmitter } from "node:events";
 import { loadConfig } from "../config/settings.js";
 import { Session } from "./session.js";
 import { snapshotSettings } from "./settings.js";
+import { isInsideRoot } from "./workbench.js";
 
 /** @typedef {import("./session.js").SessionOptions} SessionOptions */
+
+/**
+ * Whether one folder holds the other, or they're the same.
+ *
+ * @param {string} a
+ * @param {string} b
+ */
+const overlaps = (a, b) => isInsideRoot(a, b) || isInsideRoot(b, a);
 
 export class SessionManager extends EventEmitter {
   /**
@@ -59,6 +68,8 @@ export class SessionManager extends EventEmitter {
       ...rest,
       settings: snapshotSettings(this.defaults()),
       chatTaken: (chatId, self) => this.chatTaken(chatId, self),
+      workspaceBusy: (workspace, self) => this.workspaceBusy(workspace, self),
+      filesMoving: (workspace, self) => this.filesMoving(workspace, self),
     });
     if (overrides) await session.updateSettings(overrides);
     this.sessions.set(session.id, session);
@@ -81,6 +92,28 @@ export class SessionManager extends EventEmitter {
    */
   chatTaken(chatId, self) {
     return this.list().some((s) => s !== self && s.chatId === chatId);
+  }
+
+  /**
+   * Whether a session other than `self` is busy in or around this folder. A
+   * rewind there would pull its files out from under it.
+   *
+   * @param {string} workspace
+   * @param {Session} [self]
+   */
+  workspaceBusy(workspace, self) {
+    return this.list().some((s) => s !== self && s.busy && overlaps(s.workspace, workspace));
+  }
+
+  /**
+   * Whether a session other than `self` is rewriting files in or around this
+   * folder, so a turn starting here would write into the middle of that.
+   *
+   * @param {string} workspace
+   * @param {Session} [self]
+   */
+  filesMoving(workspace, self) {
+    return this.list().some((s) => s !== self && s.movingFiles && overlaps(s.workspace, workspace));
   }
 
   /** @param {string} id */

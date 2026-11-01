@@ -14,6 +14,7 @@ import type { Prefs, WorkbenchTab } from "../../types";
 import { IconClose, IconPopOut, IconSplit } from "../icons";
 import { WorkersPanel, useEdgeFade } from "../WorkersPanel";
 import { BrowserTab } from "./BrowserTab";
+import { CompareTab } from "./CompareTab";
 import { DiffTab } from "./DiffTab";
 import { FilesTab } from "./FilesTab";
 import { PanelTab } from "./PanelTab";
@@ -36,18 +37,21 @@ const panelIdOf = (tab: WorkbenchTab): string | null => (tab.startsWith("panel:"
 export function workbenchTabLabel(tab: WorkbenchTab): string {
   const panelId = panelIdOf(tab);
   if (panelId) return getState().panels?.panels.find((p) => p.id === panelId)?.name ?? panelId;
+  if (tab === "compare") return "Compare";
   return WORKBENCH_TAB_DEFS.find((d) => d.id === tab)?.label ?? tab;
 }
 
-/** The built-in tabs, then the user's own panels. */
+/** The built-in tabs, Compare while it's in use, then the user's own panels. */
 export function useWorkbenchTabs(): ReadonlyArray<{ id: WorkbenchTab; label: string }> {
   const panels = useStore((s) => s.panels);
+  const comparing = useStore((s) => s.compareOpen || s.compare !== null);
   return useMemo(
     () => [
       ...WORKBENCH_TAB_DEFS,
+      ...(comparing ? [{ id: "compare" as const, label: "Compare" }] : []),
       ...(panels?.panels ?? []).map((p): { id: WorkbenchTab; label: string } => ({ id: `panel:${p.id}`, label: p.name })),
     ],
-    [panels]
+    [panels, comparing]
   );
 }
 
@@ -108,6 +112,8 @@ function WorkbenchPaneBody({
       return <BrowserTab />;
     case "plan":
       return <PlanTab />;
+    case "compare":
+      return <CompareTab />;
     default:
       return null;
   }

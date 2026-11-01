@@ -1359,9 +1359,10 @@ export async function handleRoleTool(registered, { task, files, confirm, preview
       // A patch the bridge will not write is not a stale one: re-running the
       // worker would just hand it the same write.
       return errorResult(`the approved diff was refused (${applied.reason}); nothing was written.`);
-    } else if (safetyMode === "interactive" && interactiveApprovalAvailable()) {
+    } else if ((safetyMode === "interactive" && interactiveApprovalAvailable()) || process.env.KUMO_EXACT_DIFF_ONLY === "1") {
       // The operator approved this exact diff, not whatever a re-run writes;
-      // writing anything else would bypass the human gate.
+      // writing anything else would bypass the human gate. A comparison confirms
+      // its own previews and has no human here, so it asks for the same rule.
       return errorResult(
         `the approved diff could not be applied verbatim (${applied.reason}); nothing was written. ` +
           `Request a new preview so the operator can approve the actual change.`
