@@ -3,14 +3,66 @@ import { getSafetyModeOption, modelDisplayName, SAFETY_MODE_OPTIONS } from "../l
 import {
   interrupt,
   openSettings,
+  getState,
   refreshWorkspaceFiles,
   send,
   setState,
+  toast,
   updateSettings,
   useStore,
 } from "../store";
-import { IconArrowUp, IconCheck, IconStop, SafetyIcon } from "./icons";
+import type { ComposerAttachment } from "../types";
+import { IconArrowUp, IconCheck, IconClose, IconFile, IconStop, SafetyIcon } from "./icons";
 import { useFileSearch } from "./workbench/useFileSearch";
+
+/** The engine's limits (src/core/attachments.js), checked here so a file is turned down before it's read. */
+const MAX_ATTACHMENTS = 10;
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+const dataUrlOf = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error("Couldn't read the file."));
+    reader.readAsDataURL(file);
+  });
+
+/** The longest side of a thumbnail: twice what a bubble draws, so it stays sharp. */
+const MAX_THUMBNAIL_PIXELS = 440;
+
+/** A small copy for the composer and the bubble, so a full-size image isn't held for the whole session. */
+async function thumbnailOf(file: File): Promise<string | null> {
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, MAX_THUMBNAIL_PIXELS / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    return canvas.toDataURL("image/png");
+  } catch {
+    return null;
+  }
+}
+
+let attachmentSeq = 1;
+
+/** A pasted or dropped file, as the composer holds it. One with no file behind it has to go by value. */
+async function toAttachment(file: File): Promise<ComposerAttachment> {
+  const path = window.kumo.pathForFile(file) || null;
+  const image = file.type.startsWith("image/");
+  const url = path === null ? await dataUrlOf(file) : null;
+  return {
+    id: `attachment-${attachmentSeq++}`,
+    name: file.name || "pasted",
+    size: file.size,
+    image,
+    thumbnail: image ? await thumbnailOf(file) : null,
+    path,
+    data: path === null && url ? url.slice(url.indexOf(",") + 1) : null,
+  };
+}
 
 export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
   const busy = useStore((s) => s.busy);
@@ -21,6 +73,8 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
   const [safetyMenuOpen, setSafetyMenuOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<{ query: string; start: number; end: number } | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [dragging, setDragging] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
   const safetyMenuRef = useRef<HTMLDivElement>(null);
   const lastInsertSeq = useRef(0);
@@ -97,11 +151,61 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
     el.style.height = `${Math.min(240, el.scrollHeight)}px`;
   }, [text]);
 
+  const addFiles = async (files: File[]) => {
+    const fits = files.filter((file) => file.size <= MAX_ATTACHMENT_BYTES);
+    if (fits.length < files.length) toast("warning", `An attachment can be up to ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB.`);
+    try {
+      const added = await Promise.all(fits.map(toAttachment));
+      setAttachments((current) => {
+        const room = MAX_ATTACHMENTS - current.length;
+        if (added.length > room) toast("warning", `A message takes up to ${MAX_ATTACHMENTS} attachments.`);
+        return [...current, ...added.slice(0, Math.max(0, room))];
+      });
+    } catch (err) {
+      toast("warning", err instanceof Error ? err.message : "Couldn't read that file.");
+    }
+  };
+
+  // Anywhere in the window: a file dropped outside a handler would otherwise make the app navigate to it.
+  useEffect(() => {
+    const over = (e: DragEvent) => {
+      if (!e.dataTransfer?.types.includes("Files")) return;
+      e.preventDefault();
+      setDragging(true);
+    };
+    const leave = (e: DragEvent) => {
+      if (e.relatedTarget === null) setDragging(false);
+    };
+    const drop = (e: DragEvent) => {
+      if (!e.dataTransfer?.types.includes("Files")) return;
+      e.preventDefault();
+      setDragging(false);
+      // The composer stays mounted behind Settings, where a drop would attach to something out of sight.
+      if (getState().view === "chat") void addFiles([...e.dataTransfer.files]);
+    };
+    window.addEventListener("dragover", over);
+    window.addEventListener("dragleave", leave);
+    window.addEventListener("drop", drop);
+    return () => {
+      window.removeEventListener("dragover", over);
+      window.removeEventListener("dragleave", leave);
+      window.removeEventListener("drop", drop);
+    };
+  }, []);
+
   const submit = () => {
-    const prompt = text.trim();
-    if (!prompt || busy) return;
+    const words = text.trim();
+    if ((!words && attachments.length === 0) || busy) return;
+    const prompt = words || `Take a look at the attached file${attachments.length === 1 ? "" : "s"}.`;
+    const attached = attachments;
     setText("");
-    void send(prompt);
+    setAttachments([]);
+    void send(prompt, attached).then((sent) => {
+      if (sent) return;
+      // It never started, so nothing should be lost: a pasted image exists nowhere else.
+      setText((current) => current || words);
+      setAttachments((current) => [...attached, ...current]);
+    });
   };
 
   const activeSafety = getSafetyModeOption(settings?.safetyMode);
@@ -111,9 +215,16 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
       <form
         className="composer glass-strong"
         data-part="composer"
+        data-dragging={dragging || undefined}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
+        }}
+        onPaste={(e) => {
+          // Copying from Word or Excel offers a picture of the text too; the text is what was meant.
+          if (e.clipboardData.files.length === 0 || e.clipboardData.getData("text/plain")) return;
+          e.preventDefault();
+          void addFiles([...e.clipboardData.files]);
         }}
       >
         {mentionQuery && mentionCandidates.length > 0 && (
@@ -139,6 +250,24 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
                 </button>
               );
             })}
+          </div>
+        )}
+        {attachments.length > 0 && (
+          <div className="composer-attachments" data-part="composer-attachments">
+            {attachments.map((file) => (
+              <div key={file.id} className="attachment-chip" data-part="attachment-chip" title={file.name}>
+                {file.thumbnail ? <img className="attachment-thumb" src={file.thumbnail} alt="" /> : <IconFile />}
+                <span className="attachment-name">{file.name}</span>
+                <button
+                  type="button"
+                  className="attachment-remove"
+                  aria-label={`Remove ${file.name}`}
+                  onClick={() => setAttachments((current) => current.filter((a) => a.id !== file.id))}
+                >
+                  <IconClose />
+                </button>
+              </div>
+            ))}
           </div>
         )}
         <label className="sr-only" htmlFor="prompt">

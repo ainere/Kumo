@@ -1,3 +1,4 @@
+import { IconFile } from "./icons";
 import { Fragment, memo, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -41,6 +42,20 @@ export function ToolCard({ toolId }: { toolId: string }) {
 const UserMessage = memo(function UserMessage({ message }: { message: Message }) {
   return (
     <div className="msg-user glass" data-part="message-user">
+      {message.attachments.length > 0 && (
+        <div className="msg-attachments" data-part="message-attachments">
+          {message.attachments.map((file, i) =>
+            file.thumbnail ? (
+              <img key={i} className="msg-attachment-image" src={file.thumbnail} alt={file.name} title={file.name} />
+            ) : (
+              <span key={i} className="attachment-chip" title={file.name}>
+                <IconFile />
+                <span className="attachment-name">{file.name}</span>
+              </span>
+            )
+          )}
+        </div>
+      )}
       {message.text}
     </div>
   );

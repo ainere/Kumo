@@ -23,7 +23,7 @@
  * The engine validates every command; nothing else is reachable from the page.
  */
 
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { BrowserViewState, WorkbenchMessage, WorkbenchTab } from "../main/index";
 import type { SceneList } from "../main/user-scenes";
 import type { ThemeList } from "../main/user-themes";
@@ -123,6 +123,8 @@ ipcRenderer.on("kumo:workbench-message", (_event, message: WorkbenchMessage) => 
 });
 
 contextBridge.exposeInMainWorld("kumo", {
+  /** Where a pasted or dropped file lives. Empty for one with no file behind it, like a screenshot. */
+  pathForFile: (file: File): string => webUtils.getPathForFile(file),
   invoke(command: string, args?: unknown): Promise<unknown> {
     const request = { id: nextId++, command: String(command), args: args ?? {} };
     return new Promise((resolve, reject) => {

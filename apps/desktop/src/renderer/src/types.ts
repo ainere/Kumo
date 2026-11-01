@@ -69,6 +69,8 @@ export interface Turn {
   tools?: TurnTool[];
   /** Workspace-relative paths of files the turn's approved diffs changed. */
   diffPaths?: string[];
+  /** What the user attached. */
+  attachments?: { name: string; image: boolean }[];
   /** This turn began on a provider other than the chat's earlier turns, with them replayed into its context. */
   replayed?: boolean;
 }
@@ -230,7 +232,25 @@ export interface Message {
   thinking: boolean;
   /** What the lead thought or did along the way: its reasoning, or for a lead that keeps that private, its steps. */
   reasoning: string;
+  /** What the user attached to this message. */
+  attachments: MessageAttachment[];
   failed: string | null;
+}
+
+/** A file on a message. A thumbnail only lasts as long as the window that pasted it. */
+export interface MessageAttachment {
+  name: string;
+  image: boolean;
+  thumbnail?: string | null;
+}
+
+/** A file waiting in the composer. */
+export interface ComposerAttachment extends MessageAttachment {
+  id: string;
+  size: number;
+  /** Where it is, or for one with no file behind it, its content as base64. */
+  path: string | null;
+  data: string | null;
 }
 
 export interface Approval {

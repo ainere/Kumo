@@ -54,6 +54,7 @@ import {
   restoreTree,
   snapshotWorkspace,
 } from "./checkpoints.js";
+import { attachmentNote, checkAttachments, isImageName, safeFileName, saveAttachments } from "./attachments.js";
 import { CompareRun, removeStaleWorktrees } from "./compare.js";
 import { makeEvent } from "./events.js";
 import { snapshotSettings, applySettingsPatch } from "./settings.js";
@@ -735,9 +736,12 @@ export class Session extends EventEmitter {
    * success, failure, timeout or interrupt — never while it still works.
    *
    * @param {string} prompt
+   * @param {{ attachments?: import("./attachments.js").AttachmentInput[] }} [opts]
    * @returns {Promise<TurnOutcome>}
    */
-  async send(prompt) {
+  async send(prompt, { attachments = [] } = {}) {
+    // Before anything starts, so a bad file gives the user back their draft.
+    if (attachments.length > 0) await checkAttachments(this.workspace, attachments);
     if (this.closed) throw new Error("This session is closed.");
     if (this.busy) throw new Error(this.movingFiles ? FILES_MOVING : "A turn is already running.");
     if (this.filesMoving(this.workspace, this)) throw new Error(FILES_MOVING);
@@ -749,8 +753,12 @@ export class Session extends EventEmitter {
     const transcript = [];
     const trace = new TurnTrace();
     this._turn = { id: turnId, transcript, trace };
+    const attached = attachments.map((item) => {
+      const name = safeFileName(item.name);
+      return { name, image: isImageName(name) };
+    });
     // The prompt shown and recorded is the user's own; a replay and the profile go in front of it only on its way to the lead.
-    this._emit("turn.started", { turnId, prompt });
+    this._emit("turn.started", { turnId, prompt, ...(attached.length > 0 ? { attachments: attached } : {}) });
 
     /** @type {{ ok: boolean, reason?: string, timedOut?: boolean, interrupted?: boolean }} */
     let outcome;
@@ -789,7 +797,8 @@ export class Session extends EventEmitter {
       if (profileCarried !== null) front.push(profilePreamble(profileCarried), "");
       rewindNote = this.chatId ? this._chatRecord(this.chatId)?.rewindNote || null : null;
       if (rewindNote !== null) front.push(rewindNote, "");
-      const sent = [...front, prompt].join("\n");
+      const saved = await saveAttachments(this.workspace, this.chatId || this.id, attachments);
+      const sent = [...front, prompt, ...(saved.length > 0 ? ["", attachmentNote(saved)] : [])].join("\n");
 
       // Last before the lead starts, so what the steps above wrote isn't counted as the turn's.
       checkpoint = await this._openCheckpoint(turnId, prompt);
@@ -822,7 +831,7 @@ export class Session extends EventEmitter {
     const elapsedMs = Date.now() - startedAt;
     const text = transcript.join("");
     if (outcome.ok) {
-      this._recordTurn(prompt, text, elapsedMs, { trace, replayed });
+      this._recordTurn(prompt, text, elapsedMs, { trace, replayed, attachments: attached });
       // The context reached the lead and the turn is saved; a failed turn leaves it pending for the next prompt.
       if (replayed) this._replayPending = false;
       if (profileCarried !== null) this._profileSent = profileCarried;
@@ -872,9 +881,9 @@ export class Session extends EventEmitter {
    * @param {string} prompt
    * @param {string} text
    * @param {number} elapsedMs
-   * @param {{ trace: TurnTrace, replayed: boolean }} extra
+   * @param {{ trace: TurnTrace, replayed: boolean, attachments?: { name: string, image: boolean }[] }} extra
    */
-  _recordTurn(prompt, text, elapsedMs, { trace, replayed }) {
+  _recordTurn(prompt, text, elapsedMs, { trace, replayed, attachments = [] }) {
     if (!this.persist || !this.chatId) return;
     this.turnCount++;
     this.store.appendTurn(this.workspace, this.chatId, {
@@ -886,6 +895,7 @@ export class Session extends EventEmitter {
       elapsedMs,
       ...trace.snapshot(),
       ...(replayed ? { replayed: true } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
     });
     /** @type {Record<string, unknown>} */
     const update = {

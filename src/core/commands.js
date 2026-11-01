@@ -59,6 +59,7 @@ import {
   getWorkspacePlan,
   updateWorkspacePlan,
 } from "./workbench.js";
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, dropAttachments } from "./attachments.js";
 import { dropCheckpoints } from "./checkpoints.js";
 import { makeEvent } from "./events.js";
 import { SESSION_SETTING_KEYS, snapshotSettings } from "./settings.js";
@@ -188,7 +189,26 @@ export const CommandSchemas = {
   "chat.reorder": z.object({ workspace: z.string().min(1).max(4096), order: z.array(id).max(200) }).strict(),
   "session.create": z.object({ workspace: z.string().min(1).max(4096), chatId: id.optional() }).strict(),
   "session.snapshot": sessionOnly,
-  "session.send": z.object({ sessionId: id, prompt: z.string().min(1).max(200_000) }).strict(),
+  "session.send": z
+    .object({
+      sessionId: id,
+      prompt: z.string().min(1).max(200_000),
+      attachments: z
+        .array(
+          z
+            .object({
+              name: z.string().min(1).max(260),
+              path: z.string().min(1).max(4096).optional(),
+              // Base64 is a third longer than what it holds.
+              data: z.string().min(1).max(Math.ceil((MAX_ATTACHMENT_BYTES * 4) / 3) + 4).optional(),
+            })
+            .strict()
+            .refine((item) => Boolean(item.path) !== Boolean(item.data), "takes a path or data, not both")
+        )
+        .max(MAX_ATTACHMENTS)
+        .optional(),
+    })
+    .strict(),
   "session.interrupt": sessionOnly,
   "session.newChat": sessionOnly,
   "session.openChat": z.object({ sessionId: id, chatId: id }).strict(),
@@ -354,16 +374,19 @@ export function createCommandRouter(manager, opts = {}) {
   };
 
   /**
-   * Drop a chat's checkpoints from its repository. Best effort: what it keeps
-   * is only unused refs, and a chat has to stay deletable after its folder is
-   * gone.
+   * Drop what a chat left in its project: checkpoints and attachments. Only in
+   * a folder the app knows, since the renderer names it and just looking at a
+   * network path sends that host the user's login. Best effort: a chat has to
+   * stay deletable after its folder is gone.
    *
    * @param {string} workspace
    * @param {string} chatId
    */
-  const forgetCheckpoints = async (workspace, chatId) => {
+  const forgetChatFiles = async (workspace, chatId) => {
     try {
-      await dropCheckpoints(assertAllowedWorkspace(workspace), chatId);
+      const allowed = assertAllowedWorkspace(workspace);
+      await dropCheckpoints(allowed, chatId);
+      await dropAttachments(allowed, chatId);
     } catch {
       /* not a folder the app knows */
     }
@@ -414,7 +437,7 @@ export function createCommandRouter(manager, opts = {}) {
     "projects.rename": ({ workspace, name }) => renameProject(workspace, name),
     "projects.delete": async ({ workspace }) => {
       // By chat: a project inside another's repository shares its refs, and those aren't this one's to drop.
-      await Promise.all(listChats(workspace).map((chat) => forgetCheckpoints(workspace, chat.id)));
+      await Promise.all(listChats(workspace).map((chat) => forgetChatFiles(workspace, chat.id)));
       return removeProject(workspace);
     },
     "projects.addFolder": ({ workspace, folder }) => addAccessibleFolder(workspace, folder),
@@ -425,14 +448,14 @@ export function createCommandRouter(manager, opts = {}) {
       assertChatFree(chatId, sessionId ? manager.get(sessionId) : undefined);
       // First: this is what checks the id, and git gets it next.
       const chats = deleteChat(workspace, chatId);
-      await forgetCheckpoints(workspace, chatId);
+      await forgetChatFiles(workspace, chatId);
       return chats;
     },
     "chat.move": async ({ fromWorkspace, toWorkspace, chatId, sessionId }) => {
       assertChatFree(chatId, sessionId ? manager.get(sessionId) : undefined);
       const moved = moveChat(fromWorkspace, toWorkspace, chatId);
-      // The trees are in the old folder's repository, so the chat can't take them along.
-      if (moved.ok) await forgetCheckpoints(fromWorkspace, chatId);
+      // Its trees and attachments are in the old folder, so the chat can't take them along.
+      if (moved.ok) await forgetChatFiles(fromWorkspace, chatId);
       return moved;
     },
     "chat.reorder": ({ workspace, order }) => reorderChats(workspace, order),
@@ -441,7 +464,7 @@ export function createCommandRouter(manager, opts = {}) {
       return sessionSnapshot(await manager.create({ workspace, chatId, interactive: true, checkpoints: true }));
     },
     "session.snapshot": ({ sessionId }) => sessionSnapshot(session(sessionId)),
-    "session.send": ({ sessionId, prompt }) => session(sessionId).send(prompt),
+    "session.send": ({ sessionId, prompt, attachments }) => session(sessionId).send(prompt, { attachments }),
     "session.interrupt": ({ sessionId }) => {
       session(sessionId).interrupt();
       return null;

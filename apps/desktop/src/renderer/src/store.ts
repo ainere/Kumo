@@ -31,6 +31,7 @@ import type {
   Checkpoint,
   CheckpointView,
   CompareState,
+  ComposerAttachment,
   DiffFile,
   GlobalConfig,
   InlineReviewComment,
@@ -338,6 +339,7 @@ const message = (id: string, kind: Message["kind"], text: string, turnId: string
   streaming: false,
   thinking: false,
   reasoning: "",
+  attachments: [],
   failed: null,
 });
 
@@ -381,6 +383,7 @@ function restoreLog(log: Turn[]): Restored {
       parts: [...toolParts, ...lead.parts],
       reasoning: turn.reasoning ?? "",
     });
+    if (turn.attachments) out.messages[out.messages.length - 2].attachments = turn.attachments;
     if (turn.replayed || turn.provider) {
       out.turnMeta[turnId] = { replayed: Boolean(turn.replayed), provider: turn.provider ?? null, model: turn.model ?? null };
     }
@@ -500,14 +503,24 @@ export async function boot(resume?: SessionSnapshot | null): Promise<void> {
 }
 
 /** Resolves false when the prompt never reached the lead. */
-export async function send(prompt: string): Promise<boolean> {
+/** What the turn being sent attached, for its bubble: the engine only hands back names. */
+let sentAttachments: ComposerAttachment[] = [];
+
+export async function send(prompt: string, attachments: ComposerAttachment[] = []): Promise<boolean> {
   const session = state.session;
   if (!session || state.busy) return false;
+  sentAttachments = attachments;
   // Busy at once, so a second Enter can't send before turn.started arrives;
   // session.send resolves when the turn is over.
   setState({ busy: true });
   try {
-    const outcome = await invoke<TurnOutcome>("session.send", { sessionId: session.id, prompt });
+    const outcome = await invoke<TurnOutcome>("session.send", {
+      sessionId: session.id,
+      prompt,
+      ...(attachments.length > 0
+        ? { attachments: attachments.map(({ name, path, data }) => (path ? { name, path } : { name, data })) }
+        : {}),
+    });
     if (!outcome.ok && outcome.interrupted) toast("notice", "Turn interrupted.");
     return true;
   } catch (err) {
@@ -1128,16 +1141,23 @@ export function handleEvent(event: KumoEvent): void {
     return;
   }
   switch (event.type) {
-    case "turn.started":
+    case "turn.started": {
+      const attached = sentAttachments;
+      // Only ever this one turn's, and what's in here can be large.
+      sentAttachments = [];
       setState((s) => ({
         busy: true,
         messages: [
           ...s.messages,
-          message(`${event.turnId}-u`, "user", event.prompt, event.turnId),
+          {
+            ...message(`${event.turnId}-u`, "user", event.prompt, event.turnId),
+            attachments: (event.attachments ?? []).map((a, i) => ({ ...a, thumbnail: attached[i]?.thumbnail ?? null })),
+          },
           { ...message(`${event.turnId}-l`, "lead", "", event.turnId), streaming: true, thinking: true },
         ],
       }));
       break;
+    }
     case "turn.delta":
       updateLead(event.turnId, (m) => ({ ...m, text: m.text + event.text, parts: appendText(m.parts, event.text), thinking: false }));
       break;

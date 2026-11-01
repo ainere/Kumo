@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 interface KumoBridge {
+  pathForFile(file: File): string;
   invoke(command: string, args?: unknown): Promise<unknown>;
   onEvent(listener: (event: unknown) => void): () => void;
   onEngineRestart(listener: () => void): () => void;
