@@ -757,7 +757,8 @@ function antigravityPermissionsCheck(config) {
   let unreadable = "";
   try {
     const allow = JSON.parse(fs.readFileSync(file, "utf-8"))?.permissions?.allow;
-    allowed = Array.isArray(allow) ? allow.length : 0;
+    // Only a rule for commands helps: a read_url rule says nothing about them.
+    allowed = Array.isArray(allow) ? allow.filter((rule) => typeof rule === "string" && rule.startsWith("command(")).length : 0;
   } catch (err) {
     if (errCode(err) !== "ENOENT") unreadable = ` It could not be read (${errCode(err) || "not valid JSON"}).`;
   }

@@ -344,8 +344,20 @@ export async function runAgy(opts) {
   while (attempts < maxAttempts) {
     attempts++;
     const res = await executeOnce();
-    if (res.ok || !isTransientSocketError(res.stderr) || attempts >= maxAttempts) {
+    // A read-only worker that tries a shell command is refused, and ends there
+    // with nothing to say. Allowing shell commands would stop it being read-only:
+    // `agy` can only allow one exact command or all of them, and its sandbox lets
+    // writes land outside the project. So it gets one more go, told to stay on its
+    // file tools.
+    const refused = !canWrite && res.stdout === "" && SHELL_REFUSED.test(res.stderr);
+    const transient = !res.ok && isTransientSocketError(res.stderr);
+    if ((!refused && !transient) || attempts >= maxAttempts) {
       return res;
+    }
+    if (refused) {
+      const retried = `${SHELL_RETRY_NOTE}\n\n${compositePrompt}`;
+      if (!promptViaStdin) args[args.indexOf(compositePrompt)] = retried;
+      compositePrompt = retried;
     }
     const retryMarker = "\n[retrying worker call...]\n";
     if (onChunk) {
@@ -356,6 +368,14 @@ export async function runAgy(opts) {
     await new Promise((r) => setTimeout(r, 1500));
   }
 }
+
+/** How `agy` says it refused a tool and stopped with nothing to show. */
+const SHELL_REFUSED = /no output produced[\s\S]*"command" permission/i;
+
+const SHELL_RETRY_NOTE =
+  "[Second try]\nYour last try ran a shell command. That is refused here and it ended the run with nothing to show. " +
+  "Do not run any command, git included. Use only your file tools: list_dir, view_file, grep_search and find_by_name. " +
+  "If something can't be found out that way, say so in your answer.";
 
 /**
  * Whether a model id names Gemini 4 Argon, which has its own Antigravity limit.

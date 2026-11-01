@@ -850,16 +850,12 @@ export class Session extends EventEmitter {
 
   /**
    * Whether this lead needs telling to delegate: one with no worker tools can't,
-   * and an API lead's own system prompt already says so. Headless Antigravity
-   * refuses MCP calls unless it may skip permissions, so under a gated mode the
-   * brief would only turn an answer into an empty reply.
+   * and an API lead's own system prompt already says so.
    *
    * @param {any} client
    */
   _leadBriefed(client) {
-    const provider = this.settings.orchestratorProvider;
-    if (provider === "antigravity" && this.settings.safetyMode !== "autonomous") return false;
-    return orchestratorDelegates(provider) && !client.hasLeadBrief;
+    return orchestratorDelegates(this.settings.orchestratorProvider) && !client.hasLeadBrief;
   }
 
   /** Ask the running turn to stop; `send` resolves once it has. */

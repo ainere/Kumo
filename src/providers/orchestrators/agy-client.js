@@ -28,10 +28,50 @@
 
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { getCliBinary, getAgyUsage, isArgonModel, agyEffortArg } from "../../bridge/agy-runner.js";
+import { listRoles } from "../../config/roles.js";
 import { safeSpawn, childEnvFor, stopProcessTree } from "../../utils/process.js";
 import { ensureAntigravityBridgeConfig } from "../../config/sync.js";
+
+const AGY_HOME = () => path.join(os.homedir(), ".gemini", "antigravity-cli");
+
+/**
+ * Where `agy` keeps one conversation's steps. Its stream reports only how long
+ * the lead thought; the words are here, written before the step's end is sent.
+ *
+ * @param {string} conversationId
+ */
+const transcriptPath = (conversationId) =>
+  path.join(AGY_HOME(), "brain", conversationId, ".system_generated", "logs", "transcript.jsonl");
+
+/**
+ * The flags that let a lead reach its workers. Without skip-permissions, headless
+ * `agy` refuses every MCP call and still reports success with an empty reply.
+ * This allows Kumo's worker tools and nothing else, for this session only, and
+ * loses nothing: the bridge holds the safety mode on what a worker writes.
+ * `agy` matches a rule exactly, so each tool is named.
+ *
+ * @param {Record<string, any>} config
+ * @param {string} safetyMode
+ * @param {string} [settingsFile] the user's own `agy` settings
+ * @returns {string[]}
+ */
+export function leadPermissionArgs(config, safetyMode, settingsFile = path.join(AGY_HOME(), "settings.json")) {
+  if (safetyMode === "autonomous") return ["--dangerously-skip-permissions"];
+  /** @type {string[]} */
+  let own = [];
+  try {
+    const allow = JSON.parse(fs.readFileSync(settingsFile, "utf-8"))?.permissions?.allow;
+    if (Array.isArray(allow)) own = allow.filter((rule) => typeof rule === "string");
+  } catch {
+    /* no settings of their own */
+  }
+  const workers = listRoles(config).map((role) => `mcp(kumo-bridge/${role.tool})`);
+  return ["--settings", JSON.stringify({ permissions: { allow: [...own, ...workers] } })];
+}
 
 /**
  * A worker call as `agy` really reports one: a generic "tool" step named
@@ -78,9 +118,8 @@ const ACTIVITY_TARGETS = ["CommandLine", "Command", "Query", "Pattern", "SearchP
 const MAX_ACTIVITY_CHARS = 90;
 
 /**
- * A line saying what the lead is doing. `agy` keeps its thinking to itself and
- * reports only how long it took, but it does say which tool it's on, so this is
- * all a Gemini lead's trace can hold. Worker calls have cards of their own.
+ * A line saying what the lead is doing: how long it thought, or which of its
+ * own tools it's on. Worker calls have cards of their own.
  *
  * @param {Record<string, any>} update
  * @returns {string|null}
@@ -137,6 +176,8 @@ export class AgyAppClient extends EventEmitter {
       "autonomous";
     this.isTurnActive = false;
     this._pendingToolCallIds = new Map();
+    /** How far into the conversation's transcript this client has read, in bytes. */
+    this._transcriptRead = 0;
     // Whether the running process has taken a turn: a new thread only needs
     // a fresh process when the current one already holds a conversation.
     this._hadTurn = false;
@@ -154,9 +195,7 @@ export class AgyAppClient extends EventEmitter {
 
       // Permission bypass is only legitimate in autonomous mode; diff-review and
       // interactive both require the CLI to stop before touching the workspace.
-      if (this.safetyMode === "autonomous") {
-        args.push("--dangerously-skip-permissions");
-      }
+      args.push(...leadPermissionArgs(this.options.config ?? {}, this.safetyMode));
 
       if (this.activeModel) {
         args.push("--model", this.activeModel);
@@ -307,6 +346,7 @@ export class AgyAppClient extends EventEmitter {
 
     this.isTurnActive = true;
     this._hadTurn = true;
+    this._skipTranscript();
     const msg = JSON.stringify({
       event: "user",
       message: {
@@ -391,6 +431,63 @@ export class AgyAppClient extends EventEmitter {
   /**
    * Dispatch parsed stream event to client listeners.
    */
+  /** Start reading the transcript from where it ends: what's there is from earlier turns. */
+  _skipTranscript() {
+    this._transcriptRead = 0;
+    if (!this.conversationId) return;
+    try {
+      this._transcriptRead = fs.statSync(transcriptPath(this.conversationId)).size;
+    } catch {
+      /* a new conversation has none yet */
+    }
+  }
+
+  /**
+   * What the lead thought in a step, read from the transcript as far as it goes.
+   * Empty when it isn't there: a trace is a nicety, so a file `agy` has moved or
+   * changed costs the words and nothing else.
+   *
+   * @param {number} stepIndex
+   * @returns {string}
+   */
+  _thinkingAt(stepIndex) {
+    if (!this.conversationId) return "";
+    /** @type {string} */
+    let text;
+    try {
+      const file = transcriptPath(this.conversationId);
+      const length = fs.statSync(file).size - this._transcriptRead;
+      if (length <= 0) return "";
+      const buffer = Buffer.alloc(length);
+      const fd = fs.openSync(file, "r");
+      try {
+        fs.readSync(fd, buffer, 0, length, this._transcriptRead);
+      } finally {
+        fs.closeSync(fd);
+      }
+      // Only whole lines: the next read picks up one still being written.
+      const end = buffer.lastIndexOf(10);
+      if (end === -1) return "";
+      this._transcriptRead += end + 1;
+      text = buffer.subarray(0, end).toString("utf-8");
+    } catch {
+      return "";
+    }
+    let thought = "";
+    for (const line of text.split("\n")) {
+      try {
+        const row = JSON.parse(line);
+        if (row.step_index === stepIndex && typeof row.thinking === "string") thought = row.thinking;
+      } catch {
+        /* not a line this can use */
+      }
+    }
+    return thought
+      .replace(/^I'm thinking through how to approach this\.\s*/, "")
+      .replace(/\n{2,}/g, "\n")
+      .trim();
+  }
+
   _handleStreamEvent(data) {
     const eventType = data.event;
 
@@ -416,7 +513,10 @@ export class AgyAppClient extends EventEmitter {
       }
 
       const activity = activityLine(update);
-      if (activity) this.emit("reasoning", `${activity}\n`);
+      if (activity) {
+        const thought = update.step_type === "agent_response" ? this._thinkingAt(update.step_index) : "";
+        this.emit("reasoning", thought ? `${activity}\n${thought}\n\n` : `${activity}\n`);
+      }
 
       // 3. Tool invocation
       const isToolEvent = update.step_type === "tool_call" || update.tool_call || update.step_type === "call_mcp_tool";
