@@ -624,7 +624,11 @@ async function bridgeCheck(workspace, config) {
   try {
     probe = await probeBridge({ workspace: workspace || process.cwd(), timeoutMs: BRIDGE_TIMEOUT_MS, kumoHome: scratch });
   } finally {
-    if (scratch) fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 3 });
+    try {
+      if (scratch) fs.rmSync(scratch, { recursive: true, force: true });
+    } catch {
+      /* the bridge may still hold it for a moment; a temp folder left behind costs nothing */
+    }
   }
   if (!probe.ok) return mk("bridge-server", "bridge", label, "fail", probe.details);
   const missing = BUILTIN_ROLES.map((r) => r.tool).filter((tool) => !probe.tools.includes(tool));
