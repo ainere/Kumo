@@ -18,14 +18,27 @@ function fileMatch(path: string, name: string, query: string): number | null {
   return 4;
 }
 
+/** With nothing typed yet: files near the project's root first, hidden folders last, so README.md comes before .github/. */
+function atTheTop<T extends { path: string }>(files: T[]): T[] {
+  const rank = (path: string) => {
+    const parts = path.split("/");
+    return parts.length + (parts.some((part) => part.startsWith(".")) ? 100 : 0);
+  };
+  return files
+    .map((file) => ({ file, rank: rank(file.path) }))
+    .sort((a, b) => a.rank - b.rank)
+    .map((entry) => entry.file);
+}
+
 /**
  * The best matches for what was typed: the file's name over its folders, the
  * start of a name over the middle, and letters in order ("wbjs" finds
  * workbench.js) last. Shorter paths win ties.
  */
 export function rankFiles<T extends { path: string; name: string }>(files: T[], query: string, limit: number): T[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return files.slice(0, limit);
+  // Backslashes as Windows people type them: paths here always use forward slashes.
+  const q = query.trim().replace(/\\/g, "/").toLowerCase();
+  if (!q) return atTheTop(files).slice(0, limit);
   const scored: Array<{ file: T; score: number }> = [];
   for (const file of files) {
     const score = fileMatch(file.path.toLowerCase(), file.name.toLowerCase(), q);

@@ -1,9 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getSafetyModeOption, modelDisplayName, SAFETY_MODE_OPTIONS } from "../lib";
 import {
   interrupt,
   openSettings,
   getState,
+  loadCatalog,
   refreshWorkspaceFiles,
   send,
   setState,
@@ -12,6 +13,7 @@ import {
   useStore,
 } from "../store";
 import { randomPlaceholder } from "../composerPlaceholders";
+import { parseSlash, runTypedSlash, type SlashCommand } from "../slashCommands";
 import type { ComposerAttachment } from "../types";
 import { IconArrowUp, IconCheck, IconClose, IconFile, IconPlus, IconStop, SafetyIcon } from "./icons";
 import { useFileSearch } from "./workbench/useFileSearch";
@@ -49,6 +51,26 @@ async function thumbnailOf(file: File): Promise<string | null> {
 
 let attachmentSeq = 1;
 
+/** One line of the `/` menu: a command, or a pick after one. */
+interface SlashRow {
+  key: string;
+  name: string;
+  /** What the command takes after its name, shown faint. */
+  usage?: string;
+  detail?: string;
+  /** Shown but can't be used now. */
+  dim?: boolean;
+  /** Enter. */
+  run: () => void;
+  /** Tab: fill in what the row stands for without running it. */
+  complete: () => void;
+  /** A command shows its slash; a pick after one doesn't. */
+  command?: boolean;
+}
+
+/** A path as it's written into the message: quoted when a space would end it early. */
+const mentionText = (filePath: string) => (/\s/.test(filePath) ? `@"${filePath}"` : `@${filePath}`);
+
 /** A pasted or dropped file, as the composer holds it. One with no file behind it has to go by value. */
 async function toAttachment(file: File): Promise<ComposerAttachment> {
   const path = window.kumo.pathForFile(file) || null;
@@ -70,10 +92,13 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
   const settings = useStore((s) => s.session?.settings);
   const fileCount = useStore((s) => s.workspaceFiles.length);
   const composerInsert = useStore((s) => s.composerInsert);
+  // The commands read the catalog as they build their lists; subscribing redraws the menu when it loads.
+  useStore((s) => s.catalog);
   const [text, setText] = useState("");
+  const [slashDismissed, setSlashDismissed] = useState(false);
   const [safetyMenuOpen, setSafetyMenuOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<{ query: string; start: number; end: number } | null>(null);
-  const [mentionIndex, setMentionIndex] = useState(0);
+  const [menuIndex, setMenuIndex] = useState(0);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [dragging, setDragging] = useState(false);
   const [safetyPlacement, setSafetyPlacement] = useState<"below" | "above">("below");
@@ -100,25 +125,97 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
 
   useEffect(() => {
     mentionMenu.current?.querySelector('[data-selected="true"]')?.scrollIntoView({ block: "nearest" });
-  }, [mentionIndex]);
+  }, [menuIndex]);
 
   const applyMention = (filePath: string) => {
     if (!mentionQuery) return;
     const before = text.slice(0, mentionQuery.start);
     const after = text.slice(mentionQuery.end);
-    const nextText = `${before}@${filePath} ${after.replace(/^\s+/, "")}`;
-    setText(nextText);
+    const mention = mentionText(filePath);
+    setText(`${before}${mention} ${after.replace(/^\s+/, "")}`);
     setMentionQuery(null);
-    setMentionIndex(0);
+    setMenuIndex(0);
     setTimeout(() => {
       const el = input.current;
       if (el) {
-        const pos = before.length + filePath.length + 2;
+        const pos = before.length + mention.length + 1;
         el.focus();
         el.setSelectionRange(pos, pos);
       }
     }, 0);
   };
+
+  // A line starting with "/" is a command when it names one, and a message when it doesn't.
+  const slash = slashDismissed ? null : parseSlash(text);
+  const runCommand = (command: SlashCommand, arg: string) => {
+    const reason = command.unavailable?.();
+    if (reason) {
+      toast("notice", `/${command.name}: ${reason}`);
+      return;
+    }
+    setText("");
+    command.run(arg, { setText });
+  };
+  const nothing = () => {};
+  const slashRows: SlashRow[] = (() => {
+    if (!slash) return [];
+    if (slash.kind === "commands") {
+      return slash.items.map((command): SlashRow => {
+        const takesMore = Boolean(command.choices || command.usage);
+        const reason = command.unavailable?.() ?? null;
+        return {
+          key: command.name,
+          name: command.name,
+          usage: command.usage,
+          detail: reason ?? command.description,
+          dim: reason !== null,
+          command: true,
+          run: () => (takesMore ? setText(`/${command.name} `) : runCommand(command, "")),
+          complete: () => setText(takesMore ? `/${command.name} ` : `/${command.name}`),
+        };
+      });
+    }
+    const { command } = slash;
+    const reason = command.unavailable?.() ?? null;
+    if (reason) return [{ key: "reason", name: reason, dim: true, run: nothing, complete: nothing }];
+    if (slash.kind === "text") {
+      return [
+        {
+          key: "text",
+          name: command.name,
+          usage: command.usage,
+          detail: command.description,
+          command: true,
+          run: () => {
+            if (slash.arg.trim()) runCommand(command, slash.arg.trim());
+          },
+          complete: nothing,
+        },
+      ];
+    }
+    if (slash.items === null) return [{ key: "loading", name: "Loading…", dim: true, run: nothing, complete: nothing }];
+    if (slash.items.length === 0) {
+      return [{ key: "none", name: `Nothing matches "${slash.arg.trim()}"`, dim: true, run: nothing, complete: nothing }];
+    }
+    return slash.items.map((choice): SlashRow => ({
+      key: choice.id,
+      name: choice.label,
+      detail: choice.hint,
+      run: () => {
+        setText("");
+        choice.run();
+      },
+      complete: () => setText(`/${command.name} ${choice.label}`),
+    }));
+  })();
+  const slashOpen = slashRows.length > 0;
+
+  // The model and effort lists come from the catalog: ask for it when a menu is waiting on it. A failed
+  // load leaves this true and doesn't ask again until the menu closes and opens.
+  const waitingOnCatalog = slash?.kind === "choices" && slash.items === null;
+  useEffect(() => {
+    if (waitingOnCatalog) void loadCatalog();
+  }, [waitingOnCatalog]);
 
   useEffect(() => {
     if (!safetyMenuOpen) return;
@@ -211,7 +308,16 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
 
   const submit = () => {
     const words = text.trim();
-    if ((!words && attachments.length === 0) || busy) return;
+    if (!words && attachments.length === 0) return;
+    // A command typed out and sent. Esc on its menu is how "/new" goes to the lead as a message.
+    if (words.startsWith("/") && !slashDismissed && attachments.length === 0) {
+      setText("");
+      const outcome = runTypedSlash(words, { setText });
+      if (outcome === "ran") return;
+      setText(text);
+      if (outcome === "refused") return;
+    }
+    if (busy) return;
     const prompt = words || `Take a look at the attached file${attachments.length === 1 ? "" : "s"}.`;
     const attached = attachments;
     setText("");
@@ -244,10 +350,39 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
           void addFiles([...e.clipboardData.files]);
         }}
       >
-        {mentionQuery && mentionCandidates.length > 0 && (
+        {slashOpen && (
+          <div ref={mentionMenu} className="mention-menu slash-menu menu-surface" data-part="slash-menu" role="listbox" aria-label="Commands">
+            {slashRows.map((row, idx) => {
+              const selected = idx === Math.min(menuIndex, slashRows.length - 1);
+              return (
+                <button
+                  key={row.key}
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  aria-disabled={row.dim || undefined}
+                  className="mention-item slash-item"
+                  data-part="slash-item"
+                  data-selected={selected}
+                  data-dim={row.dim || undefined}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    row.run();
+                  }}
+                >
+                  {row.command && <span className="mention-at">/</span>}
+                  <span className="slash-name">{row.name}</span>
+                  {row.usage && <span className="slash-usage">{row.usage}</span>}
+                  {row.detail && <span className="slash-detail">{row.detail}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {!slashOpen && mentionQuery && mentionCandidates.length > 0 && (
           <div ref={mentionMenu} className="mention-menu menu-surface" data-part="mention-menu" role="listbox" aria-label="Mention file">
             {mentionCandidates.map((file, idx) => {
-              const selected = idx === Math.min(mentionIndex, mentionCandidates.length - 1);
+              const selected = idx === Math.min(menuIndex, mentionCandidates.length - 1);
               return (
                 <button
                   key={file.path}
@@ -325,31 +460,62 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
             onChange={(e) => {
               const val = e.target.value;
               setText(val);
+              setSlashDismissed(false);
               const caret = e.target.selectionStart ?? val.length;
               const prefix = val.slice(0, caret);
-              const match = /(?:^|\s)@([a-zA-Z0-9_./-]*)$/.exec(prefix);
+              // Anything but a space can be in a path: [id] folders, accents, a Windows backslash.
+              const match = /(?:^|\s)@"?([^\s"]*)$/.exec(prefix);
               if (match) {
                 const q = match[1];
-                const atPos = caret - q.length - 1;
+                const atPos = prefix.length - match[0].trimStart().length;
                 setMentionQuery({ query: q, start: atPos, end: caret });
-                setMentionIndex(0);
+                setMenuIndex(0);
                 if (fileCount === 0) void refreshWorkspaceFiles();
               } else {
                 setMentionQuery(null);
               }
             }}
             onKeyDown={(e) => {
-              if (mentionQuery && mentionCandidates.length > 0) {
-                const len = mentionCandidates.length;
-                const cur = Math.min(mentionIndex, len - 1);
+              if (slashOpen) {
+                const len = slashRows.length;
+                const cur = Math.min(menuIndex, len - 1);
                 if (e.key === "ArrowDown") {
                   e.preventDefault();
-                  setMentionIndex((cur + 1) % len);
+                  setMenuIndex((cur + 1) % len);
                   return;
                 }
                 if (e.key === "ArrowUp") {
                   e.preventDefault();
-                  setMentionIndex((cur - 1 + len) % len);
+                  setMenuIndex((cur - 1 + len) % len);
+                  return;
+                }
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  slashRows[cur].run();
+                  return;
+                }
+                if (e.key === "Tab" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  slashRows[cur].complete();
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setSlashDismissed(true);
+                  return;
+                }
+              }
+              if (!slashOpen && mentionQuery && mentionCandidates.length > 0) {
+                const len = mentionCandidates.length;
+                const cur = Math.min(menuIndex, len - 1);
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setMenuIndex((cur + 1) % len);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setMenuIndex((cur - 1 + len) % len);
                   return;
                 }
                 if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -374,6 +540,9 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
           />
           {!text && (
             <span className="hints">
+              <span className="hint">
+                <kbd>/</kbd>command
+              </span>
               <span className="hint">
                 <kbd>@</kbd>file
               </span>

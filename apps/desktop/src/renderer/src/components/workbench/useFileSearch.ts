@@ -12,7 +12,7 @@ export function useFileSearch(query: string | null, limit: number): WorkspaceFil
   const files = useStore((s) => s.workspaceFiles);
   const truncated = useStore((s) => s.filesTruncated);
   const [remote, setRemote] = useState<WorkspaceFileEntry[] | null>(null);
-  const q = query?.trim() ?? "";
+  const q = query?.trim().replace(/\\/g, "/") ?? "";
 
   useEffect(() => {
     setRemote(null);
