@@ -268,6 +268,9 @@ export class ApiLeadClient extends EventEmitter {
   /** Model used when none is configured; null means the turn needs one. */
   defaultModel = null;
 
+  /** {@link leadSystemPrompt} already says what the session would otherwise add. */
+  hasLeadBrief = true;
+
   /** @param {Record<string, any>} options */
   constructor(options = {}) {
     super();

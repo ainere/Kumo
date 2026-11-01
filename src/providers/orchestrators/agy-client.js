@@ -33,6 +33,29 @@ import { getCliBinary, getAgyUsage, isArgonModel, agyEffortArg } from "../../bri
 import { safeSpawn, childEnvFor, stopProcessTree } from "../../utils/process.js";
 import { ensureAntigravityBridgeConfig } from "../../config/sync.js";
 
+/**
+ * A worker call as `agy` really reports one: a generic "tool" step named
+ * call_mcp_tool, with the worker's name and arguments under tool_info and only
+ * the step's index to tie its start to its end. Comes back in the shape the
+ * rest of this file reads. Its own tools (read_file and the like) stay as they
+ * are, which keeps them out of the Workers panel.
+ *
+ * @param {Record<string, any>} update
+ * @returns {Record<string, any>}
+ */
+function workerCallOf(update) {
+  const params = update.tool_info?.parameters;
+  if (update.step_type !== "tool" || update.tool_name !== "call_mcp_tool") return update;
+  if (params?.ServerName !== "kumo-bridge" || !params.ToolName) return update;
+  return {
+    ...update,
+    step_type: "call_mcp_tool",
+    id: `step-${update.step_index}`,
+    tool_name: params.ToolName,
+    tool_input: params.Arguments ?? {},
+  };
+}
+
 function getTaskSignature(raw) {
   if (!raw) return "";
   if (typeof raw === "string") {
@@ -332,7 +355,7 @@ export class AgyAppClient extends EventEmitter {
     }
 
     if (eventType === "step_update") {
-      const update = data.step_update || {};
+      const update = workerCallOf(data.step_update || {});
       if (update.conversation_id) {
         this.conversationId = update.conversation_id;
       }
@@ -392,6 +415,8 @@ export class AgyAppClient extends EventEmitter {
         if (!this._pendingToolCallIds.has(toolName)) {
           this._pendingToolCallIds.set(toolName, []);
         }
+        // A step can report itself more than once before it's done.
+        if (this._pendingToolCallIds.get(toolName).some((entry) => entry.id === callId)) return;
         this._pendingToolCallIds.get(toolName).push({
           id: callId,
           signature,

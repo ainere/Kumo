@@ -57,7 +57,7 @@ import {
 import { CompareRun, removeStaleWorktrees } from "./compare.js";
 import { makeEvent } from "./events.js";
 import { snapshotSettings, applySettingsPatch } from "./settings.js";
-import { profileText, profilePreamble } from "./profile.js";
+import { LEAD_BRIEF, profileText, profilePreamble } from "./profile.js";
 import { providerDisplayName } from "../config/models.js";
 import { ToolTracker, TurnTrace } from "./tool-tracker.js";
 import { LiveLogTailer } from "./live-log-tailer.js";
@@ -780,8 +780,9 @@ export class Session extends EventEmitter {
       const client = this.client;
       // A lead with a system prompt per turn takes the profile there. Any other gets it in front of the
       // prompt, once for the conversation and again when the text changes.
-      if (typeof client.setProfile === "function") client.setProfile(profile);
-      else if (profile !== "" && profile !== this._profileSent) profileCarried = profile;
+      const standing = this._leadBriefed(client) ? [LEAD_BRIEF, profile].filter(Boolean).join("\n\n") : profile;
+      if (typeof client.setProfile === "function") client.setProfile(standing);
+      else if (standing !== "" && standing !== this._profileSent) profileCarried = standing;
       /** @type {string[]} */
       const front = [];
       if (preamble !== null) front.push(preamble, "");
@@ -845,6 +846,20 @@ export class Session extends EventEmitter {
       interrupted: Boolean(outcome.interrupted),
       timedOut: Boolean(outcome.timedOut),
     };
+  }
+
+  /**
+   * Whether this lead needs telling to delegate: one with no worker tools can't,
+   * and an API lead's own system prompt already says so. Headless Antigravity
+   * refuses MCP calls unless it may skip permissions, so under a gated mode the
+   * brief would only turn an answer into an empty reply.
+   *
+   * @param {any} client
+   */
+  _leadBriefed(client) {
+    const provider = this.settings.orchestratorProvider;
+    if (provider === "antigravity" && this.settings.safetyMode !== "autonomous") return false;
+    return orchestratorDelegates(provider) && !client.hasLeadBrief;
   }
 
   /** Ask the running turn to stop; `send` resolves once it has. */

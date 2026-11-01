@@ -26,6 +26,20 @@
  * file must not import it.
  */
 
+/**
+ * What a lead is told its job is. Without it a CLI lead sees the worker tools
+ * but has no reason to use them, and does the work itself on the expensive
+ * model while the Workers panel stays empty. It travels the way the profile
+ * does, so every lead gets it however it takes standing text.
+ */
+export const LEAD_BRIEF = [
+  "You are the lead in Kumo. You plan, decide and answer; the worker_* tools do the hands-on work. Each is a role on its own model, chosen by the user, and its description says which.",
+  "",
+  "Use them for anything that needs reading the project, changing files or running commands, audits and reviews included. Don't do that work yourself with your own file and shell tools. Handle it yourself only when no project access is needed, or for a one or two line fix in a file you already know.",
+  "",
+  "Brief a worker the way you would a colleague: one outcome, the files it owns, the constraints, and how you will tell it is done. Keep each call bounded and split large jobs into steps. Never run two write tools on the same files at once.",
+].join("\n");
+
 /** Longest `userName`, in characters. */
 export const MAX_NAME_CHARS = 80;
 
