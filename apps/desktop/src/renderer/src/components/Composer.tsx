@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getSafetyModeOption, modelDisplayName, SAFETY_MODE_OPTIONS } from "../lib";
 import {
+  drafts,
+  focusPane,
   interrupt,
   openSettings,
   getState,
@@ -10,8 +12,20 @@ import {
   setState,
   toast,
   updateSettings,
+  useFocusedPane,
+  usePane,
   useStore,
 } from "../store";
+
+/**
+ * Whether a drag over the window is this composer's: in split view, the pane
+ * it's over (or, between panes, the focused one); outside split view, always.
+ */
+function dropIsMine(pane: string | null, e: DragEvent): boolean {
+  if (!pane) return true;
+  const over = e.target instanceof Element ? e.target.closest("[data-pane]")?.getAttribute("data-pane") : null;
+  return (over ?? getState().session?.id) === pane;
+}
 import { randomPlaceholder } from "../composerPlaceholders";
 import { parseSlash, runTypedSlash, type SlashCommand } from "../slashCommands";
 import type { ComposerAttachment } from "../types";
@@ -94,12 +108,20 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
   const composerInsert = useStore((s) => s.composerInsert);
   // The commands read the catalog as they build their lists; subscribing redraws the menu when it loads.
   useStore((s) => s.catalog);
-  const [text, setText] = useState("");
+  // In split view, the other pane's composer doesn't take focus as it mounts.
+  const focusedPane = useFocusedPane();
+  const pane = usePane();
+  // Each split pane has a composer of its own, so each needs its own id for its label.
+  const promptId = pane ? `prompt-${pane}` : "prompt";
+  // What's typed belongs to its session: it survives a tab switch, and opening or closing split view.
+  const sessionId = useStore((s) => s.session?.id ?? null);
+  const draftOf = useRef(sessionId);
+  const [text, setText] = useState(() => (sessionId && drafts.get(sessionId)?.text) || "");
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [safetyMenuOpen, setSafetyMenuOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<{ query: string; start: number; end: number } | null>(null);
   const [menuIndex, setMenuIndex] = useState(0);
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => (sessionId && drafts.get(sessionId)?.attachments) || []);
   const [dragging, setDragging] = useState(false);
   const [safetyPlacement, setSafetyPlacement] = useState<"below" | "above">("below");
   const [placeholder, setPlaceholder] = useState(randomPlaceholder);
@@ -109,6 +131,28 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
   const safetyMenu = useRef<HTMLDivElement>(null);
   const lastInsertSeq = useRef(0);
   const mentionMenu = useRef<HTMLDivElement>(null);
+
+  // Another session in this composer (a tab switch): show the draft it left.
+  useEffect(() => {
+    if (draftOf.current === sessionId) return;
+    draftOf.current = sessionId;
+    const draft = sessionId ? drafts.get(sessionId) : undefined;
+    setText(draft?.text ?? "");
+    setAttachments(draft?.attachments ?? []);
+  }, [sessionId]);
+
+  // Kept as it changes, not on unmount: the composer that takes over in a new layout reads it as it mounts.
+  useEffect(() => {
+    const id = draftOf.current;
+    if (!id) return;
+    if (text || attachments.length > 0) drafts.set(id, { text, attachments });
+    else drafts.delete(id);
+  }, [text, attachments]);
+
+  /** In split view, an action from this composer is for this pane's session, wherever the window's focus went. */
+  const own = () => {
+    if (pane) focusPane(pane);
+  };
 
   useEffect(() => {
     if (!composerInsert || composerInsert.seq === lastInsertSeq.current) return;
@@ -284,7 +328,7 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
     const over = (e: DragEvent) => {
       if (!e.dataTransfer?.types.includes("Files")) return;
       e.preventDefault();
-      setDragging(true);
+      setDragging(dropIsMine(pane, e));
     };
     const leave = (e: DragEvent) => {
       if (e.relatedTarget === null) setDragging(false);
@@ -294,7 +338,9 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
       e.preventDefault();
       setDragging(false);
       // The composer stays mounted behind Settings, where a drop would attach to something out of sight.
-      if (getState().view === "chat") void addFiles([...e.dataTransfer.files]);
+      if (getState().view !== "chat" || !dropIsMine(pane, e)) return;
+      if (pane) focusPane(pane);
+      void addFiles([...e.dataTransfer.files]);
     };
     window.addEventListener("dragover", over);
     window.addEventListener("dragleave", leave);
@@ -304,11 +350,12 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
       window.removeEventListener("dragleave", leave);
       window.removeEventListener("drop", drop);
     };
-  }, []);
+  }, [pane]);
 
   const submit = () => {
     const words = text.trim();
     if (!words && attachments.length === 0) return;
+    own();
     // A command typed out and sent. Esc on its menu is how "/new" goes to the lead as a message.
     if (words.startsWith("/") && !slashDismissed && attachments.length === 0) {
       setText("");
@@ -323,9 +370,16 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
     setText("");
     setAttachments([]);
     setPlaceholder(randomPlaceholder);
+    const owner = draftOf.current;
     void send(prompt, attached).then((sent) => {
       if (sent) return;
       // It never started, so nothing should be lost: a pasted image exists nowhere else.
+      if (owner && draftOf.current !== owner) {
+        // This composer shows another session now (a tab switch): the draft goes back to its own.
+        const left = drafts.get(owner);
+        drafts.set(owner, { text: left?.text || words, attachments: [...attached, ...(left?.attachments ?? [])] });
+        return;
+      }
       setText((current) => current || words);
       setAttachments((current) => [...attached, ...current]);
     });
@@ -447,15 +501,15 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
           >
             <IconPlus />
           </button>
-          <label className="sr-only" htmlFor="prompt">
+          <label className="sr-only" htmlFor={promptId}>
             Message
           </label>
           <textarea
-            id="prompt"
+            id={promptId}
             ref={input}
             rows={1}
             value={text}
-            autoFocus={autoFocus}
+            autoFocus={autoFocus && focusedPane}
             placeholder={busy ? "Working… press Esc to stop" : placeholder}
             onChange={(e) => {
               const val = e.target.value;
@@ -534,6 +588,7 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
                 submit();
               } else if (e.key === "Escape" && busy) {
                 e.preventDefault();
+                own();
                 void interrupt();
               }
             }}
@@ -555,7 +610,15 @@ export function Composer({ autoFocus = false }: { autoFocus?: boolean }) {
             </span>
           )}
           {busy ? (
-            <button type="button" className="send-btn" aria-label="Stop" onClick={() => void interrupt()}>
+            <button
+              type="button"
+              className="send-btn"
+              aria-label="Stop"
+              onClick={() => {
+                own();
+                void interrupt();
+              }}
+            >
               <IconStop />
             </button>
           ) : (
@@ -884,12 +947,29 @@ export function getWelcomeHeadline(now = new Date()): string {
   return pool[idx];
 }
 
+/**
+ * A chat before its first turn. On its own it's a centered greeting over the
+ * composer; in a split pane the greeting is small and the composer sits at the
+ * bottom, level with the other pane's, so a fresh session doesn't shout beside a running one.
+ */
 export function EmptyState() {
   const [headline] = useState(() => getWelcomeHeadline());
+  const inPane = usePane() !== null;
+  if (inPane) {
+    return (
+      <div className="empty" data-part="empty-state" data-compact="true">
+        <div className="empty-stage">
+          <div className="empty-halo" aria-hidden="true" />
+          <h2 className="empty-headline">{headline}</h2>
+        </div>
+        <Composer autoFocus />
+      </div>
+    );
+  }
   return (
-    <div className="empty">
+    <div className="empty" data-part="empty-state">
       <div className="empty-halo" aria-hidden="true" />
-      <h1>{headline}</h1>
+      <h1 className="empty-headline">{headline}</h1>
       <Composer autoFocus />
     </div>
   );

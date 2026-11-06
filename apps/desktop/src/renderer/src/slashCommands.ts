@@ -21,6 +21,7 @@ import {
   setWorkbenchTab,
   toast,
   toastFailure,
+  toggleSplit,
   updateSettings,
 } from "./store";
 import { SAFETY_MODE_OPTIONS } from "./lib";
@@ -135,6 +136,12 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     description: "Open another session in a tab",
     unavailable: needsProject,
     run: () => void newSession(),
+  },
+  {
+    name: "split",
+    description: "Show two sessions side by side, or one again",
+    unavailable: needsProject,
+    run: () => toggleSplit(),
   },
   {
     name: "model",

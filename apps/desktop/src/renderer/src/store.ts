@@ -20,7 +20,7 @@
  * this store only shapes its events into what the window draws.
  */
 
-import { useSyncExternalStore } from "react";
+import { createContext, useContext, useSyncExternalStore } from "react";
 import { basename, sameDir } from "./lib";
 import { chime } from "./sounds";
 import type {
@@ -150,6 +150,11 @@ export interface State {
   backgroundSessions: SessionTab[];
   /** Every session in the window in the order they opened, so tabs stay put when switching. */
   sessionOrder: string[];
+  /**
+   * Two sessions side by side, by id. The one at the top of the state is the
+   * focused pane, and the Workbench follows it; the other stays live in its pane.
+   */
+  split: { left: string; right: string } | null;
 }
 
 /** A session this window has open but isn't showing. */
@@ -225,6 +230,7 @@ let state: State = {
   panelsRevision: 0,
   backgroundSessions: [],
   sessionOrder: [],
+  split: null,
   ...EMPTY_WORKBENCH,
 };
 
@@ -242,15 +248,32 @@ export function setState(patch: Partial<State> | ((s: State) => Partial<State>))
   if (!replaying) for (const listener of listeners) listener();
 }
 
+const subscribe = (cb: () => void) => {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+};
+
+/**
+ * The session a split-view pane shows, by id; null outside split view. Inside
+ * a pane, `useStore` reads that session: the state itself when it's the
+ * focused one, its live parked view otherwise.
+ */
+const PaneContext = createContext<string | null>(null);
+export const PaneProvider = PaneContext.Provider;
+
 export function useStore<T>(select: (s: State) => T): T {
-  return useSyncExternalStore(
-    (cb) => {
-      listeners.add(cb);
-      return () => listeners.delete(cb);
-    },
-    () => select(state)
-  );
+  const pane = useContext(PaneContext);
+  return useSyncExternalStore(subscribe, () => select(pane ? paneState(pane) : state));
 }
+
+/** Whether the pane this is in holds the focused session; true outside split view. */
+export function useFocusedPane(): boolean {
+  const pane = useContext(PaneContext);
+  return useSyncExternalStore(subscribe, () => !pane || state.session?.id === pane);
+}
+
+/** The split-view pane this is in, or null. */
+export const usePane = (): string | null => useContext(PaneContext);
 
 /**
  * The `name` a request's error takes when the engine restarted before it
@@ -398,20 +421,33 @@ function appendText(parts: MessagePart[], text: string): MessagePart[] {
   return [...parts, { kind: "text", text: text.replace(/^\s+/, "") }];
 }
 
-/** Load the current chat's transcript and the chat list. */
-export async function refreshChat(): Promise<void> {
-  const session = state.session;
-  if (!session) return;
+/** Load a session's chat transcript and chat list: the one in front unless another is named. */
+export async function refreshChat(id = state.session?.id): Promise<void> {
+  if (!id) return;
+  const receivedBefore = parked.get(id)?.received;
   const [log, chats] = await Promise.all([
-    invoke<Turn[]>("session.turnLog", { sessionId: session.id }),
-    invoke<Chat[]>("session.listChats", { sessionId: session.id }),
+    invoke<Turn[]>("session.turnLog", { sessionId: id }),
+    invoke<Chat[]>("session.listChats", { sessionId: id }),
   ]);
-  // Switched away meanwhile: this is another session's now, and it has approvals of its own.
-  if (state.session?.id !== session.id) return;
-  setState({ ...restoreLog(log), chats, approvals: [] });
-  void refreshPlan();
-  void refreshCheckpoints();
-  void refreshCompare();
+  const loaded = { ...restoreLog(log), chats, approvals: [] };
+  if (state.session?.id === id) {
+    setState(loaded);
+    void refreshPlan();
+    void refreshCheckpoints();
+    void refreshCompare();
+    return;
+  }
+  // Out of front now (another pane took focus while this loaded): its pane shows the chat it's on.
+  const other = parked.get(id);
+  // A turn under way still has events to replay, and the log doesn't hold it yet. Nor may it hold one
+  // that ended while this loaded: then the buffered events stay, and replay brings the chat in later.
+  if (!other || other.live.busy || receivedBefore === undefined || other.received !== receivedBefore) return;
+  // The log holds every finished turn, so what was waiting to replay is in it.
+  other.view = { ...other.live, ...loaded };
+  other.live = other.view;
+  other.events = [];
+  other.stale = true;
+  syncBackgroundSessions();
 }
 
 async function refreshProjects(): Promise<void> {
@@ -424,19 +460,21 @@ export async function openWorkspace(workspace: string, chatId?: string): Promise
   const snapshot = current
     ? await invoke<SessionSnapshot>("session.setWorkspace", { sessionId: current.id, workspace, chatId })
     : await invoke<SessionSnapshot>("session.create", { workspace, chatId });
-  setState({
-    session: snapshot,
-    busy: snapshot.busy,
-    quotas: snapshot.quotas,
-    phase: "ready",
-    ...(sameDir(current?.workspace, snapshot.workspace) ? {} : EMPTY_WORKBENCH),
-  });
+  const moved = sameDir(current?.workspace, snapshot.workspace) ? {} : EMPTY_WORKBENCH;
+  setState({ quotas: snapshot.quotas, phase: "ready" });
+  // A move can take seconds; meanwhile focus may have gone to the other split pane.
+  if (current && state.session?.id !== current.id) {
+    patchSession(current.id, { session: snapshot, busy: snapshot.busy, ...moved });
+    await Promise.all([refreshChat(current.id), refreshProjects()]);
+    return;
+  }
+  setState({ session: snapshot, busy: snapshot.busy, ...moved });
   void window.kumo.app.workbench.publishSession(snapshot.id);
   await savePrefs({ lastWorkspace: snapshot.workspace });
   void refreshQuotas();
   void refreshWorkspaceFiles();
   void refreshWorkspaceDiff();
-  await Promise.all([refreshChat(), refreshProjects()]);
+  await Promise.all([refreshChat(snapshot.id), refreshProjects()]);
 }
 
 /** What each window arranges for itself: another window saving these doesn't move this one's. */
@@ -504,12 +542,15 @@ export async function boot(resume?: SessionSnapshot | null): Promise<void> {
 
 /** Resolves false when the prompt never reached the lead. */
 /** What the turn being sent attached, for its bubble: the engine only hands back names. */
-let sentAttachments: ComposerAttachment[] = [];
+const sentAttachments = new Map<string, ComposerAttachment[]>();
+
+/** Unsent composer drafts by session, so what's typed stays with its session when the composer showing it changes. */
+export const drafts = new Map<string, { text: string; attachments: ComposerAttachment[] }>();
 
 export async function send(prompt: string, attachments: ComposerAttachment[] = []): Promise<boolean> {
   const session = state.session;
   if (!session || state.busy) return false;
-  sentAttachments = attachments;
+  sentAttachments.set(session.id, attachments);
   // Busy at once, so a second Enter can't send before turn.started arrives;
   // session.send resolves when the turn is over.
   setState({ busy: true });
@@ -527,16 +568,18 @@ export async function send(prompt: string, attachments: ComposerAttachment[] = [
     toastFailure(err);
     return false;
   } finally {
-    setState({ busy: false });
+    // The turn is over, but the window may have moved on to another session meanwhile.
+    markIdle(session.id);
   }
 }
 
 export const interrupt = () =>
   state.session && invoke("session.interrupt", { sessionId: state.session.id }).catch(() => {});
 
-export async function resolveApproval(approvalId: string, approved: boolean): Promise<void> {
-  if (!state.session) return;
-  await invoke("session.resolveApproval", { sessionId: state.session.id, approvalId, approved });
+/** Answer an approval. A card names its own session: in split view it may not be the one in front. */
+export async function resolveApproval(approvalId: string, approved: boolean, sessionId = state.session?.id): Promise<void> {
+  if (!sessionId) return;
+  await invoke("session.resolveApproval", { sessionId, approvalId, approved });
 }
 
 export async function newChat(): Promise<void> {
@@ -550,9 +593,10 @@ export async function newChat(): Promise<void> {
   const emptyChat = state.chats.find((c) => (c.turns ?? 0) === 0);
   if (emptyChat && (await openChat(emptyChat.id).then(() => true, () => false))) return;
 
-  const snapshot = await invoke<SessionSnapshot>("session.newChat", { sessionId: state.session.id });
-  setState({ session: snapshot });
-  await refreshChat();
+  const id = state.session.id;
+  const snapshot = await invoke<SessionSnapshot>("session.newChat", { sessionId: id });
+  patchSession(id, { session: snapshot });
+  await refreshChat(id);
 }
 
 /** A new chat in a project: here if it's the current one, else that project opens on an existing empty or fresh chat. */
@@ -1115,37 +1159,20 @@ export async function saveProfile(patch: { userName?: string; customInstructions
 
 // ── engine events ──
 
-const updateLead = (turnId: string, fn: (m: Message) => Message) =>
-  setState((s) => ({ messages: s.messages.map((m) => (m.kind === "lead" && m.turnId === turnId ? fn(m) : m)) }));
-
-const updateTool = (toolId: string, fn: (t: ToolView) => ToolView) =>
-  setState((s) => (s.tools[toolId] ? { tools: { ...s.tools, [toolId]: fn(s.tools[toolId]) } } : {}));
-
-/** Reach someone who went to another app. The main window says it once; a window in front stays quiet. */
-function notifyAway(body: string): void {
-  if (POPOUT_TAB || replaying || state.prefs?.notifications === false) return;
-  const title = state.session ? basename(state.session.workspace) : "kumo";
-  window.kumo.app.notify(title, body).catch(() => {});
-}
-
-export function handleEvent(event: KumoEvent): void {
-  // App-wide events have no session. Terminal output goes to the tab showing it.
-  if (!event.sessionId) {
-    if (event.type === "prefs.changed") setState({ prefs: inThisWindow(event.prefs as Prefs) });
-    return;
-  }
-  if (state.session && event.sessionId !== state.session.id) {
-    const other = parked.get(event.sessionId);
-    if (other) parkEvent(other, event);
-    else startingEvents?.push(event);
-    return;
-  }
+/**
+ * What an event does to one session's view, with no side effects. The session
+ * on screen goes through here, and so does one showing in the other pane of
+ * split view, so both draw the same thing from the same events.
+ */
+function reduceSession(s: SessionView, event: KumoEvent, attached: ComposerAttachment[] = []): Partial<SessionView> {
+  const lead = (turnId: string, fn: (m: Message) => Message) => ({
+    messages: s.messages.map((m) => (m.kind === "lead" && m.turnId === turnId ? fn(m) : m)),
+  });
+  const tool = (toolId: string, fn: (t: ToolView) => ToolView) =>
+    s.tools[toolId] ? { tools: { ...s.tools, [toolId]: fn(s.tools[toolId]) } } : {};
   switch (event.type) {
-    case "turn.started": {
-      const attached = sentAttachments;
-      // Only ever this one turn's, and what's in here can be large.
-      sentAttachments = [];
-      setState((s) => ({
+    case "turn.started":
+      return {
         busy: true,
         messages: [
           ...s.messages,
@@ -1155,32 +1182,17 @@ export function handleEvent(event: KumoEvent): void {
           },
           { ...message(`${event.turnId}-l`, "lead", "", event.turnId), streaming: true, thinking: true },
         ],
-      }));
-      break;
-    }
+      };
     case "turn.delta":
-      updateLead(event.turnId, (m) => ({ ...m, text: m.text + event.text, parts: appendText(m.parts, event.text), thinking: false }));
-      break;
+      return lead(event.turnId, (m) => ({ ...m, text: m.text + event.text, parts: appendText(m.parts, event.text), thinking: false }));
     case "turn.reasoning":
-      updateLead(event.turnId, (m) => ({ ...m, thinking: m.text === "", reasoning: (m.reasoning + event.text).slice(-MAX_TRACE_CHARS) }));
-      break;
+      return lead(event.turnId, (m) => ({ ...m, thinking: m.text === "", reasoning: (m.reasoning + event.text).slice(-MAX_TRACE_CHARS) }));
     case "turn.completed":
-      updateLead(event.turnId, (m) => ({ ...m, streaming: false, thinking: false }));
-      setState({ busy: false });
-      if (state.prefs?.sounds && !POPOUT_TAB && !replaying) chime("done", state.prefs.soundVolume);
-      notifyAway("Turn finished");
-      void refreshChatList();
-      scheduleWorkspaceRefresh();
-      void refreshPlan();
-      break;
+      return { ...lead(event.turnId, (m) => ({ ...m, streaming: false, thinking: false })), busy: false };
     case "turn.failed":
-      updateLead(event.turnId, (m) => ({ ...m, streaming: false, thinking: false, failed: event.reason }));
-      setState({ busy: false });
-      notifyAway("Turn failed");
-      scheduleWorkspaceRefresh();
-      break;
+      return { ...lead(event.turnId, (m) => ({ ...m, streaming: false, thinking: false, failed: event.reason })), busy: false };
     case "tool.started":
-      setState((s) => ({
+      return {
         tools: {
           ...s.tools,
           [event.toolId]: {
@@ -1200,29 +1212,80 @@ export function handleEvent(event: KumoEvent): void {
         toolOrder: [...s.toolOrder.filter((id) => id !== event.toolId), event.toolId],
         messages: event.turnId
           ? s.messages.map((m) =>
-              m.kind === "lead" && m.turnId === event.turnId
-                ? { ...m, parts: [...m.parts, { kind: "tool", toolId: event.toolId }] }
-                : m
+              m.kind === "lead" && m.turnId === event.turnId ? { ...m, parts: [...m.parts, { kind: "tool", toolId: event.toolId }] } : m
             )
           : s.messages,
-      }));
-      break;
+      };
     case "tool.output":
-      updateTool(event.toolId, (t) => ({ ...t, output: (t.output + event.text).slice(-MAX_TOOL_OUTPUT) }));
+      return tool(event.toolId, (t) => ({ ...t, output: (t.output + event.text).slice(-MAX_TOOL_OUTPUT) }));
+    case "tool.completed":
+      return tool(event.toolId, (t) => ({ ...t, status: event.ok ? "done" : "failed", elapsedMs: event.elapsedMs }));
+    case "approval.requested":
+      return { approvals: [...s.approvals, { approvalId: event.approvalId, kind: event.kind, tool: event.tool, preview: event.preview }] };
+    case "approval.resolved":
+      return { approvals: s.approvals.filter((a) => a.approvalId !== event.approvalId) };
+    case "settings.changed":
+      return s.session ? { session: { ...s.session, settings: event.settings } } : {};
+    case "chat.changed": {
+      const moved = s.session !== null && !sameDir(s.session.workspace, event.workspace);
+      return {
+        ...(s.session ? { session: { ...s.session, chatId: event.chatId, workspace: event.workspace } } : {}),
+        checkpointView: null,
+        ...(moved ? EMPTY_WORKBENCH : {}),
+      };
+    }
+    case "compare.changed":
+      return { compare: event.compare as CompareState | null, ...(event.compare === null ? { compareOpen: false } : {}) };
+    default:
+      return {};
+  }
+}
+
+/** Reach someone who went to another app. The main window says it once; a window in front stays quiet. */
+function notifyAway(body: string): void {
+  if (POPOUT_TAB || replaying || state.prefs?.notifications === false) return;
+  const title = state.session ? basename(state.session.workspace) : "kumo";
+  window.kumo.app.notify(title, body).catch(() => {});
+}
+
+export function handleEvent(event: KumoEvent): void {
+  // App-wide events have no session. Terminal output goes to the tab showing it.
+  if (!event.sessionId) {
+    if (event.type === "prefs.changed") setState({ prefs: inThisWindow(event.prefs as Prefs) });
+    return;
+  }
+  if (state.session && event.sessionId !== state.session.id) {
+    const other = parked.get(event.sessionId);
+    if (other) parkEvent(event.sessionId, other, event);
+    else startingEvents?.push(event);
+    return;
+  }
+  // Only ever this one turn's, and what's in here can be large.
+  const attached = (event.type === "turn.started" && sentAttachments.get(event.sessionId)) || [];
+  if (event.type === "turn.started") sentAttachments.delete(event.sessionId);
+  const moved = event.type === "chat.changed" && state.session !== null && !sameDir(state.session.workspace, event.workspace);
+  // compare.changed lands here too: in every window showing it, a pop-out included.
+  setState((s) => reduceSession(s, event, attached));
+  switch (event.type) {
+    case "turn.completed":
+      if (state.prefs?.sounds && !POPOUT_TAB && !replaying) chime("done", state.prefs.soundVolume);
+      notifyAway("Turn finished");
+      void refreshChatList();
+      scheduleWorkspaceRefresh();
+      void refreshPlan();
+      break;
+    case "turn.failed":
+      notifyAway("Turn failed");
+      scheduleWorkspaceRefresh();
       break;
     case "tool.completed":
-      updateTool(event.toolId, (t) => ({ ...t, status: event.ok ? "done" : "failed", elapsedMs: event.elapsedMs }));
       scheduleWorkspaceRefresh();
       break;
     case "approval.requested":
-      setState((s) => ({
-        approvals: [...s.approvals, { approvalId: event.approvalId, kind: event.kind, tool: event.tool, preview: event.preview }],
-      }));
       if (state.prefs?.sounds && !POPOUT_TAB && !replaying) chime("approval", state.prefs.soundVolume);
       notifyAway(`Approval needed: ${event.tool}`);
       break;
     case "approval.resolved":
-      setState((s) => ({ approvals: s.approvals.filter((a) => a.approvalId !== event.approvalId) }));
       scheduleWorkspaceRefresh();
       break;
     case "quota.updated":
@@ -1230,26 +1293,12 @@ export function handleEvent(event: KumoEvent): void {
         quotas: { orchestrator: event.orchestrator, antigravity: event.antigravity, providers: event.providers ?? {}, active: event.active },
       });
       break;
-    case "settings.changed":
-      setState((s) => (s.session ? { session: { ...s.session, settings: event.settings } } : {}));
-      break;
-    case "chat.changed": {
-      const moved = state.session !== null && !sameDir(state.session.workspace, event.workspace);
-      setState((s) => (s.session ? { session: { ...s.session, chatId: event.chatId, workspace: event.workspace } } : {}));
-      setState({ checkpointView: null });
+    case "chat.changed":
       void refreshChat();
-      if (moved) {
-        setState(EMPTY_WORKBENCH);
-        scheduleWorkspaceRefresh();
-      }
+      if (moved) scheduleWorkspaceRefresh();
       break;
-    }
     case "checkpoints.changed":
       void refreshCheckpoints();
-      break;
-    case "compare.changed":
-      // Over in every window showing it, a pop-out included.
-      setState({ compare: event.compare as CompareState | null, ...(event.compare === null ? { compareOpen: false } : {}) });
       break;
     // Said once, in the main window: a pop-out sees the same events.
     case "session.warning":
@@ -1266,11 +1315,27 @@ export function handleEvent(event: KumoEvent): void {
   }
 }
 
-async function refreshChatList(): Promise<void> {
-  const session = state.session;
-  if (!session) return;
-  const chats = await invoke<Chat[]>("session.listChats", { sessionId: session.id });
-  if (state.session?.id === session.id) setState({ chats });
+async function refreshChatList(id = state.session?.id): Promise<void> {
+  if (!id) return;
+  const chats = await invoke<Chat[]>("session.listChats", { sessionId: id });
+  patchSession(id, { chats });
+}
+
+/**
+ * Apply what a request learned about a session to wherever that session is
+ * now: the top of the state if it's still in front, its parked view if the
+ * window moved on to another one while the request was out.
+ */
+function patchSession(id: string, patch: Partial<SessionView>): void {
+  if (state.session?.id === id) {
+    setState(patch);
+    return;
+  }
+  const other = parked.get(id);
+  if (!other) return;
+  other.view = { ...other.view, ...patch };
+  other.live = { ...other.live, ...patch };
+  syncBackgroundSessions();
 }
 
 // ── several sessions in one window ──
@@ -1305,14 +1370,71 @@ const SESSION_KEYS = [
 type SessionView = Pick<State, (typeof SESSION_KEYS)[number]>;
 
 interface ParkedSession {
+  /** The view as it was parked; `events` replay on top of it when it comes back. */
   view: SessionView;
   events: KumoEvent[];
+  /** The view with those events applied, for a split-view pane to draw meanwhile. */
+  live: SessionView;
+  /** Its chat was reloaded out of front, so its Workbench lists need reading again when it's back. */
+  stale?: boolean;
+  /** Events taken in while parked, merged or not: a load can tell whether any came in while it was out. */
+  received: number;
   title: string;
   busy: boolean;
   waiting: number;
 }
 
 const parked = new Map<string, ParkedSession>();
+
+/** A parked session as a pane draws it: the window's state with that session's view on top. */
+const paneCache = new Map<string, { base: State; live: SessionView; merged: State }>();
+
+/** What a pane shows for a session the window no longer holds: nothing, never the focused session's chat. */
+const NO_SESSION: SessionView = {
+  session: null,
+  chats: [],
+  messages: [],
+  tools: {},
+  toolOrder: [],
+  turnMeta: {},
+  approvals: [],
+  busy: false,
+  ...EMPTY_WORKBENCH,
+};
+
+function paneState(id: string): State {
+  if (state.session?.id === id) return state;
+  const live = parked.get(id)?.live ?? NO_SESSION;
+  const hit = paneCache.get(id);
+  if (hit && hit.base === state && hit.live === live) return hit.merged;
+  // A mention picked in the Workbench goes to the focused pane's composer only.
+  const merged: State = { ...state, ...live, composerInsert: null };
+  paneCache.set(id, { base: state, live, merged });
+  return merged;
+}
+
+const inSplit = (id: string): boolean => state.split !== null && (state.split.left === id || state.split.right === id);
+
+/** An approval is on screen, in the focused session or the other pane. */
+export function approvalsOnScreen(s: State): boolean {
+  if (s.approvals.length > 0) return true;
+  if (!s.split) return false;
+  return [s.split.left, s.split.right].some((id) => (parked.get(id)?.live.approvals.length ?? 0) > 0);
+}
+
+/** A session's turn is over: not busy, wherever it is now. */
+function markIdle(id: string): void {
+  if (state.session?.id === id) {
+    setState({ busy: false });
+    return;
+  }
+  const other = parked.get(id);
+  if (!other) return;
+  other.busy = false;
+  other.view = { ...other.view, busy: false };
+  other.live = { ...other.live, busy: false };
+  syncBackgroundSessions();
+}
 
 /** What arrives while a new session starts, before this window knows it's its own; a failed start says why here. */
 let startingEvents: KumoEvent[] | null = null;
@@ -1336,19 +1458,34 @@ function parkCurrent(): void {
   const { session, chats, messages, busy, approvals } = state;
   if (!session) return;
   const view = Object.fromEntries(SESSION_KEYS.map((key) => [key, state[key]])) as SessionView;
-  parked.set(session.id, { view, events: [], title: sessionTitle(session, chats, messages), busy, waiting: approvals.length });
+  parked.set(session.id, {
+    view,
+    events: [],
+    live: view,
+    received: 0,
+    title: sessionTitle(session, chats, messages),
+    busy,
+    waiting: approvals.length,
+  });
 }
 
 /** Keep an event for later, and tell the user if it's one they need to hear about now. */
-function parkEvent(other: ParkedSession, event: KumoEvent): void {
+function parkEvent(id: string, other: ParkedSession, event: KumoEvent): void {
+  // Thumbnails stay with the session until its turn.started replays in front, so both views show them.
+  other.received += 1;
+  other.live = { ...other.live, ...reduceSession(other.live, event, sentAttachments.get(id)) };
+  // A pane showing it redraws; a session out of sight doesn't need to.
+  const shown = inSplit(id);
   const last = other.events.at(-1);
   // A long turn's text comes in thousands of small pieces: one piece keeps it cheap to hold and replay.
   if (last?.type === "turn.delta" && event.type === "turn.delta" && last.turnId === event.turnId) {
     other.events[other.events.length - 1] = { ...last, text: last.text + event.text };
+    if (shown) setState({});
     return;
   }
   if (last?.type === "tool.output" && event.type === "tool.output" && last.toolId === event.toolId) {
     other.events[other.events.length - 1] = { ...last, text: last.text + event.text };
+    if (shown) setState({});
     return;
   }
   other.events.push(event);
@@ -1359,20 +1496,28 @@ function parkEvent(other: ParkedSession, event: KumoEvent): void {
     other.busy = false;
     if (state.prefs?.sounds) chime("done", state.prefs.soundVolume);
     notifyAway(`${other.title}: turn ${event.type === "turn.failed" ? "failed" : "finished"}`);
+    // A chat is named when its first turn ends: the pane's title follows.
+    if (shown && event.type === "turn.completed") void refreshChatList(id);
+  } else if (event.type === "chat.changed") {
+    // It moved to another chat while out of front (a request that ended late): show that chat's turns.
+    if (shown) void refreshChat(id);
   } else if (event.type === "approval.requested") {
     other.waiting += 1;
     if (state.prefs?.sounds) chime("approval", state.prefs.soundVolume);
     notifyAway(`${other.title}: approval needed`);
-    toast("notice", `Approval needed in another session: ${other.title}`);
+    // In the other pane it's already in sight.
+    if (!shown) toast("notice", `Approval needed in another session: ${other.title}`);
   } else if (event.type === "approval.resolved") {
     other.waiting = Math.max(0, other.waiting - 1);
   }
   syncBackgroundSessions();
 }
 
-function replay(events: KumoEvent[]): void {
+/** Apply `events` on top of `from`, and redraw once at the end, so a pane never shows the state between. */
+function replay(events: KumoEvent[], from: Partial<State> = {}): void {
   replaying = true;
   try {
+    setState(from);
     for (const event of events) handleEvent(event);
   } finally {
     replaying = false;
@@ -1380,17 +1525,80 @@ function replay(events: KumoEvent[]): void {
   setState({});
 }
 
-/** Bring a background session to the front. */
+/**
+ * Bring a background session to the front. In split view that's moving focus
+ * when it's the other pane's session; any other takes the focused pane's place.
+ */
 export function switchSession(id: string): void {
   const target = parked.get(id);
-  if (!target || state.session?.id === id) return;
+  const current = state.session;
+  if (!target || !current || current.id === id) return;
+  const { split } = state;
+  const nextSplit =
+    split && !inSplit(id) ? (split.left === current.id ? { ...split, left: id } : { ...split, right: id }) : split;
   parkCurrent();
   parked.delete(id);
-  setState(target.view);
-  replay(target.events);
+  paneCache.delete(id);
+  replay(target.events, { ...target.view, split: nextSplit });
   syncBackgroundSessions();
   void window.kumo.app.workbench.publishSession(id);
   scheduleWorkspaceRefresh();
+  if (target.stale) {
+    void refreshPlan();
+    void refreshCheckpoints();
+    void refreshCompare();
+  }
+}
+
+/** Focus a split-view pane: its session comes to the top, and the Workbench follows. */
+export function focusPane(id: string): void {
+  if (state.session?.id !== id) switchSession(id);
+}
+
+/**
+ * Show two sessions side by side: this one, and the session opened most
+ * recently besides it, or a new one in this project when there's none.
+ */
+let openingSplit = false;
+
+export async function openSplit(): Promise<void> {
+  const current = state.session;
+  // A second Ctrl+\ while the new session starts would start another.
+  if (!current || state.split || POPOUT_TAB || openingSplit) return;
+  const other = [...state.sessionOrder].reverse().find((id) => id !== current.id && parked.has(id));
+  if (other) {
+    setState({ split: { left: current.id, right: other } });
+    return;
+  }
+  openingSplit = true;
+  try {
+    await newSession();
+  } finally {
+    openingSplit = false;
+  }
+  const opened = state.session;
+  if (opened && opened.id !== current.id && parked.has(current.id)) setState({ split: { left: current.id, right: opened.id } });
+}
+
+/** Back to one session on screen: the focused one. The other keeps running in its tab. */
+export function closeSplit(): void {
+  if (!state.split) return;
+  paneCache.clear();
+  setState({ split: null });
+}
+
+/** Take one pane out of split view; the other stays on screen and its session keeps running in a tab. */
+export function closePane(id: string): void {
+  const { split } = state;
+  if (!split || !inSplit(id)) return;
+  const other = split.left === id ? split.right : split.left;
+  closeSplit();
+  focusPane(other);
+}
+
+export function toggleSplit(): void {
+  if (state.split) closeSplit();
+  else void openSplit();
 }
 
 /** A new session in this project on a chat of its own; the current one keeps running out of sight. */
@@ -1400,8 +1608,13 @@ export async function newSession(): Promise<void> {
   startingEvents = [];
   try {
     const snapshot = await invoke<SessionSnapshot>("session.create", { workspace: current.workspace });
+    // Whatever came to the front meanwhile is the one that steps back.
+    const front = state.session ?? current;
+    const { split } = state;
     parkCurrent();
     setState({ ...EMPTY_WORKBENCH, chats: [], messages: [], tools: {}, toolOrder: [], turnMeta: {}, approvals: [] });
+    // In split view the new session takes the focused pane.
+    if (split) setState({ split: split.left === front.id ? { ...split, left: snapshot.id } : { ...split, right: snapshot.id } });
     setState({ session: snapshot, busy: snapshot.busy, quotas: snapshot.quotas });
     replay((startingEvents ?? []).filter((event) => event.sessionId === snapshot.id));
     startingEvents = null;
@@ -1424,31 +1637,61 @@ export async function closeSession(id = state.session?.id): Promise<void> {
     toast("notice", "That session is still working. Stop its turn first.");
     return;
   }
+  const { split } = state;
   if (other) {
     parked.delete(id);
+    paneCache.delete(id);
+    if (split && inSplit(id)) setState({ split: null });
     syncBackgroundSessions();
   } else {
-    const next = parked.keys().next().value;
+    // Closing a split pane leaves the other one on screen.
+    const partner = split && inSplit(id) ? (split.left === id ? split.right : split.left) : null;
+    const next = partner ?? parked.keys().next().value;
     if (!next) return;
+    setState({ split: null });
     switchSession(next);
     parked.delete(id);
+    paneCache.delete(id);
     syncBackgroundSessions();
   }
+  sentAttachments.delete(id);
+  drafts.delete(id);
   setState((s) => ({ sessionOrder: s.sessionOrder.filter((other) => other !== id) }));
   await invoke("session.stop", { sessionId: id }).catch((err) => toastFailure(err));
+}
+
+/**
+ * In split view, put the keyboard in the focused pane's composer. A switch
+ * made from the keyboard would otherwise leave the cursor in the other pane,
+ * where Enter would send its draft while that pane isn't the one in front.
+ */
+export function focusPaneInput(): void {
+  if (!state.split) return;
+  requestAnimationFrame(() => {
+    const id = state.session?.id;
+    if (!id || !state.split) return;
+    const pane = [...document.querySelectorAll<HTMLElement>("[data-pane]")].find((el) => el.dataset.pane === id);
+    pane?.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true });
+  });
 }
 
 /** The next or previous session in tab order. */
 export function cycleSession(step: 1 | -1): void {
   const { sessionOrder: order, session } = state;
   const at = order.indexOf(session?.id ?? "");
-  if (order.length > 1 && at !== -1) switchSession(order[(at + step + order.length) % order.length]);
+  if (order.length > 1 && at !== -1) {
+    switchSession(order[(at + step + order.length) % order.length]);
+    // Ctrl+Tab came from the keyboard, so the keyboard goes along.
+    if (document.activeElement?.closest("[data-pane]")) focusPaneInput();
+  }
 }
 
 // The sessions went down with the engine; their chats are on disk.
 window.kumo.onEngineRestart(() => {
   parked.clear();
-  setState({ backgroundSessions: [], sessionOrder: [] });
+  paneCache.clear();
+  sentAttachments.clear();
+  setState({ backgroundSessions: [], sessionOrder: [], split: null });
 });
 
 // ── theme packages and custom panels ──

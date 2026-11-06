@@ -18,8 +18,6 @@
 import { useEffect, useLayoutEffect } from "react";
 import { Toasts, TurnStatus, Welcome } from "./components/Chrome";
 import { CommandPalette } from "./components/CommandPalette";
-import { Composer, EmptyState } from "./components/Composer";
-import { Conversation } from "./components/Conversation";
 import { Onboarding } from "./components/Onboarding";
 import { ProviderSwitchModal } from "./components/ProviderSwitchModal";
 import { SceneLayer } from "./components/SceneLayer";
@@ -27,9 +25,10 @@ import { hasOpenDialog } from "./components/settings/controls";
 import { SessionTabs } from "./components/SessionTabs";
 import { SettingsView } from "./components/settings/SettingsView";
 import { Sidebar } from "./components/Sidebar";
+import { ChatColumn, SplitView } from "./components/SplitView";
 import { TitleBar } from "./components/TitleBar";
 import { PopoutWorkbenchView, Workbench } from "./components/workbench/Workbench";
-import { POPOUT_TAB, getState, openSettings, useStore, workbenchVisible } from "./store";
+import { POPOUT_TAB, approvalsOnScreen, getState, openSettings, toggleSplit, useStore, workbenchVisible } from "./store";
 import { applyPrefs, applyUserTheme } from "./theme";
 
 const isMac = window.kumo.app.platform === "darwin";
@@ -37,7 +36,7 @@ const isMac = window.kumo.app.platform === "darwin";
 export function App() {
   const phase = useStore((s) => s.phase);
   const prefs = useStore((s) => s.prefs);
-  const empty = useStore((s) => s.messages.length === 0 && s.toolOrder.length === 0);
+  const split = useStore((s) => s.split);
   const showWorkbench = useStore(workbenchVisible);
   const settings = useStore((s) => s.view === "settings" && s.phase !== "loading");
 
@@ -47,21 +46,22 @@ export function App() {
 
   const themes = useStore((s) => s.themes);
   const themeId = prefs?.theme ?? null;
-  // Before paint: an approval never shows under a theme's stylesheet, even for a frame.
-  const approvalWaiting = useStore((s) => s.approvals.length > 0);
+  // Before paint: an approval never shows under a theme's stylesheet, even for a frame, in either split pane.
+  const approvalWaiting = useStore(approvalsOnScreen);
   useLayoutEffect(() => {
     applyUserTheme(themes?.themes.find((t) => t.id === themeId) ?? null, approvalWaiting);
   }, [themes, themeId, approvalWaiting]);
 
-  // Ctrl+, (Cmd+, on macOS) opens Settings from anywhere.
+  // Ctrl+, (Cmd+, on macOS) opens Settings from anywhere; Ctrl+\ splits the chat or closes the split.
   useEffect(() => {
     if (POPOUT_TAB) return;
     const onKey = (e: KeyboardEvent) => {
       const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
-      if (!mod || e.altKey || e.shiftKey || e.key !== ",") return;
+      if (!mod || e.altKey || e.shiftKey || (e.key !== "," && e.key !== "\\")) return;
       if (getState().phase === "loading" || hasOpenDialog()) return;
       e.preventDefault();
-      openSettings();
+      if (e.key === ",") openSettings();
+      else if (getState().phase === "ready" && getState().view === "chat") toggleSplit();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -110,14 +110,7 @@ export function App() {
               <Sidebar />
               <main className="main" data-part="chat">
                 <SessionTabs />
-                {empty ? (
-                  <EmptyState />
-                ) : (
-                  <>
-                    <Conversation />
-                    <Composer />
-                  </>
-                )}
+                {split ? <SplitView left={split.left} right={split.right} /> : <ChatColumn />}
                 {workers === "bottom" && <Workbench dock="bottom" />}
               </main>
               {workers === "right" && <Workbench dock="right" />}

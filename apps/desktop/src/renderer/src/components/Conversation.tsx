@@ -3,7 +3,7 @@ import { Fragment, memo, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatElapsed, providerLabel, toolLabel, useNow } from "../lib";
-import { resolveApproval, revealDiff, toastFailure, useStore } from "../store";
+import { focusPane, resolveApproval, revealDiff, toastFailure, usePane, useStore } from "../store";
 import type { Approval, Message } from "../types";
 
 const Markdown = memo(function Markdown({ text }: { text: string }) {
@@ -135,10 +135,12 @@ function Diff({ text }: { text: string }) {
 
 export function ApprovalCard({ approval }: { approval: Approval }) {
   const [sending, setSending] = useState(false);
+  // The session this card belongs to, which in split view may not be the one in front.
+  const sessionId = useStore((s) => s.session?.id);
   const decide = async (approved: boolean) => {
     setSending(true);
     try {
-      await resolveApproval(approval.approvalId, approved);
+      await resolveApproval(approval.approvalId, approved, sessionId);
     } catch (err) {
       toastFailure(err);
       setSending(false);
@@ -168,10 +170,18 @@ export function ApprovalCard({ approval }: { approval: Approval }) {
 
 /** Approvals are answered in the Diff tab, next to the changes. The chat points there. */
 function ApprovalNotice({ approval }: { approval: Approval }) {
+  const pane = usePane();
   return (
     <section className="approval-notice glass-strong" data-part="approval-notice" aria-label="Approval needed">
       <span className="approval-notice-text">Approval needed · {approval.tool}</span>
-      <button className="btn primary" onClick={() => revealDiff()}>
+      <button
+        className="btn primary"
+        onClick={() => {
+          // The Diff tab shows the session in front: in split view, make it this pane's first.
+          if (pane) focusPane(pane);
+          revealDiff();
+        }}
+      >
         Review
       </button>
     </section>

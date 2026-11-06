@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   closePalette,
+  focusPaneInput,
+  getState,
   insertIntoComposer,
   invoke,
   closeSession,
@@ -20,6 +22,7 @@ import {
   switchSession,
   toast,
   toastFailure,
+  toggleSplit,
   toggleWorkbenchSplit,
   toggleWorkbenchVisible,
   useStore,
@@ -53,6 +56,7 @@ export function CommandPalette() {
   const appliedTheme = useAppliedTheme();
   const tabs = useWorkbenchTabs();
   const background = useStore((s) => s.backgroundSessions);
+  const split = useStore((s) => s.split !== null);
 
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -107,7 +111,12 @@ export function CommandPalette() {
     if (open) {
       returnTo.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       return () => {
-        if (returnTo.current?.isConnected) returnTo.current.focus({ preventScroll: true });
+        const back = returnTo.current;
+        if (!back?.isConnected) return;
+        // In split view, a command may have moved focus to the other pane: focus goes with it, not back.
+        const pane = back.closest("[data-pane]")?.getAttribute("data-pane");
+        if (pane && pane !== getState().session?.id) focusPaneInput();
+        else back.focus({ preventScroll: true });
       };
     }
   }, [open]);
@@ -151,6 +160,13 @@ export function CommandPalette() {
         { id: "dock-floating", group: "Workbench", label: "Float Panel", run: () => void savePrefs({ dock: "floating" }) },
         { id: "quick-open", group: "Files", label: "Quick Open…", hint: shortcut("P"), run: () => openPalette("files") },
         { id: "new-session", group: "Session", label: "New Session", hint: shortcut("T"), run: () => void newSession() },
+        {
+          id: "split-sessions",
+          group: "Session",
+          label: split ? "One Session at a Time" : "Two Sessions Side by Side",
+          hint: shortcut("\\"),
+          run: () => toggleSplit(),
+        },
         ...background.map((s): CommandItem => ({
           id: `session-${s.id}`,
           group: "Session",
@@ -192,7 +208,7 @@ export function CommandPalette() {
       { id: "settings-doctor", group: "Settings", label: "Doctor", run: () => openSettings("doctor") }
     );
     return items;
-  }, [prefs?.workbenchSplitTab, prefs?.workbenchTab, session, appliedTheme.mode, visible, tabs, background]);
+  }, [prefs?.workbenchSplitTab, prefs?.workbenchTab, session, appliedTheme.mode, visible, tabs, background, split]);
 
   const filteredCommands = useMemo(() => {
     const q = query.trim().toLowerCase();

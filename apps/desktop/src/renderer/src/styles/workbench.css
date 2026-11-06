@@ -1080,6 +1080,23 @@
   width: 11px;
   height: 11px;
 }
+/* A session on screen in split view: a small window with its half filled. Accent on the focused one. */
+.session-tab-pane {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 11px;
+  color: var(--faint);
+}
+.session-tab[data-active="true"] .session-tab-pane {
+  color: var(--accent);
+}
+/* The split toggle keeps to the strip's far end, apart from the tabs. */
+.session-tabs-split {
+  margin-left: auto;
+}
+.session-tabs-split[aria-pressed="true"] {
+  color: var(--accent);
+}
 
 /* A chat's pointer to an approval waiting in the Diff tab */
 .approval-notice {
