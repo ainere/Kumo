@@ -787,33 +787,55 @@ code, pre, kbd { font-family: var(--font-mono); }
 .empty-headline { user-select: none; -webkit-user-select: none; cursor: default; }
 .empty[data-compact="true"] .empty-headline { position: relative; margin: 0; max-width: 24ch; font-size: 22px; line-height: 1.3; font-weight: 300; letter-spacing: -0.01em; text-align: center; text-wrap: balance; color: var(--muted); }
 
-/* Split view: two sessions side by side in the chat column, a hairline between them.
+/* Split view: two sessions side by side in the chat column, each in its own tank.
    Under two readable columns (about 330px each, measured in SplitView.tsx) it pauses:
    the focused chat alone, as a single chat looks, and the other waits in its tab. */
 .split-view { flex: 1; min-height: 0; min-width: 0; display: flex; }
-.split-panes { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); column-gap: 10px; row-gap: 10px; }
-.split-divider { margin: 46px 0 8px; background: linear-gradient(to bottom, transparent, var(--border) 10%, var(--border) 90%, transparent); }
-.chat-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+/* The tanks' own walls part the panes now; the divider keeps its place at no width. */
+.split-panes { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 0 minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); column-gap: 6px; }
+.split-divider { width: 0; }
+.chat-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .chat-pane .composer-wrap { flex: 0 0 auto; }
-.split-view[data-paused="true"] .split-panes { grid-template-columns: minmax(0, 1fr); }
-.split-view[data-paused="true"] :is(.split-divider, .chat-pane[data-focused="false"], .chat-pane-head) { display: none; }
-/* Each pane's head: the session it holds, whether it's working, and a way out. The focused one is tinted, nothing louder. */
+/* The tank: a glass wall around one chat, its label set into the top edge. An outline, not a card:
+   the messages inside are the cards. The neutral wall is mixed from the text color so themes carry it. */
+.chat-pane-tank {
+  --tank-edge: color-mix(in srgb, var(--text) 22%, transparent);
+  flex: 1 1 auto; min-width: 0; min-height: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 0 8px 10px;
+  border: 1px solid var(--tank-edge); border-radius: var(--radius-panel);
+  background: transparent;
+}
+.chat-pane[data-focused="true"] .chat-pane-tank {
+  --tank-edge: color-mix(in srgb, var(--accent) 58%, transparent);
+  background: color-mix(in srgb, var(--accent) 3%, transparent);
+}
+/* The label: which session this is, in the tab's own mark, whether it's working, and a way out. */
 .chat-pane-head {
-  flex: 0 0 auto; height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 5px 0 12px; border-radius: 12px;
-  color: var(--muted); font-size: 12px; font-weight: 500; cursor: default; user-select: none; -webkit-user-select: none;
+  max-width: calc(100% - 28px); height: 26px; margin-inline-start: 10px; padding: 0 2px 0 7px;
+  display: flex; align-items: center; gap: 7px;
+  color: var(--muted); font-size: 12px; font-weight: 500; line-height: 1; cursor: default; user-select: none; -webkit-user-select: none;
 }
-.chat-pane[data-focused="true"] .chat-pane-head {
-  color: var(--text);
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
-  background: color-mix(in srgb, var(--accent) 8%, var(--glass));
-}
-[data-transparency="reduced"] .chat-pane[data-focused="true"] .chat-pane-head { background: color-mix(in srgb, var(--accent) 8%, rgb(var(--glass-rgb) / 0.94)); }
-.chat-pane-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-pane-busy { flex: 0 0 7px; width: 7px; height: 7px; }
-.chat-pane-close svg { width: 12px; height: 12px; }
+.chat-pane[data-focused="true"] .chat-pane-head { color: var(--text); }
+.chat-pane-head .session-tab-pane { color: var(--muted); }
+.chat-pane[data-focused="true"] .chat-pane-head .session-tab-pane { color: var(--accent); }
+.chat-pane-title { flex: 0 1 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+/* The model is short and tells the panes apart, so it keeps its room; a long title or project ellipsizes, the project first. */
+.chat-pane-meta { flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-weight: 500; }
+.chat-pane-meta[data-part="chat-pane-project"] { flex: 0 4 auto; min-width: 3em; }
+.chat-pane-meta::before { content: "\00b7"; margin-right: 7px; color: var(--faint); }
+.chat-pane-busy { flex: 0 0 6px; width: 6px; height: 6px; }
+.chat-pane-close { width: 22px; height: 22px; margin-left: 1px; }
+.chat-pane-close svg { width: 11px; height: 11px; }
+/* Paused: one chat, as a single chat looks. No walls, no label, nothing beside it. */
+.split-view[data-paused="true"] .split-panes { grid-template-columns: minmax(0, 1fr); column-gap: 0; }
+.split-view[data-paused="true"] :is(.split-divider, .chat-pane[data-focused="false"], .chat-pane-head) { display: none; }
+.split-view[data-paused="true"] .chat-pane-tank { padding: 0; border: 0; border-radius: 0; background: none; }
 @media (prefers-reduced-motion: no-preference) {
   :root:not([data-motion="reduced"]) .chat-pane-busy { animation: kpulse 1.2s ease-in-out infinite; }
-  :root:not([data-motion="reduced"]) .chat-pane-head { transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease; }
+  :root:not([data-motion="reduced"]) .chat-pane-tank { transition: border-color 180ms ease-out, background-color 180ms ease-out; }
+  :root:not([data-motion="reduced"]) .chat-pane-head,
+  :root:not([data-motion="reduced"]) .chat-pane-head .session-tab-pane { transition: color 180ms ease-out; }
 }
 
 /* Workers panel */

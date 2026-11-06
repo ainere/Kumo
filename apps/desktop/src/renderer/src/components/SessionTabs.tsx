@@ -1,7 +1,7 @@
 import { closeSession, currentSessionTitle, newSession, switchSession, toggleSplit, useStore } from "../store";
 import { IconClose, IconPlus } from "./icons";
 
-type Side = "left" | "right";
+export type Side = "left" | "right";
 
 /** Which split-view pane a session is showing in, if any. */
 function sideOf(split: { left: string; right: string } | null, id: string): Side | null {
@@ -18,8 +18,11 @@ const IconColumns = () => (
   </svg>
 );
 
-/** A small window with the half this session fills: where it is on screen in split view. */
-const PaneMark = ({ side }: { side: Side }) => (
+/**
+ * A small window with the half this session fills: where it is on screen in
+ * split view. The pane's own label draws the same mark, so a pane and its tab match.
+ */
+export const PaneMark =({ side }: { side: Side }) => (
   <svg className="session-tab-pane" viewBox="0 0 14 11" aria-hidden="true">
     <rect x="0.75" y="0.75" width="12.5" height="9.5" rx="2.25" fill="none" stroke="currentColor" strokeWidth="1.2" />
     <rect x={side === "left" ? 2.4 : 7.6} y="2.4" width="4" height="6.2" rx="1" fill="currentColor" />

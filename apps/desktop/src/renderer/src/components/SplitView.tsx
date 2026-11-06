@@ -15,10 +15,12 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { Composer, EmptyState } from "./Composer";
 import { Conversation } from "./Conversation";
 import { IconClose } from "./icons";
+import { PaneMark, type Side } from "./SessionTabs";
+import { basename, modelDisplayName, sameDir } from "../lib";
 import { PaneProvider, closePane, currentSessionTitle, focusPane, setSplitPaused, useFocusedPane, useStore } from "../store";
 
 /** One chat: its transcript and composer, or the empty screen before its first turn. */
@@ -63,28 +65,62 @@ export function SplitView({ left, right }: { left: string; right: string }) {
   return (
     // Keyed by session: a pane that takes another session starts fresh, its draft included.
     <div ref={frame} className="split-view" data-part="split-view" data-paused={paused}>
-      <div className="split-panes">
-        <ChatPane key={left} id={left} />
-        <div className="split-divider" data-part="split-divider" aria-hidden="true" />
-        <ChatPane key={right} id={right} />
-      </div>
+      <ProjectOf id={left}>
+        {(leftProject) => (
+          <ProjectOf id={right}>
+            {(rightProject) => {
+              // Name the project in the labels only when it tells the panes apart.
+              const apart = !!leftProject && !!rightProject && !sameDir(leftProject, rightProject);
+              return (
+                <div className="split-panes">
+                  <ChatPane key={left} id={left} side="left" showProject={apart} />
+                  <div className="split-divider" data-part="split-divider" aria-hidden="true" />
+                  <ChatPane key={right} id={right} side="right" showProject={apart} />
+                </div>
+              );
+            }}
+          </ProjectOf>
+        )}
+      </ProjectOf>
     </div>
   );
 }
 
-function ChatPane({ id }: { id: string }) {
+/** One pane's project folder, read through that pane's own view of the store. */
+function ProjectOf({ id, children }: { id: string; children: (workspace: string | undefined) => ReactNode }) {
   return (
     <PaneProvider value={id}>
-      <PaneBody id={id} />
+      <ProjectRead render={children} />
     </PaneProvider>
   );
 }
 
-function PaneBody({ id }: { id: string }) {
+function ProjectRead({ render }: { render: (workspace: string | undefined) => ReactNode }) {
+  const workspace = useStore((s) => s.session?.workspace);
+  return <>{render(workspace)}</>;
+}
+
+function ChatPane({ id, side, showProject }: { id: string; side: Side; showProject: boolean }) {
+  return (
+    <PaneProvider value={id}>
+      <PaneBody id={id} side={side} showProject={showProject} />
+    </PaneProvider>
+  );
+}
+
+/**
+ * A pane is a tank: an outline around its label, transcript and composer, the
+ * label set into the top edge like a fieldset's legend. The label says which
+ * is which: the same left/right mark its tab carries, the title, the lead model,
+ * and the project when the two panes are in different ones.
+ */
+function PaneBody({ id, side, showProject }: { id: string; side: Side; showProject: boolean }) {
   const focused = useFocusedPane();
   const title = useStore(currentSessionTitle);
   const busy = useStore((s) => s.busy);
   const waiting = useStore((s) => s.approvals.length);
+  const model = useStore((s) => s.session?.settings.orchestratorModel);
+  const workspace = useStore((s) => s.session?.workspace);
   return (
     <section
       className="chat-pane"
@@ -100,28 +136,42 @@ function PaneBody({ id }: { id: string }) {
         if (!(e.target as Element).closest("[data-pane-close]")) focusPane(id);
       }}
     >
-      <header className="chat-pane-head glass" data-part="chat-pane-head">
-        {busy && <span className="session-tab-busy chat-pane-busy" aria-label="Working" title="Working" />}
-        <span className="chat-pane-title" title={title}>
-          {title}
-        </span>
-        {waiting > 0 && (
-          <span className="wb-tab-badge" title="Approval waiting">
-            {waiting}
+      {/* A fieldset for its legend: the outline breaks around the label, and the gap stays see-through. */}
+      <fieldset className="chat-pane-tank" data-part="chat-pane-tank" role="presentation">
+        <legend className="chat-pane-head" data-part="chat-pane-head">
+          {busy && <span className="session-tab-busy chat-pane-busy" aria-label="Working" title="Working" />}
+          <PaneMark side={side} />
+          <span className="chat-pane-title" title={title}>
+            {title}
           </span>
-        )}
-        <button
-          type="button"
-          className="wb-icon-btn chat-pane-close"
-          data-pane-close
-          aria-label="Close this pane"
-          title="Close this pane (the session keeps its tab)"
-          onClick={() => closePane(id)}
-        >
-          <IconClose />
-        </button>
-      </header>
-      <ChatColumn />
+          {model && (
+            <span className="chat-pane-meta" data-part="chat-pane-model" title={`Lead: ${modelDisplayName(model)}`}>
+              {modelDisplayName(model)}
+            </span>
+          )}
+          {showProject && workspace && (
+            <span className="chat-pane-meta" data-part="chat-pane-project" title={workspace}>
+              {basename(workspace)}
+            </span>
+          )}
+          {waiting > 0 && (
+            <span className="wb-tab-badge" title="Approval waiting">
+              {waiting}
+            </span>
+          )}
+          <button
+            type="button"
+            className="wb-icon-btn chat-pane-close"
+            data-pane-close
+            aria-label="Close this pane"
+            title="Close this pane (the session keeps its tab)"
+            onClick={() => closePane(id)}
+          >
+            <IconClose />
+          </button>
+        </legend>
+        <ChatColumn />
+      </fieldset>
     </section>
   );
 }
