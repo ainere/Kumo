@@ -15,10 +15,11 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { useLayoutEffect, useRef } from "react";
 import { Composer, EmptyState } from "./Composer";
 import { Conversation } from "./Conversation";
 import { IconClose } from "./icons";
-import { PaneProvider, closePane, currentSessionTitle, focusPane, useFocusedPane, useStore } from "../store";
+import { PaneProvider, closePane, currentSessionTitle, focusPane, setSplitPaused, useFocusedPane, useStore } from "../store";
 
 /** One chat: its transcript and composer, or the empty screen before its first turn. */
 export function ChatColumn() {
@@ -33,16 +34,35 @@ export function ChatColumn() {
   );
 }
 
+/** Room for two readable columns, about 330px each. Below it split view pauses. */
+const SPLIT_MIN_WIDTH = 680;
+
 /**
  * Two sessions side by side. The focused pane's session is the one the
  * Workbench, the palette and the title bar act on; clicking or typing in the
  * other pane moves focus there first, so its buttons act on its own session.
- * When the chat column is too tight for two readable columns, they stack (see app.css).
+ * When the chat column is too narrow for two readable columns, split view
+ * pauses: only the focused pane shows, the other waits in its tab (still
+ * running, its draft kept), and both come back once there's room again.
  */
 export function SplitView({ left, right }: { left: string; right: string }) {
+  const frame = useRef<HTMLDivElement>(null);
+  const paused = useStore((s) => s.splitPaused);
+  useLayoutEffect(() => {
+    const el = frame.current;
+    if (!el) return;
+    const measure = () => setSplitPaused(el.clientWidth < SPLIT_MIN_WIDTH);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      setSplitPaused(false);
+    };
+  }, []);
   return (
     // Keyed by session: a pane that takes another session starts fresh, its draft included.
-    <div className="split-view" data-part="split-view">
+    <div ref={frame} className="split-view" data-part="split-view" data-paused={paused}>
       <div className="split-panes">
         <ChatPane key={left} id={left} />
         <div className="split-divider" data-part="split-divider" aria-hidden="true" />

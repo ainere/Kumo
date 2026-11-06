@@ -155,6 +155,8 @@ export interface State {
    * focused pane, and the Workbench follows it; the other stays live in its pane.
    */
   split: { left: string; right: string } | null;
+  /** Split view is on but the chat column is too narrow for two: only the focused pane shows. */
+  splitPaused: boolean;
 }
 
 /** A session this window has open but isn't showing. */
@@ -231,6 +233,7 @@ let state: State = {
   backgroundSessions: [],
   sessionOrder: [],
   split: null,
+  splitPaused: false,
   ...EMPTY_WORKBENCH,
 };
 
@@ -1505,8 +1508,8 @@ function parkEvent(id: string, other: ParkedSession, event: KumoEvent): void {
     other.waiting += 1;
     if (state.prefs?.sounds) chime("approval", state.prefs.soundVolume);
     notifyAway(`${other.title}: approval needed`);
-    // In the other pane it's already in sight.
-    if (!shown) toast("notice", `Approval needed in another session: ${other.title}`);
+    // In the other pane it's already in sight, unless split view is paused for room.
+    if (!shown || state.splitPaused) toast("notice", `Approval needed in another session: ${other.title}`);
   } else if (event.type === "approval.resolved") {
     other.waiting = Math.max(0, other.waiting - 1);
   }
@@ -1584,7 +1587,12 @@ export async function openSplit(): Promise<void> {
 export function closeSplit(): void {
   if (!state.split) return;
   paneCache.clear();
-  setState({ split: null });
+  setState({ split: null, splitPaused: false });
+}
+
+/** Split view measured its room: too narrow for two readable columns, or enough again. */
+export function setSplitPaused(paused: boolean): void {
+  if (state.splitPaused !== paused) setState({ splitPaused: paused });
 }
 
 /** Take one pane out of split view; the other stays on screen and its session keeps running in a tab. */
@@ -1691,7 +1699,7 @@ window.kumo.onEngineRestart(() => {
   parked.clear();
   paneCache.clear();
   sentAttachments.clear();
-  setState({ backgroundSessions: [], sessionOrder: [], split: null });
+  setState({ backgroundSessions: [], sessionOrder: [], split: null, splitPaused: false });
 });
 
 // ── theme packages and custom panels ──
