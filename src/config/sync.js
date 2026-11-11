@@ -110,9 +110,24 @@ function writeFileAtomic(p, content) {
   atomicWriteText(p, content, undefined);
 }
 
+/** A config file of the user's that Kumo cannot merge into and so leaves alone. */
+export class UnusableJsonFileError extends Error {
+  /**
+   * @param {string} file
+   * @param {string} reason
+   */
+  constructor(file, reason) {
+    super(`${file} cannot be merged into (${reason}). Kumo will not overwrite it; fix or remove it, then retry.`);
+    this.name = "UnusableJsonFileError";
+    this.file = file;
+  }
+}
+
 /**
  * Write a JSON file, merging top-level `mcpServers` with any existing file.
- * Missing/corrupt existing JSON is treated as `{}`.
+ * A missing or blank file is created. A file that has content Kumo cannot
+ * read as a JSON object (a comment, a trailing comma, an array) is the user's
+ * and is never overwritten: this throws instead.
  *
  * @param {string} p
  * @param {object} obj
@@ -120,12 +135,23 @@ function writeFileAtomic(p, content) {
 function writeJsonMerged(p, obj) {
   let old = {};
   if (fs.existsSync(p)) {
-    try {
-      const raw = fs.readFileSync(p, "utf-8").trim();
-      old = raw ? JSON.parse(raw) : {};
-      if (!old || typeof old !== "object") old = {};
-    } catch {
-      old = {};
+    const raw = fs.readFileSync(p, "utf-8").trim();
+    if (raw) {
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        throw new UnusableJsonFileError(p, "it is not valid JSON");
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new UnusableJsonFileError(p, "it is not a JSON object");
+      }
+      // Merging into a list or a string would rewrite it as something the user never wrote.
+      const servers = parsed.mcpServers;
+      if (servers !== undefined && servers !== null && (typeof servers !== "object" || Array.isArray(servers))) {
+        throw new UnusableJsonFileError(p, "its mcpServers is not a JSON object");
+      }
+      old = parsed;
     }
   }
   const merged = { ...old, ...obj };
@@ -328,7 +354,9 @@ export function ensureAntigravityBridgeConfig(workspaceDir) {
   try {
     writeJsonMerged(file, { mcpServers: { "kumo-bridge": entry } });
     return true;
-  } catch {
+  } catch (err) {
+    // A file the user wrote that Kumo cannot read is reported, not hidden.
+    if (err instanceof UnusableJsonFileError) throw err;
     return false;
   }
 }
@@ -403,8 +431,14 @@ export function syncAgentConfigs(workspaceDir, customConfig = null, options = {}
       isAntigravity(orchProvider) ||
       isAntigravity(workerProvider)
     ) {
-      ensureAntigravityBridgeConfig(workspaceDir);
-      report.written.push(path.join(workspaceDir, ".agents", "mcp_config.json"));
+      const bridgeFile = path.join(workspaceDir, ".agents", "mcp_config.json");
+      try {
+        ensureAntigravityBridgeConfig(workspaceDir);
+        report.written.push(bridgeFile);
+      } catch (err) {
+        if (!(err instanceof UnusableJsonFileError)) throw err;
+        report.skipped.push(`${bridgeFile}: ${err.message}`);
+      }
 
       // Global gemini sync is opt-in (avoids leaking workspace paths on every save)
       if (process.env.KUMO_SYNC_GLOBAL_GEMINI === "1") {
@@ -422,8 +456,9 @@ export function syncAgentConfigs(workspaceDir, customConfig = null, options = {}
               },
             });
           }
-        } catch {
-          /* ignore */
+        } catch (err) {
+          if (err instanceof UnusableJsonFileError) report.skipped.push(`${err.file}: ${err.message}`);
+          // Any other failure of this opt-in global sync is non-fatal.
         }
       }
     }

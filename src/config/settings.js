@@ -40,7 +40,7 @@ import {
   MODEL_ID_RULE,
   canonicalizeProvider,
 } from "./models.js";
-import { BUILTIN_ROLE_IDS, emptyRoles, normalizeRoles, sanitizeRoles } from "./roles.js";
+import { BUILTIN_ROLE_IDS, emptyRoles, normalizeRoles, sanitizeRoles, unreadableRoles } from "./roles.js";
 import { MAX_NAME_CHARS, MAX_INSTRUCTIONS_CHARS } from "../core/profile.js";
 
 // Legacy path for seamless migration. Deliberately anchored to the real home
@@ -473,8 +473,12 @@ export function saveConfig(config) {
  */
 export function setConfigValue(key, value) {
   const current = loadConfig();
-  current[key] = normalizeConfigValue(key, value);
-  saveConfig(current);
+  const normalized = normalizeConfigValue(key, value);
+  current[key] = normalized;
+  // Write back what is on disk with only this key replaced: `current` is the
+  // sanitized view and would drop a role or key this Kumo cannot validate.
+  const stored = readStoredConfigFile() ?? current;
+  saveConfig({ ...stored, [key]: key === "roles" ? withUnreadableRoles(normalized, stored.roles) : normalized });
   // Deliberately no provider-config sync here: this runs from whatever
   // directory the user happens to be in, and the home directory holds the
   // global ~/.codex/config.toml. Sessions refresh opted-in workspaces instead.
@@ -652,8 +656,51 @@ export function presetMatches(presetName, settings) {
 export function applyPreset(presetName) {
   const current = loadConfig();
   const updated = { ...current, ...presetConfig(presetName, current.roles) };
-  saveConfig(updated);
+  // Save over what is on disk, not over the sanitized view: custom roles that
+  // fail validation and keys this Kumo does not know stay in the file.
+  const stored = readStoredConfigFile() ?? current;
+  const { roles: storedRoles, ...storedRest } = stored;
+  const { roles: presetRoles, ...presetRest } = presetConfig(presetName, storedRoles);
+  const keptRoleKeys = Object.fromEntries(
+    Object.entries(isPlainObject(storedRoles) ? storedRoles : {}).filter(([id]) => !BUILTIN_ROLE_IDS.includes(id) && id !== "custom")
+  );
+  saveConfig({ ...storedRest, ...presetRest, roles: { ...keptRoleKeys, ...presetRoles } });
   return updated;
+}
+
+/**
+ * `roles` as it is saved: the new value, with what the file holds that this
+ * Kumo cannot read put back. Every caller builds the new value from
+ * loadConfig()'s sanitized view, which has none of that, so saving it as it
+ * came would delete those roles.
+ *
+ * @param {Record<string, any>} roles - validated
+ * @param {unknown} storedRoles - `roles` as the file holds it
+ * @returns {Record<string, any>}
+ */
+function withUnreadableRoles(roles, storedRoles) {
+  const { keys, custom } = unreadableRoles(storedRoles);
+  // An assignment made now replaces an unreadable one under the same role.
+  return { ...keys, ...roles, custom: [...(Array.isArray(roles.custom) ? roles.custom : []), ...custom] };
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * The config file as it is on disk, or null when it is missing or does not
+ * parse to an object (loadConfig has then already replaced it with defaults).
+ *
+ * @returns {Record<string, any>|null}
+ */
+function readStoredConfigFile() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configFile(), "utf-8"));
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

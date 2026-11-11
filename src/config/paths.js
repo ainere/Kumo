@@ -59,8 +59,48 @@ export function ensureDir(dir, mode = DIR_MODE) {
 export function atomicWriteText(file, content, mode = FILE_MODE) {
   ensureDir(path.dirname(file), mode === undefined ? undefined : DIR_MODE);
   const tmp = `${file}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, content, mode === undefined ? { encoding: "utf-8" } : { encoding: "utf-8", mode });
-  fs.renameSync(tmp, file);
+  try {
+    // Inside the try: a write cut short (a full disk) leaves half a temp file to clear away too.
+    fs.writeFileSync(tmp, content, mode === undefined ? { encoding: "utf-8" } : { encoding: "utf-8", mode });
+    renameWithRetry(tmp, file);
+  } catch (err) {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      /* the write or rename error below is the one worth reporting */
+    }
+    throw err;
+  }
+}
+
+/** Error codes of a sharing violation: another program briefly holds the target. */
+const TRANSIENT_RENAME_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+/** Waits between rename attempts, in ms. On Windows, antivirus, the search indexer and OneDrive hold files for a few ms; worst case 5 attempts, 310 ms of waiting. */
+const RENAME_RETRY_DELAYS_MS = [10, 40, 80, 180];
+
+/** Block this thread for `ms` without spinning the CPU. */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Rename, retrying a few times when the target is held by another program.
+ * Any other error, or the last transient one, is thrown.
+ *
+ * @param {string} from
+ * @param {string} to
+ */
+function renameWithRetry(from, to) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (err) {
+      const code = /** @type {NodeJS.ErrnoException} */ (err)?.code;
+      if (attempt >= RENAME_RETRY_DELAYS_MS.length || !code || !TRANSIENT_RENAME_CODES.has(code)) throw err;
+      sleepSync(RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
 }
 
 /**

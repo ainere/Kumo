@@ -326,6 +326,51 @@ export function normalizeRoles(value) {
 }
 
 /**
+ * What {@link sanitizeRoles} leaves out of a stored `roles` value, as it is
+ * stored: the entries a save has to carry over, or a role written by another
+ * Kumo (or by hand) is deleted the next time any role changes.
+ *
+ * @param {unknown} value - `roles` as the config file holds it
+ * @returns {{ keys: Record<string, unknown>, custom: unknown[] }} `keys`: role keys this Kumo does not know, and
+ *   built-in assignments that do not validate; `custom`: the custom roles that do not validate
+ */
+export function unreadableRoles(value) {
+  /** @type {Record<string, unknown>} */
+  const keys = {};
+  /** @type {unknown[]} */
+  const custom = [];
+  if (!isPlainObject(value)) return { keys, custom };
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "custom" || entry === undefined || entry === null) continue;
+    if (!BUILTIN_BY_ID.has(/** @type {BuiltinRoleId} */ (key))) {
+      keys[key] = entry;
+      continue;
+    }
+    try {
+      normalizeAssignment(entry, `roles.${key}`);
+    } catch {
+      keys[key] = entry;
+    }
+  }
+  const seen = new Set();
+  let read = 0;
+  for (const [i, entry] of (Array.isArray(value.custom) ? value.custom : []).entries()) {
+    // Past the limit sanitizeRoles reads no more, valid or not.
+    if (read >= MAX_CUSTOM_ROLES) {
+      custom.push(entry);
+      continue;
+    }
+    try {
+      normalizeCustomRole(entry, i, seen);
+      read++;
+    } catch {
+      custom.push(entry);
+    }
+  }
+  return { keys, custom };
+}
+
+/**
  * Normalize roles read from disk without failing: a hand-edited entry that
  * does not validate is left out and reported, and the rest still apply.
  *
