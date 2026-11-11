@@ -242,9 +242,12 @@ export function Sidebar() {
       e.stopPropagation();
       setIsDragOverExternal(false);
       const file = e.dataTransfer.files[0];
-      const filePath = (file as unknown as { path?: string }).path;
+      // Electron 32 dropped File.path; the preload reads it from the file itself.
+      const filePath = window.kumo.pathForFile(file);
       if (filePath) {
         void openWorkspace(filePath).catch((err) => toastFailure(err));
+      } else {
+        toast("warning", "Couldn't find where that folder is");
       }
     }
   };

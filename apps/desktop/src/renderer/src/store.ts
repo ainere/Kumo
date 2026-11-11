@@ -460,18 +460,27 @@ async function refreshProjects(): Promise<void> {
 /** Open a workspace: a new session there, or move the current one. */
 export async function openWorkspace(workspace: string, chatId?: string): Promise<void> {
   const current = state.session;
-  const snapshot = current
-    ? await invoke<SessionSnapshot>("session.setWorkspace", { sessionId: current.id, workspace, chatId })
-    : await invoke<SessionSnapshot>("session.create", { workspace, chatId });
-  const moved = sameDir(current?.workspace, snapshot.workspace) ? {} : EMPTY_WORKBENCH;
-  setState({ quotas: snapshot.quotas, phase: "ready" });
-  // A move can take seconds; meanwhile focus may have gone to the other split pane.
-  if (current && state.session?.id !== current.id) {
-    patchSession(current.id, { session: snapshot, busy: snapshot.busy, ...moved });
-    await Promise.all([refreshChat(current.id), refreshProjects()]);
-    return;
+  // A first session announces itself (warnings, ready) before its creation returns: keep that until it's in front.
+  if (!current) beginStarting();
+  let snapshot: SessionSnapshot;
+  let moved: Partial<State>;
+  try {
+    snapshot = current
+      ? await invoke<SessionSnapshot>("session.setWorkspace", { sessionId: current.id, workspace, chatId })
+      : await invoke<SessionSnapshot>("session.create", { workspace, chatId });
+    moved = sameDir(current?.workspace, snapshot.workspace) ? {} : EMPTY_WORKBENCH;
+    setState({ quotas: snapshot.quotas, phase: "ready" });
+    // A move can take seconds; meanwhile focus may have gone to the other split pane.
+    if (current && state.session?.id !== current.id) {
+      patchSession(current.id, { session: snapshot, busy: snapshot.busy, ...moved });
+      await Promise.all([refreshChat(current.id), refreshProjects()]);
+      return;
+    }
+    setState({ session: snapshot, busy: snapshot.busy, ...moved });
+    if (!current) replay(startedWith(snapshot.id));
+  } finally {
+    if (!current) endStarting();
   }
-  setState({ session: snapshot, busy: snapshot.busy, ...moved });
   void window.kumo.app.workbench.publishSession(snapshot.id);
   await savePrefs({ lastWorkspace: snapshot.workspace });
   void refreshQuotas();
@@ -741,18 +750,8 @@ export async function deleteProject(workspace: string): Promise<void> {
         void window.kumo.app.workbench.publishSession(null);
       }
     }
-  } catch {
-    const remaining = state.projects.filter((p) => !sameDir(p.path, workspace));
-    setState({ projects: remaining });
-    toast("notice", "Project deleted");
-    if (state.session && sameDir(state.session.workspace, workspace)) {
-      if (remaining.length > 0) {
-        void openWorkspace(remaining[0].path);
-      } else {
-        setState({ session: null, chats: [], phase: "no-project" });
-        void window.kumo.app.workbench.publishSession(null);
-      }
-    }
+  } catch (err) {
+    toastFailure(err);
   }
 }
 
@@ -805,22 +804,7 @@ export async function deleteChat(workspace: string, chatId: string): Promise<voi
     }
     toast("notice", "Chat deleted");
   } catch (err) {
-    if (err instanceof Error && err.message.includes("another window")) {
-      toastFailure(err);
-      return;
-    }
-    if (state.session && sameDir(state.session.workspace, workspace)) {
-      const remaining = state.chats.filter((c) => c.id !== chatId);
-      setState({ chats: remaining });
-      if (state.session.chatId === chatId) {
-        if (remaining.length > 0) {
-          void openChat(remaining[0].id);
-        } else {
-          void newChat();
-        }
-      }
-    }
-    toast("notice", "Chat deleted");
+    toastFailure(err);
   }
 }
 
@@ -1257,7 +1241,8 @@ export function handleEvent(event: KumoEvent): void {
     if (event.type === "prefs.changed") setState({ prefs: inThisWindow(event.prefs as Prefs) });
     return;
   }
-  if (state.session && event.sessionId !== state.session.id) {
+  // With no session in front, an event belongs to a parked session or to no one here (another window's).
+  if (!state.session || event.sessionId !== state.session.id) {
     const other = parked.get(event.sessionId);
     if (other) parkEvent(event.sessionId, other, event);
     else startingEvents?.push(event);
@@ -1441,6 +1426,19 @@ function markIdle(id: string): void {
 
 /** What arrives while a new session starts, before this window knows it's its own; a failed start says why here. */
 let startingEvents: KumoEvent[] | null = null;
+/** Creations in flight. They share the buffer, so it is kept until the last one ends; each replays only its own session's events. */
+let startingCount = 0;
+
+function beginStarting(): void {
+  if (startingCount++ === 0) startingEvents = [];
+}
+
+function endStarting(): void {
+  if (--startingCount === 0) startingEvents = null;
+}
+
+/** What the buffer holds for a session that has just come into this window, and nothing for any other. */
+const startedWith = (id: string): KumoEvent[] => (startingEvents ?? []).filter((event) => event.sessionId === id);
 
 const syncBackgroundSessions = () =>
   setState({
@@ -1487,7 +1485,8 @@ function parkEvent(id: string, other: ParkedSession, event: KumoEvent): void {
     return;
   }
   if (last?.type === "tool.output" && event.type === "tool.output" && last.toolId === event.toolId) {
-    other.events[other.events.length - 1] = { ...last, text: last.text + event.text };
+    // Capped as the live path caps it, keeping the tail: replaying this event gives what the live one did.
+    other.events[other.events.length - 1] = { ...last, text: (last.text + event.text).slice(-MAX_TOOL_OUTPUT) };
     if (shown) setState({});
     return;
   }
@@ -1613,7 +1612,7 @@ export function toggleSplit(): void {
 export async function newSession(): Promise<void> {
   const current = state.session;
   if (!current) return;
-  startingEvents = [];
+  beginStarting();
   try {
     const snapshot = await invoke<SessionSnapshot>("session.create", { workspace: current.workspace });
     // Whatever came to the front meanwhile is the one that steps back.
@@ -1624,16 +1623,16 @@ export async function newSession(): Promise<void> {
     // In split view the new session takes the focused pane.
     if (split) setState({ split: split.left === front.id ? { ...split, left: snapshot.id } : { ...split, right: snapshot.id } });
     setState({ session: snapshot, busy: snapshot.busy, quotas: snapshot.quotas });
-    replay((startingEvents ?? []).filter((event) => event.sessionId === snapshot.id));
-    startingEvents = null;
+    replay(startedWith(snapshot.id));
     setState((s) => ({ sessionOrder: [...(s.sessionOrder.length > 0 ? s.sessionOrder : [current.id]), snapshot.id] }));
     syncBackgroundSessions();
     void window.kumo.app.workbench.publishSession(snapshot.id);
     scheduleWorkspaceRefresh();
     await refreshChat();
   } catch (err) {
-    startingEvents = null;
     toastFailure(err);
+  } finally {
+    endStarting();
   }
 }
 
@@ -2149,7 +2148,9 @@ export async function savePlanItems(items: PlanItem[]): Promise<void> {
       items,
     });
     // A newer save has its own answer coming: this one would undo what the user just did.
-    if (save === planSaves) setState({ planItems: res.items });
+    // Nor does another chat show this one's plan: the server has it, and that chat reads its own.
+    const stillShown = state.session?.id === session.id && state.session.chatId === session.chatId;
+    if (save === planSaves && stillShown) setState({ planItems: res.items });
   } catch (err) {
     toastFailure(err);
   }
