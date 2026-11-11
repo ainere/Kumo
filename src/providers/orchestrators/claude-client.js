@@ -38,6 +38,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { readProjectMemory } from "../claude-project-memory.js";
 import { GenericAppClient } from "./generic-client.js";
 import { BRIDGE_SERVER_NAME, bridgeLaunch } from "./lead-support.js";
 import { findClaudeBinary, CLAUDE_EFFORTS } from "../workers/claude.js";
@@ -168,24 +169,36 @@ export class ClaudeAppClient extends GenericAppClient {
   }
 
   /**
-   * The file for `--append-system-prompt-file`: the profile, in the Kumo
+   * What goes in the system prompt file: the profile, then the project's
+   * CLAUDE.md files (read as text, because `--setting-sources user` stops
+   * Claude Code reading them itself). Read again each turn, so an edit shows.
+   *
+   * @returns {string}
+   */
+  _appendedText() {
+    return [this.profile, readProjectMemory(this.workspace)].filter(Boolean).join("\n\n");
+  }
+
+  /**
+   * The file for `--append-system-prompt-file`: that text, in the Kumo
    * state directory beside the MCP config, owner-only and written atomically.
    * A file rather than `--append-system-prompt` because the text spans lines,
    * which argv cannot carry through a Windows .cmd shim, and argv shows in
    * process listings. Rewritten when the text changes.
    *
-   * @returns {string|null} null when there is no profile
+   * @returns {string|null} null when there is nothing to append
    */
   _profileFilePath() {
-    if (this.profile === "") {
+    const text = this._appendedText();
+    if (text === "") {
       this._removeProfileFile();
       return null;
     }
     const written = this._profileFile;
-    if (written && written.text === this.profile && fs.existsSync(written.path)) return written.path;
+    if (written && written.text === text && fs.existsSync(written.path)) return written.path;
     const file = written?.path ?? path.join(kumoHome(), "run", `claude-profile-${process.pid}-${randomUUID()}.txt`);
-    atomicWriteText(file, this.profile);
-    this._profileFile = { path: file, text: this.profile };
+    atomicWriteText(file, text);
+    this._profileFile = { path: file, text };
     return file;
   }
 
@@ -209,6 +222,8 @@ export class ClaudeAppClient extends GenericAppClient {
       "--include-partial-messages",
       "--mcp-config", this._mcpConfigFile(),
       "--strict-mcp-config",
+      // The project's .claude/settings.json can define hooks that run under `-p`.
+      "--setting-sources", "user",
       "--allowedTools", BRIDGE_TOOL_RULE,
     ];
     const profileFile = this._profileFilePath();
