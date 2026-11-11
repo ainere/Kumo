@@ -103,14 +103,17 @@ const CHECKPOINT_LABEL_CHARS = 120;
 /** What a prompt hears in the moment a rewind or a kept comparison is rewriting files. */
 const FILES_MOVING = "Your files are being updated. Try again in a moment.";
 
+/** Said to a message, or a second switch, that arrives while the session is changing chat or project. */
+const SWITCHING = "Kumo is still switching chat or project. Try again in a moment.";
+
 /** How often the fallback approval watcher looks for bridge request files. */
 const APPROVAL_POLL_MS = 500;
 
-/** Folders git and the agent CLIs read their hooks, rules and settings from; an export never lands in one. */
-const PROTECTED_EXPORT_DIRS = new Set([".git", ".codex", ".claude", ".agents", ".gemini"]);
+/** Folders git, GitHub and the agent CLIs read their hooks, rules, instructions and settings from; an export never lands in one. */
+const PROTECTED_EXPORT_DIRS = new Set([".git", ".github", ".codex", ".claude", ".agents", ".gemini"]);
 
 /** Files the agent CLIs load as standing instructions; a conversation must not be written over one. */
-const PROTECTED_EXPORT_FILES = new Set(["agents.md", "claude.md", "claude.local.md", "gemini.md"]);
+const PROTECTED_EXPORT_FILES = new Set(["agents.md", "agents.override.md", "claude.md", "claude.local.md", "gemini.md"]);
 
 /** Names Windows treats as devices, with or without an extension; an export folder is never one. */
 const WINDOWS_DEVICE_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
@@ -412,6 +415,8 @@ export class Session extends EventEmitter {
     this._clientSafetyMode = null;
     this.needsReconnect = false;
     this.busy = false;
+    /** newChat, openChat or setWorkspace is between its awaits: the chat and the folder are changing. */
+    this.switching = false;
     this.closed = false;
     /** @type {{ done: Promise<any>, interrupt: (reason?: string) => void } | null} */
     this.activeTurn = null;
@@ -744,6 +749,8 @@ export class Session extends EventEmitter {
     if (attachments.length > 0) await checkAttachments(this.workspace, attachments);
     if (this.closed) throw new Error("This session is closed.");
     if (this.busy) throw new Error(this.movingFiles ? FILES_MOVING : "A turn is already running.");
+    // A turn started now would run in whichever chat and folder the switch happens to have reached.
+    if (this.switching) throw new Error(SWITCHING);
     if (this.filesMoving(this.workspace, this)) throw new Error(FILES_MOVING);
     this.busy = true;
     this._stopAsked = false;
@@ -1553,6 +1560,25 @@ export class Session extends EventEmitter {
   _assertIdle() {
     this._assertOpen();
     if (this.busy) throw new Error(this.movingFiles ? FILES_MOVING : "A turn is running; wait for it or interrupt it first.");
+    if (this.switching) throw new Error(SWITCHING);
+  }
+
+  /**
+   * Run a change of chat or project with the session marked as switching, so that no turn and no
+   * second switch starts between its awaits. The mark goes however the change ends.
+   *
+   * @template T
+   * @param {() => Promise<T>} change
+   * @returns {Promise<T>}
+   */
+  async _whileSwitching(change) {
+    this._assertIdle();
+    this.switching = true;
+    try {
+      return await change();
+    } finally {
+      this.switching = false;
+    }
   }
 
   async _ensureClient() {
@@ -1568,7 +1594,10 @@ export class Session extends EventEmitter {
 
   /** Start a fresh conversation (or navigate to an existing empty chat). */
   async newChat() {
-    this._assertIdle();
+    return this._whileSwitching(() => this._newChat());
+  }
+
+  async _newChat() {
     this._saveChatState();
     // If the current chat has 0 turns and an empty log, keep using it.
     if (this.chatId && this.turnCount === 0 && this.store.loadTurnLog(this.workspace, this.chatId).length === 0) {
@@ -1579,7 +1608,7 @@ export class Session extends EventEmitter {
     // If an empty chat exists elsewhere in this workspace, navigate to it instead of making another.
     const empty = this._findEmptyChat();
     if (empty) {
-      await this.openChat(empty.id);
+      await this._openChat(empty.id);
       return;
     }
     await this._ensureClient();
@@ -1602,7 +1631,14 @@ export class Session extends EventEmitter {
    * @returns {Promise<{ resumed: boolean, hadTurns: boolean, replayed: boolean }>}
    */
   async openChat(chatId) {
-    this._assertIdle();
+    return this._whileSwitching(() => this._openChat(chatId));
+  }
+
+  /**
+   * @param {string} chatId
+   * @returns {Promise<{ resumed: boolean, hadTurns: boolean, replayed: boolean }>}
+   */
+  async _openChat(chatId) {
     const chat = this._chatRecord(chatId);
     if (!chat) throw new Error(`No chat '${chatId}' in this workspace.`);
     this._saveChatState();
@@ -1629,7 +1665,14 @@ export class Session extends EventEmitter {
    * @param {{ chatId?: string }} [opts]
    */
   async setWorkspace(dir, { chatId } = {}) {
-    this._assertIdle();
+    return this._whileSwitching(() => this._setWorkspace(dir, { chatId }));
+  }
+
+  /**
+   * @param {string} dir
+   * @param {{ chatId?: string }} opts
+   */
+  async _setWorkspace(dir, { chatId }) {
     const resolved = path.resolve(dir);
     if (!fs.existsSync(resolved)) throw new Error(`Directory not found: ${resolved}`);
     this._saveChatState();
@@ -1768,6 +1811,8 @@ export class Session extends EventEmitter {
     }
     const toolsChanged = roleToolSignature(this.settings.roles) !== roleToolSignature(next.roles);
     const tierChanged = changed.includes("safetyMode") && TIER_BOUND_LEADS.has(next.orchestratorProvider);
+    // Each of these replaces the client, and a switch is opening a thread on the one the session has.
+    if (this.switching && (changed.includes("orchestratorProvider") || toolsChanged || tierChanged)) throw new Error(SWITCHING);
     // Taken now: connecting may correct the model, and the saved default is what the user asked for.
     const saved = changed.map((key) => /** @type {[string, unknown]} */ ([key, /** @type {Record<string, unknown>} */ (next)[key]]));
     const previous = this.settings;

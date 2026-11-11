@@ -67,7 +67,7 @@ export function newEndpoint() {
  * Split a byte stream into JSON messages, one per line.
  *
  * @param {import("node:net").Socket} socket
- * @param {(message: any) => void} onMessage
+ * @param {(message: any) => void | Promise<void>} onMessage - a throw or rejection ends the connection through onError
  * @param {(error: Error) => void} onError - malformed or oversized input
  */
 export function readMessages(socket, onMessage, onError) {
@@ -78,6 +78,10 @@ export function readMessages(socket, onMessage, onError) {
     failed = true;
     buffer = "";
     onError(new Error(reason));
+  };
+  /** @param {unknown} err */
+  const reportHandlerFailure = (err) => {
+    if (!failed) fail(`message handler failed: ${err instanceof Error ? err.message : String(err)}`);
   };
   socket.setEncoding("utf8");
   socket.on("data", (chunk) => {
@@ -97,7 +101,14 @@ export function readMessages(socket, onMessage, onError) {
       } catch {
         return fail("malformed message");
       }
-      onMessage(message);
+      // A handler that fails (or rejects, if it is async) must not escape: nobody awaits it, and
+      // an unhandled rejection or a throw inside this event would take the process down.
+      try {
+        const handled = onMessage(message);
+        if (handled && typeof handled.then === "function") handled.then(undefined, reportHandlerFailure);
+      } catch (err) {
+        return reportHandlerFailure(err);
+      }
     }
     // The unfinished line so far.
     if (Buffer.byteLength(buffer) > MAX_LINE_BYTES) fail("message exceeds the size limit");

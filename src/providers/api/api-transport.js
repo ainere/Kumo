@@ -186,11 +186,29 @@ export async function readBoundedText(res) {
   if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
     throw new Error(`Response body of ${declared} bytes exceeds the ${MAX_RESPONSE_BYTES}-byte cap`);
   }
-  const text = await res.text();
-  if (text.length > MAX_RESPONSE_BYTES) {
-    throw new Error(`Response body exceeds the ${MAX_RESPONSE_BYTES}-byte cap`);
+  // No body at all reads as "", as res.text() would.
+  if (res.body === null) return "";
+  const reader = res.body.getReader();
+  // `stream` keeps a character split across two chunks together.
+  const decoder = new TextDecoder("utf-8");
+  let received = 0;
+  let text = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > MAX_RESPONSE_BYTES) {
+        throw new Error(`Response body exceeds the ${MAX_RESPONSE_BYTES}-byte cap`);
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch (err) {
+    // Stop the transfer; the original error is the one worth reporting.
+    await reader.cancel().catch(() => {});
+    throw err;
   }
-  return text;
+  return text + decoder.decode();
 }
 
 /**

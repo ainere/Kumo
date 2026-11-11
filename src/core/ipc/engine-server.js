@@ -113,50 +113,66 @@ export class EngineIpcServer extends EventEmitter {
       }
     });
 
+    /** @param {any} message */
+    const dispatch = async (message) => {
+      if (!authed) {
+        if (message?.method !== "hello" || !this._tokenMatches(message?.params?.token)) {
+          close();
+          return;
+        }
+        authed = true;
+        clearTimeout(handshake);
+        this.authenticated++;
+        info.pid = typeof message.params.pid === "number" ? message.params.pid : null;
+        const result = this.handlers.hello ? this.handlers.hello(message.params) : {};
+        writeMessage(socket, { id: message.id, result });
+        this.emit("connection", info);
+        return;
+      }
+
+      const method = String(message.method || "");
+      if (message.id === undefined || message.id === null) {
+        const handler = this.handlers.notifications?.[method];
+        if (handler) {
+          try {
+            await handler(message.params || {}, info);
+          } catch {
+            /* a notification has nobody to report to */
+          }
+        }
+        return;
+      }
+
+      const handler = this.handlers.requests[method];
+      if (!handler) {
+        writeMessage(socket, { id: message.id, error: { code: -32601, message: `unknown method ${method}` } });
+        return;
+      }
+      try {
+        const result = await handler(message.params || {}, info);
+        writeMessage(socket, { id: message.id, result: result ?? null });
+      } catch (err) {
+        writeMessage(socket, {
+          id: message.id,
+          error: { code: -32000, message: err instanceof Error ? err.message : String(err) },
+        });
+      }
+    };
+
     readMessages(
       socket,
       async (message) => {
-        if (!authed) {
-          if (message?.method !== "hello" || !this._tokenMatches(message?.params?.token)) {
-            close();
-            return;
-          }
-          authed = true;
-          clearTimeout(handshake);
-          this.authenticated++;
-          info.pid = typeof message.params.pid === "number" ? message.params.pid : null;
-          const result = this.handlers.hello ? this.handlers.hello(message.params) : {};
-          writeMessage(socket, { id: message.id, result });
-          this.emit("connection", info);
-          return;
-        }
-
-        const method = String(message?.method || "");
-        if (message.id === undefined || message.id === null) {
-          const handler = this.handlers.notifications?.[method];
-          if (handler) {
-            try {
-              await handler(message.params || {}, info);
-            } catch {
-              /* a notification has nobody to report to */
-            }
-          }
-          return;
-        }
-
-        const handler = this.handlers.requests[method];
-        if (!handler) {
-          writeMessage(socket, { id: message.id, error: { code: -32601, message: `unknown method ${method}` } });
-          return;
-        }
+        // After hello, a line that is not a request or notification object is noise to ignore. Before it,
+        // dispatch closes the connection for anything but a valid hello.
+        if (authed && (message === null || typeof message !== "object" || Array.isArray(message))) return;
         try {
-          const result = await handler(message.params || {}, info);
-          writeMessage(socket, { id: message.id, result: result ?? null });
+          await dispatch(message);
         } catch (err) {
-          writeMessage(socket, {
-            id: message.id,
-            error: { code: -32000, message: err instanceof Error ? err.message : String(err) },
-          });
+          // Nothing awaits this handler, so a failure must end here: answer the peer if it asked something.
+          const id = message?.id;
+          if (id !== undefined && id !== null) {
+            writeMessage(socket, { id, error: { code: -32000, message: err instanceof Error ? err.message : String(err) } });
+          }
         }
       },
       close
