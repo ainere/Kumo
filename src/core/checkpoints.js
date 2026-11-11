@@ -35,7 +35,8 @@
  * Not covered: files under a filter the repository defines for itself, like
  * git-crypt's. Filters can't run here, so a snapshot of one would hold its
  * plaintext in `.git` and a restore would write its stored bytes over the file.
- * They stay out of snapshots and rewinds. Folders outside a repository have no
+ * They stay out of snapshots, and a rewind neither writes nor deletes one: it
+ * is reported with the paths that couldn't be changed. Folders outside a repository have no
  * checkpoints.
  */
 
@@ -60,6 +61,8 @@ const REF_ROOT = "refs/kumo/cp";
 const SNAPSHOT_TIMEOUT_MS = 30_000;
 /** A new file past this is left out of snapshots: a stray dump shouldn't land in the project's `.git`. */
 const MAX_SNAPSHOT_FILE_BYTES = 32 * 1024 * 1024;
+/** New files past this in total fail the snapshot: a partial tree would have a rewind delete or skip files unpredictably. */
+export const MAX_SNAPSHOT_NEW_BYTES = 1024 * 1024 * 1024;
 /** Turns kept per chat. The oldest go first, and git collects what only they held. */
 export const MAX_CHECKPOINTS = 100;
 
@@ -137,12 +140,15 @@ async function withIndexCopy(rootReal, fn) {
  * New files a snapshot can take. Git lists a nested repository as a folder
  * ending in a slash; adding one fails if it has no commits, and it isn't this
  * project's to snapshot anyway. A list that can't be read whole fails the
- * snapshot: a tree missing new files would have a rewind delete them.
+ * snapshot: a tree missing new files would have a rewind delete them. So does
+ * one with more new files than `maxNewBytes`, rather than a tree with some of
+ * them.
  *
  * @param {string} rootReal
+ * @param {number} maxNewBytes
  * @returns {Promise<string[]>}
  */
-async function snapshotCandidates(rootReal) {
+async function snapshotCandidates(rootReal, maxNewBytes) {
   const listed = await listUntracked(rootReal, { timeoutMs: SNAPSHOT_TIMEOUT_MS });
   if (listed === null) throw new Error("git couldn't list the new files");
   const sized = await Promise.all(
@@ -150,10 +156,26 @@ async function snapshotCandidates(rootReal) {
       .filter((rel) => !rel.endsWith("/"))
       .map(async (rel) => {
         const stat = await fs.promises.lstat(path.join(rootReal, rel)).catch(() => null);
-        return stat !== null && stat.size <= MAX_SNAPSHOT_FILE_BYTES ? rel : null;
+        return stat !== null && stat.size <= MAX_SNAPSHOT_FILE_BYTES ? { rel, size: stat.size } : null;
       })
   );
-  return sized.filter((rel) => rel !== null);
+  const taken = sized.filter((file) => file !== null);
+  const total = taken.reduce((sum, file) => sum + file.size, 0);
+  if (total > maxNewBytes) {
+    throw new Error(
+      `the project has more than ${describeBytes(maxNewBytes)} of new files that git doesn't ignore, so no checkpoint was taken. Ignore or commit them to get checkpoints back`
+    );
+  }
+  return taken.map((file) => file.rel);
+}
+
+/** @param {number} bytes */
+function describeBytes(bytes) {
+  const GIB = 1024 * 1024 * 1024;
+  const MIB = 1024 * 1024;
+  if (bytes >= GIB) return `${+(bytes / GIB).toFixed(1)} GB`;
+  if (bytes >= MIB) return `${+(bytes / MIB).toFixed(1)} MB`;
+  return `${bytes} bytes`;
 }
 
 /**
@@ -211,9 +233,10 @@ async function withoutLocalFilters(git, paths, drivers) {
  * Write the workspace's current state as a tree.
  *
  * @param {string} rootReal
+ * @param {number} maxNewBytes
  * @returns {Promise<string>}
  */
-function writeSnapshot(rootReal) {
+function writeSnapshot(rootReal, maxNewBytes) {
   return withIndexCopy(rootReal, async (index) => {
     const filters = await localFilters(rootReal);
     /**
@@ -233,7 +256,7 @@ function writeSnapshot(rootReal) {
     const changed = await git(["ls-files", "-z", "--stage", "--modified", "--deleted"]);
     if (!changed.ok || changed.truncated) throw new Error("git couldn't read the changed files");
     const { add, gone } = await sortTracked(rootReal, changed.stdout);
-    const paths = await withoutLocalFilters(git, [...new Set([...add, ...(await snapshotCandidates(rootReal))])], filters.drivers);
+    const paths = await withoutLocalFilters(git, [...new Set([...add, ...(await snapshotCandidates(rootReal, maxNewBytes))])], filters.drivers);
     if (gone.length > 0) {
       const removed = await git(["update-index", "--force-remove", "-z", "--stdin"], gone.join("\0"));
       if (!removed.ok) throw new Error("git couldn't read the changed files");
@@ -252,20 +275,22 @@ function writeSnapshot(rootReal) {
 
 /**
  * The workspace's current state as a tree, or null outside a repository.
- * Throws when git can't take one.
+ * Throws when git can't take one, or when the new files git doesn't ignore
+ * total more than `maxNewBytes`.
  *
  * @param {string} workspace
+ * @param {{ maxNewBytes?: number }} [limits] a seam for tests
  * @returns {Promise<string | null>}
  */
-export async function snapshotWorkspace(workspace) {
+export async function snapshotWorkspace(workspace, { maxNewBytes = MAX_SNAPSHOT_NEW_BYTES } = {}) {
   const rootReal = realpathSafe(workspace);
   const found = await runGit(rootReal, ["rev-parse", "--is-inside-work-tree"]);
   if (!found.ok || found.stdout.trim() !== "true") return null;
   try {
-    return await writeSnapshot(rootReal);
+    return await writeSnapshot(rootReal, maxNewBytes);
   } catch {
     // A file listed a moment ago can be gone by the time git reads it (a dev server's temp file), so once more on a fresh list.
-    return writeSnapshot(rootReal);
+    return writeSnapshot(rootReal, maxNewBytes);
   }
 }
 
@@ -442,12 +467,23 @@ async function canWrite(rootReal, rel, added, removing, throughLink) {
  * @returns {Promise<ChangePlan>}
  */
 async function planChanges(rootReal, { write, remove, added }) {
-  const removing = new Set(remove);
+  // Filters can't run here, so a path under one has stored bytes that aren't its working content (see the top of this file).
+  const { drivers } = await localFilters(rootReal);
+  /**
+   * @param {string[]} args
+   * @param {string} [input]
+   */
+  const git = (args, input) => runGit(rootReal, args, { timeoutMs: SNAPSHOT_TIMEOUT_MS, input });
+  const writable = await withoutLocalFilters(git, write, drivers);
+  const removable = await withoutLocalFilters(git, remove, drivers);
+  const removing = new Set(removable);
   const throughLink = linkedFolders(rootReal);
   /** @type {ChangePlan} */
-  const plan = { write: [], remove, blocked: [] };
+  const plan = { write: [], remove: removable, blocked: remove.filter((rel) => !removing.has(rel)) };
+  const allowed = new Set(writable);
   for (const rel of write) {
-    const safe = await canWrite(rootReal, rel, added.has(rel), removing, throughLink);
+    // Judged on its own: blocked only because of a filter, or by what's in the way.
+    const safe = allowed.has(rel) && (await canWrite(rootReal, rel, added.has(rel), removing, throughLink));
     (safe ? plan.write : plan.blocked).push(rel);
   }
   return plan;
