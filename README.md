@@ -97,7 +97,7 @@ npm install
 npm run dist -w @kumo/desktop     # writes apps/desktop/dist/Kumo-Setup-<version>.exe
 ```
 
-The installer is per user and needs no admin rights. It installs Kumo to `%LOCALAPPDATA%\Programs\kumo`, adds Start menu and desktop shortcuts, and starts the app. The app carries its own Node, so all you need beside it is Git and the provider CLIs you log in to. Builds aren't code-signed yet, so Windows SmartScreen can warn about a copy downloaded from the internet ("Windows protected your PC"); "More info", then "Run anyway", gets past it. Once releases are published on GitHub, the app updates itself: a new version downloads in the background and installs when you quit. Uninstall it from Windows Settings › Apps › Installed apps. Your chats, settings and projects in `~/.kumo` stay.
+The installer is per user and needs no admin rights. It installs Kumo to `%LOCALAPPDATA%\Programs\kumo`, adds Start menu and desktop shortcuts, and starts the app. The app carries its own Node, so all you need beside it is Git and the provider CLIs you log in to. Builds aren't code-signed yet, so Windows SmartScreen can warn about a copy downloaded from the internet ("Windows protected your PC"); "More info", then "Run anyway", gets past it. Once releases are published on GitHub, the app tells you when a newer version is out, and a click on the notification opens the download page. It doesn't download or install updates itself while builds are unsigned. Uninstall it from Windows Settings › Apps › Installed apps. Your chats, settings and projects in `~/.kumo` stay.
 
 To run it straight from the repository instead: `npm run dev -w @kumo/desktop`. More in the [desktop guide](guides/desktop.md).
 
