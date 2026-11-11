@@ -18,6 +18,8 @@ The codebase implements a decoupled, unhardcoded provider and data persistence s
 - **Desktop app** ([`apps/desktop/`](../apps/desktop/)):
   - `src/main/index.ts`: the window (frameless, native caption buttons over the glass title bar), the engine's utility process, the folder picker and native theme.
   - `src/main/engine-host.ts`: the engine in the utility process, serving commands and events over `MessagePort`s.
+  - `src/main/updates.ts`: update checks for the installed app, against GitHub Releases.
+  - `electron-builder.yml`, `scripts/stage-engine.mjs`: the Windows installer, and the engine staged beside its asar (see the [desktop guide](desktop.md#the-installer)).
   - `src/main/scene-protocol.ts`, `src/main/scenes/`: the `kumo-scene://` origin, the scene runtime and the built-in scenes.
   - `src/preload/index.ts`: `window.kumo`, the renderer's only way out.
   - `src/renderer/`: React UI; `store.ts` shapes engine events into state, `styles/tokens.css` holds the Night sky tokens, and components carry `data-part` names for theming.
@@ -74,6 +76,7 @@ npm run lint                          # ESLint
 npm run typecheck                     # tsc over JSDoc, strict for files with // @ts-check (all of src/core)
 npm run typecheck -w @kumo/desktop    # the desktop app's TypeScript
 npm run build -w @kumo/desktop        # build the desktop app into apps/desktop/out
+npm run dist -w @kumo/desktop         # the Windows installer, into apps/desktop/dist
 ```
 
-Kumo needs Node 22 or later. CI runs lint and both type checks and builds the desktop app on every push and pull request. After upgrading Codex, refresh the vendored protocol types with `npm run refresh:codex-protocol`.
+Kumo needs Node 22 or later. CI runs lint and both type checks and builds the desktop app on every push and pull request, and builds the Windows installer as an artifact it keeps for a week. After upgrading Codex, refresh the vendored protocol types with `npm run refresh:codex-protocol`.

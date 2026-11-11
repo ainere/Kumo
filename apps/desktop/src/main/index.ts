@@ -44,11 +44,15 @@ import { SCENE_SCHEME, handleSceneScheme, registerFrameSchemes } from "./scene-p
 import { PANEL_SCHEME, ensureUserPanelsDir, listUserPanels, watchUserPanels } from "./user-panels";
 import { ensureUserScenesDir, listUserScenes, watchUserScenes } from "./user-scenes";
 import { ensureUserThemesDir, listUserThemes, watchUserThemes } from "./user-themes";
+import { startUpdateChecks } from "./updates";
 
 const here = dirname(fileURLToPath(import.meta.url));
-// In development the engine is the repository's src/. Packaging (Phase 6)
-// keeps src/ outside the asar and points this at it.
-const engineRoot = process.env.KUMO_ENGINE_ROOT || resolve(here, "../../../../src");
+// In development the engine is the repository's src/. A package carries it as
+// plain files beside the asar, in resources/engine (scripts/stage-engine.mjs),
+// so provider CLIs can start the bridge from it.
+const engineRoot =
+  process.env.KUMO_ENGINE_ROOT ||
+  (app.isPackaged ? join(process.resourcesPath, "engine", "src") : resolve(here, "../../../../src"));
 
 const GROUND = { dark: "#05070D", light: "#F5F6F8" } as const;
 
@@ -589,6 +593,7 @@ app.whenReady().then(() => {
   stopWatchingScenes = watchUserScenes(() => broadcast("kumo:scenes-changed"));
   startEngine();
   createWindow();
+  startUpdateChecks();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

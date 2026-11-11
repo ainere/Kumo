@@ -1,0 +1,91 @@
+# The Windows installer. `npm run dist -w @kumo/desktop` builds the app, stages
+# the engine (scripts/stage-engine.mjs) and writes a per-user NSIS installer,
+# its blockmap and latest.yml to apps/desktop/dist. It never publishes: the
+# script passes `--publish never`, and a release is made by hand.
+
+# The AppUserModelID src/main/index.ts sets. The Start menu shortcut carries
+# it too, and Windows only shows notifications and keeps taskbar pins when the
+# two match.
+appId: com.kumo.desktop
+productName: Kumo
+copyright: Copyright (C) 2026 Elkan La Madrid
+# The packaged identity. The workspace is @kumo/desktop, which would name the
+# install folder "kumo-desktop" and make the uninstaller remove
+# %APPDATA%\@kumo\desktop, the development build's data. As "kumo" the app
+# installs to %LOCALAPPDATA%\Programs\kumo and keeps its data in %APPDATA%\Kumo.
+extraMetadata:
+  name: kumo
+  productName: Kumo
+
+directories:
+  output: dist
+
+# The asar holds the window: the Vite build, the icon src/main/index.ts loads
+# beside out/, and electron-updater, the one runtime dependency left. The
+# renderer's packages are bundled, so they're devDependencies.
+files:
+  - out/main/**
+  - out/preload/**
+  - out/renderer/**
+  - resources/icon.ico
+  - package.json
+  # Staged with the engine below, with only its Windows binaries. Its one
+  # dependency is build-time C++ headers.
+  - "!**/node_modules/node-pty/**"
+  - "!**/node_modules/node-addon-api/**"
+
+# The engine, as plain files beside the asar: the utility process imports it
+# and provider CLIs start the bridge from it (see scripts/stage-engine.mjs).
+# The bridge runs as Kumo.exe with ELECTRON_RUN_AS_NODE, so Electron's
+# RunAsNode fuse has to stay on. Copied from out/ rather than out/engine
+# because electron-builder always leaves out the node_modules at the top of a
+# copied folder, and the engine needs its own.
+extraResources:
+  - from: out
+    filter:
+      - engine/**/*
+
+asar: true
+# Nothing native is left to rebuild: node-pty ships Node-API prebuilds that
+# load in Electron as they are.
+npmRebuild: false
+# The window is English only; Chromium's own strings fall back to en-US.
+electronLanguages:
+  - en-US
+
+win:
+  target:
+    - target: nsis
+      # stage-engine.mjs stages node-pty for one architecture (--arch, this
+      # machine's by default), so another one here needs its own staging.
+      arch:
+        - x64
+  icon: resources/icon.ico
+  # Code signing is off until a certificate is chosen. electron-builder signs
+  # only when one is configured: CSC_LINK and CSC_KEY_PASSWORD for a
+  # certificate file, or `azureSignOptions` here for Azure Trusted Signing.
+  # Unsigned, the installer works and SmartScreen warns on first run.
+
+nsis:
+  # One click, per user: installs to %LOCALAPPDATA%\Programs\kumo with no
+  # admin rights and starts the app. `/S` installs silently, and `/D=<folder>`
+  # picks another folder.
+  oneClick: true
+  perMachine: false
+  artifactName: Kumo-Setup-${version}.${ext}
+  shortcutName: Kumo
+  uninstallDisplayName: Kumo
+  # Only Chromium's caches and the Browser tab's cookies are in %APPDATA%\Kumo.
+  # Chats, settings and projects are in ~/.kumo, which uninstalling leaves
+  # alone. An update doesn't delete anything.
+  deleteAppDataOnUninstall: true
+  # Also removes the installer's own copy in %LOCALAPPDATA%\kumo-updater.
+  include: resources/installer.nsh
+
+# Where the installed app looks for updates (src/main/updates.ts). This writes
+# app-update.yml into the package; it doesn't publish anything.
+publish:
+  - provider: github
+    owner: ainere
+    repo: Kumo
+    releaseType: release

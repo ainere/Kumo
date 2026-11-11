@@ -35,7 +35,19 @@ Run it from the repository (the root `npm install` installs the app through npm 
 npm run dev -w @kumo/desktop        # development, with hot reload
 npm run build -w @kumo/desktop      # build to apps/desktop/out
 npm run start -w @kumo/desktop      # run the build
+npm run dist -w @kumo/desktop       # a Windows installer in apps/desktop/dist
 ```
+
+## The installer
+
+`npm run dist -w @kumo/desktop` builds the app and writes a one-click, per-user NSIS installer to `apps/desktop/dist`, with the `latest.yml` and blockmap that updates read. It needs no admin rights and installs to `%LOCALAPPDATA%\Programs\kumo`; `/S` installs silently, and `/D=<folder>` picks another folder. The packaging setup is [`electron-builder.yml`](../apps/desktop/electron-builder.yml).
+
+- **What's in the package:** `resources/app.asar` holds the window (the Vite build) and electron-updater. The engine sits beside it as plain files in `resources/engine`, laid out like the repository: `src/`, a trimmed `package.json`, and the root package's runtime dependencies at the paths npm installed them to, staged by [`scripts/stage-engine.mjs`](../apps/desktop/scripts/stage-engine.mjs). It stays out of the asar because provider CLIs start the bridge from it, as `Kumo.exe resources\engine\src\bridge\server.js` with `ELECTRON_RUN_AS_NODE=1`. That's why the installed app needs no Node, and why Electron's RunAsNode fuse has to stay on.
+- **node-pty** is staged into `resources/engine/node_modules` with only its Windows prebuilds. It's a Node-API module, so the same binaries load in Electron without a rebuild.
+- **Updates:** the installed app checks the GitHub Releases of `ainere/Kumo` at start and every six hours. A newer version downloads in the background, Windows shows a notification when it's ready, and it installs when you quit. Until a release is published, a check finds nothing. Development builds never check, and `KUMO_NO_UPDATES=1` turns the checks off. `npm run dist` never publishes (it passes `--publish never`); releases are made by hand.
+- **Signing:** builds are unsigned until a certificate is chosen. electron-builder signs once one is configured: `CSC_LINK` and `CSC_KEY_PASSWORD` for a certificate file, or `azureSignOptions` for Azure Trusted Signing. Until then, SmartScreen warns about an installer downloaded from the internet.
+- **Data:** the app keeps Chromium's caches and the Browser tab's cookies in `%APPDATA%\Kumo`, which uninstalling removes. Chats, settings and projects are in `~/.kumo`, shared with the CLI, and uninstalling leaves them alone.
+- **Dependencies:** Vite bundles the renderer's packages, so they're devDependencies and stay out of the package. `electron` is pinned to an exact version, which electron-builder needs to download the matching runtime.
 
 ## Your own scenes
 

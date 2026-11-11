@@ -10,6 +10,7 @@ export default [
       "coverage/",
       "src/core/vendor/",
       "apps/desktop/out/",
+      "apps/desktop/dist/",
       "test-results/",
       "playwright-report/",
     ],
