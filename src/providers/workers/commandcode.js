@@ -8,6 +8,8 @@ import {
   runCliWorker,
   buildCompositePrompt,
   grantsWrite,
+  commandLinePromptRefusal,
+  refusedResult,
   DEFAULT_TIMEOUT_MS,
 } from "./cli-runner.js";
 
@@ -35,6 +37,9 @@ export async function executeTask(opts) {
 
   const bin = findCommandcodeBinary();
   const compositePrompt = buildCompositePrompt({ prompt, systemPrompt, previewDiff, files, fileContents: opts.fileContents });
+
+  const refusal = commandLinePromptRefusal("Command Code", bin, compositePrompt);
+  if (refusal) return refusedResult(refusal);
 
   const args = [];
   if (model) {

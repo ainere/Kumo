@@ -9,6 +9,7 @@ export class CursorAppClient extends GenericAppClient {
     super({
       ...options,
       command: "cursor",
+      label: "Cursor",
       bin: options.bin || process.env.CURSOR_BIN || "cursor-agent",
     });
   }

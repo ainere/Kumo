@@ -37,18 +37,79 @@ export const MAX_OUTPUT_BYTES = 1024 * 1024;
 /** Default per-task execution ceiling. */
 export const DEFAULT_TIMEOUT_MS = 300000;
 
+/** A stdin-capable launcher moves to stdin above this on a batch shim, because that costs nothing. */
+const MAX_BATCH_STDIN_FREE_CHARS = 4000;
+/** No-stdin launchers are refused above this on a batch shim: cmd.exe rejects a command line over 8191 characters, and the launcher path and other arguments need room too. */
+export const MAX_BATCH_ARGV_PROMPT_CHARS = 8000;
+/** Longest prompt any launcher takes on its command line; stays under CreateProcess's 32,767-character limit. */
+export const MAX_ARGV_PROMPT_CHARS = 30000;
+
 /**
- * A composite prompt routed through a Windows `.cmd`/`.bat` shim is spliced into
- * a `cmd.exe /d /s /c` command line, where a newline terminates the command and
- * the ~8191-character limit truncates it. Such prompts must go over stdin.
+ * How a prompt fares on a command line to this launcher. A prompt routed
+ * through a Windows `.cmd`/`.bat` shim is spliced into a `cmd.exe /d /s /c`
+ * command line, where a newline terminates the command; any launcher fails past
+ * ~32,767 characters.
+ *
+ * - "line-break", "batch-over", "too-long": the launch is certain to fail.
+ * - "batch-long": it works, but a stdin-capable launcher moves to stdin anyway.
+ * - "fits": no reason to avoid the command line.
+ *
+ * @param {string} bin
+ * @param {string|null|undefined} prompt
+ * @returns {"fits"|"batch-long"|"line-break"|"batch-over"|"too-long"}
+ */
+function classifyPrompt(bin, prompt) {
+  if (!prompt) return "fits";
+  if (prompt.length > MAX_ARGV_PROMPT_CHARS) return "too-long";
+  if (!isWindowsBatch(bin)) return "fits";
+  if (/[\r\n]/.test(prompt)) return "line-break";
+  if (prompt.length > MAX_BATCH_ARGV_PROMPT_CHARS) return "batch-over";
+  return prompt.length > MAX_BATCH_STDIN_FREE_CHARS ? "batch-long" : "fits";
+}
+
+/**
+ * Whether the prompt must leave the command line, for a CLI that has a stdin form.
  *
  * @param {string} bin
  * @param {string|null} prompt
  * @returns {boolean}
  */
 export function mustUseStdinPrompt(bin, prompt) {
-  if (!prompt) return false;
-  return isWindowsBatch(bin) && (/[\r\n]/.test(prompt) || prompt.length > 4000);
+  return classifyPrompt(bin, prompt) !== "fits";
+}
+
+/**
+ * For a CLI with no stdin form: the message to fail with before spawning when
+ * the launch is certain to fail, or null when the prompt may be tried.
+ *
+ * @param {string} label - the provider's display name
+ * @param {string} bin
+ * @param {string|null|undefined} prompt
+ * @returns {string|null}
+ */
+export function commandLinePromptRefusal(label, bin, prompt) {
+  const remedy = "Use a provider that reads its prompt from stdin, or point Kumo at the CLI's .exe launcher.";
+  switch (classifyPrompt(bin, prompt)) {
+    case "line-break":
+      return `${label}'s launcher is a .cmd file, and a multi-line prompt can't be passed to it on Windows. ${remedy}`;
+    case "batch-over":
+      return `${label}'s launcher is a .cmd file, and a prompt over ${MAX_BATCH_ARGV_PROMPT_CHARS} characters can't be passed to it on Windows (this one is ${prompt?.length}). Shorten the task or send fewer files. ${remedy}`;
+    case "too-long":
+      return `The prompt for ${label} is too long for a Windows command line (${prompt?.length} characters; the limit here is ${MAX_ARGV_PROMPT_CHARS}). Shorten the task or send fewer files. ${remedy}`;
+    default:
+      return null;
+  }
+}
+
+/**
+ * The failed result a worker returns when its prompt cannot be passed, in the
+ * shape `runCliWorker` returns for a spawn error.
+ *
+ * @param {string} message
+ * @returns {{ ok: false, code: number, stdout: string, stderr: string, timedOut: boolean }}
+ */
+export function refusedResult(message) {
+  return { ok: false, code: 1, stdout: "", stderr: message, timedOut: false };
 }
 
 /**

@@ -10,6 +10,7 @@
 
 import { EventEmitter } from "node:events";
 import { StringDecoder } from "node:string_decoder";
+import { commandLinePromptRefusal } from "../workers/cli-runner.js";
 import { safeSpawn, resolveBinary, stopProcessTree, childEnvFor } from "../../utils/process.js";
 
 /** How much trailing stderr is kept to explain a failed turn. */
@@ -21,6 +22,8 @@ export class GenericAppClient extends EventEmitter {
     this.options = options;
     this.command = options.command || options.provider || "agent";
     this.bin = options.bin || this.command;
+    /** How the provider is named to the user. */
+    this.label = options.label || this.command;
     this.proc = null;
     this.activeModel = options.model || null;
     this.activeEffort = options.effort || null;
@@ -47,6 +50,7 @@ export class GenericAppClient extends EventEmitter {
    * @returns {{ args: string[], stdin?: string|null, env?: Record<string, string> }}
    */
   buildTurn(prompt, { model, effort } = {}) {
+    this._assertPromptFitsCommandLine(prompt);
     const args = [];
     if (model) {
       args.push("--model", model);
@@ -56,6 +60,17 @@ export class GenericAppClient extends EventEmitter {
     }
     args.push("-p", prompt);
     return { args };
+  }
+
+  /**
+   * For a CLI that takes its prompt only on the command line: refuse a prompt
+   * Windows cannot pass, before anything is spawned.
+   *
+   * @param {string} prompt
+   */
+  _assertPromptFitsCommandLine(prompt) {
+    const refusal = commandLinePromptRefusal(this.label, resolveBinary(this.bin), prompt);
+    if (refusal) throw new Error(refusal);
   }
 
   /**

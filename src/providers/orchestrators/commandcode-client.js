@@ -9,6 +9,7 @@ export class CommandCodeAppClient extends GenericAppClient {
     super({
       ...options,
       command: "commandcode",
+      label: "Command Code",
       bin: options.bin || process.env.COMMANDCODE_BIN || "commandcode",
     });
   }

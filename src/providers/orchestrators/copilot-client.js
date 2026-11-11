@@ -74,6 +74,7 @@ export class CopilotAppClient extends GenericAppClient {
     super({
       ...options,
       command: "copilot",
+      label: "Copilot",
       bin: options.bin || process.env.COPILOT_BIN || "gh",
     });
     this.sessionId = null;
@@ -146,6 +147,7 @@ export class CopilotAppClient extends GenericAppClient {
   }
 
   buildTurn(prompt, { model } = {}) {
+    this._assertPromptFitsCommandLine(prompt);
     this._resetTurnState();
     // Flags first, prompt last. `gh copilot` has no effort flag; effort stays a no-op.
     const args = [
