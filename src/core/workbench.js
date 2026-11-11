@@ -34,7 +34,8 @@ import net from "node:net";
 import path from "node:path";
 import { atomicWriteJson } from "../config/paths.js";
 import { getSessionDir, loadTurnLog } from "../data/sessions.js";
-import { resolveBinary, safeSpawn } from "../utils/process.js";
+import { GIT_SAFE_CONFIG, GIT_SAFE_ENV, LIST_FILTERS_ARGS, filterOverrides, gitBinary } from "../utils/git.js";
+import { resolveBinary, safeSpawn, systemBinary, withoutLookupGuard } from "../utils/process.js";
 
 /** Folders left out of the tree when git isn't deciding what belongs to the project. */
 const IGNORED_DIRS = new Set([
@@ -74,32 +75,6 @@ const MAX_PLAN_ITEMS = 200;
 
 /** git's well-known empty tree: the base for a diff in a repository with no commits yet. */
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
-/**
- * Every git call here runs by itself as soon as a project opens, and a folder's
- * own `.git/config` can name commands for git to run. A downloaded project
- * mustn't get code execution just by being looked at, so these turn off what
- * would run one, and `autoRefreshIndex` keeps a background diff from writing
- * the index under a worker's `git add`. Hooks fire from plumbing too:
- * `update-ref` runs `reference-transaction`. Settings of a submodule's own are
- * out of reach of all of this, so git never goes into one. See also
- * {@link localFilters}.
- */
-const GIT_SAFE_CONFIG = [
-  "-c",
-  "core.quotePath=false",
-  "-c",
-  "core.fsmonitor=false",
-  "-c",
-  "core.hooksPath=NUL",
-  "-c",
-  "diff.autoRefreshIndex=false",
-  "-c",
-  "submodule.recurse=false",
-];
-
-/** Without this, a blob missing from a "partial clone" is fetched, running whatever `core.sshCommand` says. */
-const GIT_SAFE_ENV = { GIT_NO_LAZY_FETCH: "1" };
 
 export const DEFAULT_LOCALHOST_PORTS = /** @type {const} */ ([3000, 4173, 4200, 5173, 8000, 8080, 8888]);
 
@@ -169,7 +144,7 @@ export function runGit(cwd, args, { maxBytes = MAX_GIT_OUTPUT, timeoutMs = GIT_T
     const chunks = [];
     let size = 0;
     let truncated = false;
-    const proc = safeSpawn("git", [...GIT_SAFE_CONFIG, ...args], {
+    const proc = safeSpawn(gitBinary(), [...GIT_SAFE_CONFIG, ...args], {
       cwd,
       // The engine has no console: without this, each call flashes one on Windows.
       windowsHide: true,
@@ -776,29 +751,8 @@ function untrackedDiff(rootReal, rel) {
  * @returns {Promise<{ env: Record<string, string>, drivers: Set<string> }>}
  */
 export async function localFilters(rootReal) {
-  const res = await runGit(rootReal, ["config", "--show-scope", "--name-only", "--get-regexp", "^filter\\."]);
-  /** @type {Set<string>} */
-  const drivers = new Set();
-  for (const line of res.stdout.split(/\r?\n/)) {
-    const [scope, key] = line.split("\t");
-    if (!key || scope === "global" || scope === "system") continue;
-    // The name may be empty: `[filter ""]` is a driver like any other.
-    const driver = /^filter\.(.*)\.[^.]+$/.exec(key)?.[1];
-    if (driver !== undefined) drivers.add(driver);
-  }
-  const settings = [...drivers].flatMap((driver) => [
-    [`filter.${driver}.clean`, ""],
-    [`filter.${driver}.smudge`, ""],
-    [`filter.${driver}.process`, ""],
-    [`filter.${driver}.required`, "false"],
-  ]);
-  /** @type {Record<string, string>} */
-  const env = settings.length > 0 ? { GIT_CONFIG_COUNT: String(settings.length) } : {};
-  settings.forEach(([key, value], i) => {
-    env[`GIT_CONFIG_KEY_${i}`] = key;
-    env[`GIT_CONFIG_VALUE_${i}`] = value;
-  });
-  return { env, drivers };
+  const res = await runGit(rootReal, LIST_FILTERS_ARGS);
+  return filterOverrides(res.stdout);
 }
 
 /**
@@ -882,17 +836,18 @@ export async function getWorkspaceDiff(workspace) {
 function defaultShell() {
   if (process.platform !== "win32") return process.env.SHELL || "/bin/sh";
   const pwsh = resolveBinary("pwsh");
-  return pwsh && path.isAbsolute(pwsh) ? pwsh : "powershell.exe";
+  return pwsh && path.isAbsolute(pwsh) ? pwsh : systemBinary("WindowsPowerShell\\v1.0\\powershell.exe");
 }
 
 /** The user's environment, minus what only made sense for the app starting the engine. */
 function terminalEnv() {
   /** @type {Record<string, string>} */
-  const env = {};
+  const kept = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined || /^ELECTRON_|^KUMO_(ENGINE_ROOT|E2E)/i.test(key)) continue;
-    env[key] = value;
+    kept[key] = value;
   }
+  const env = withoutLookupGuard(kept);
   env.TERM = "xterm-256color";
   env.COLORTERM = "truecolor";
   return env;

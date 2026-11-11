@@ -4,7 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { createGitRunner } from "../utils/git.js";
 import { c, badge, separator } from "../utils/ui.js";
 
 /**
@@ -47,11 +47,9 @@ export function inspectGraph(targetDir) {
   let latestCommit = null;
   let isStale = false;
   try {
-    const gitOut = execFileSync("git", ["log", "-1", "--format=%ct|%h|%s"], {
-      cwd: targetDir,
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf-8",
-    }).trim();
+    const logged = createGitRunner(targetDir)(["log", "-1", "--format=%ct|%h|%s"]);
+    if (logged.status !== 0) throw new Error("not a git repository, or no commits yet");
+    const gitOut = logged.stdout.trim();
 
     if (gitOut) {
       const [timestampSec, hash, subject] = gitOut.split("|");
