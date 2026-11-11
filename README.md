@@ -75,7 +75,7 @@ A Windows-first Electron app on the same engine as the CLI. Glass panels sit ove
 - **Workbench (6 panels):** **Workers** (live runs grouped by role with timers and expandable output), **Files** (the project's file tree and a code viewer, refreshed after worker writes), **Diff** (uncommitted changes or any one turn's changes, approvals, and inline review comments you send back to the lead), **Terminal** (a real shell for the project that keeps running while you look elsewhere), **Browser** (your dev server in the app, found automatically), and **Plan** (the chat's task list, from the lead's checklists or `PLAN.md`).
 - **Attachments:** click **+** in the composer, paste an image with `Ctrl+V`, or paste or drop files, and they go with your message. They're saved under the project's `.kumo/` folder, which stays out of git, for the lead to open. A lead that reaches the API directly can't see images itself.
 - **Trace:** while a lead works, its reply shows what it's on, and every reply keeps a trace of what it thought and did, Gemini through Antigravity included.
-- **Rewind:** the app snapshots a git project around every turn, so Diff can show what one turn changed and put your files back to how they were before it, with a preview first. A rewind can be undone, the chat stays as it is, and the lead is told. Anything a snapshot can't bring back, such as an ignored file or a very large one, stays as it is, and the preview says so. Snapshots live in your repository under `refs/kumo/`: your index and branches stay untouched, `git log` doesn't show them, and a normal `git push` leaves them behind.
+- **Rewind:** the app snapshots a git project around every turn, so Diff can show what one turn changed and put your files back to how they were before it, with a preview first. A rewind can be undone, the chat stays as it is, and the lead is told. Anything a snapshot can't bring back, such as an ignored file, a very large one, or a file under a git filter the repository sets up for itself (git-crypt, for one), stays as it is, and the preview says so. A project with more than 1 GB of new files that git doesn't ignore gets no checkpoint for that turn, and the app warns you once; ignore or commit them and checkpoints come back. Snapshots live in your repository under `refs/kumo/`: your index and branches stay untouched, `git log` doesn't show them, and a normal `git push` leaves them behind.
 - **Compare:** give two models the same brief and see their changes side by side, then keep one. Each works on its own git worktree of the project, uncommitted changes included, so nothing lands until you choose, and your safety mode still holds. Keeping a side can be rewound like any turn. Ignored files such as `node_modules` aren't copied. Start it from the Command Palette.
 - **Command Palette (`Ctrl+K`), Quick Open (`Ctrl+P`), `/` Commands and `@` Mentions:** jump to any panel, dock layout, session action or file from the keyboard, type `/` in the composer for quick commands (`/model`, `/effort`, `/mode`, `/new`, `/files`, `/rename` and more), or type `@` to mention a file.
 - **Settings:** one glass page for Accounts (sign in through each CLI's own login, usage per subscription, API keys read from the environment), Models, Roles (a model per role, and custom roles of your own), Appearance (any accent color, scenes, frame rate, dock and glass), General (your name and standing instructions, safety mode, chimes, notices) and Doctor (health checks, one-click repairs and a report to paste into an issue). Ctrl+, opens it.
@@ -86,11 +86,20 @@ A Windows-first Electron app on the same engine as the CLI. Glass panels sit ove
 - **Scenes:** Clouds, Night sky, or your own: drop a `defineScene` script (`.js` or `.ts`) into `~/.kumo/scenes/` and it shows up in Settings › Appearance, and reloads when you save it. Scenes run sandboxed, with no network and no access to your chats.
 - **Built to stay out of the way:** the engine runs in its own process, so a stuck provider never freezes the window, and the app recovers if the engine crashes.
 
+### Installing the app
+
+No release is published yet, so build the installer from a checkout:
+
 ```powershell
-npm run dev -w @kumo/desktop      # run it from the repository
+git clone https://github.com/ainere/Kumo.git
+cd Kumo
+npm install
+npm run dist -w @kumo/desktop     # writes apps/desktop/dist/Kumo-Setup-<version>.exe
 ```
 
-More in the [desktop guide](guides/desktop.md).
+The installer is per user and needs no admin rights. It installs Kumo to `%LOCALAPPDATA%\Programs\kumo`, adds Start menu and desktop shortcuts, and starts the app. The app carries its own Node, so all you need beside it is Git and the provider CLIs you log in to. Builds aren't code-signed yet, so Windows SmartScreen can warn about a copy downloaded from the internet ("Windows protected your PC"); "More info", then "Run anyway", gets past it. Once releases are published on GitHub, the app updates itself: a new version downloads in the background and installs when you quit. Uninstall it from Windows Settings › Apps › Installed apps. Your chats, settings and projects in `~/.kumo` stay.
+
+To run it straight from the repository instead: `npm run dev -w @kumo/desktop`. More in the [desktop guide](guides/desktop.md).
 
 ## Quick start
 
@@ -162,7 +171,7 @@ Claude Code runs as the official CLI on your own login; Kumo never handles your 
 | Mode | What happens to a worker's change |
 |---|---|
 | `autonomous` (default) | Applied right away, with a summary of what changed |
-| `diff-review` | The worker previews a diff first; the lead confirms it and Kumo applies exactly that diff |
+| `diff-review` | The worker previews a diff first; the lead confirms it and Kumo applies exactly that diff. If it no longer applies, nothing is written |
 | `interactive` | Same preview, but you approve it in the REPL or the desktop app before anything is written |
 
 Set it with `kumo config set safetyMode <mode>`. More in [safety and configuration](guides/configuration.md).
