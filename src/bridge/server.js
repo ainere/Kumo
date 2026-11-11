@@ -42,7 +42,6 @@
  * one it falls back to the saved config, live-log files and approval files.
  */
 
-import { execFileSync, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -65,6 +64,7 @@ import { loadProjectRegistry, hashWorkspace } from "../data/sessions.js";
 import { atomicWriteJson } from "../config/paths.js";
 import { VERSION } from "../version.js";
 import { routeLiveOutput } from "../utils/process.js";
+import { createGitRunner } from "../utils/git.js";
 import { connectEngine } from "../core/ipc/engine-client.js";
 import { StringDecoder } from "node:string_decoder";
 
@@ -225,21 +225,19 @@ export function consumePendingPreview(previewId) {
 /**
  * Run git and return stdout, or "" when git fails (not a repo, no HEAD, …).
  *
+ * Runs the shared safe runner (absolute git, the repository's own commands
+ * switched off, see utils/git.js). A runner reads the folder's config once, so
+ * one operation passes one runner to all its calls; none is kept across
+ * operations, because a worker can edit .git/config between them.
+ *
  * @param {string} cwd
  * @param {string[]} args
+ * @param {ReturnType<typeof createGitRunner>} [run]
  * @returns {string}
  */
-function git(cwd, args) {
-  try {
-    return execFileSync("git", args, {
-      cwd,
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf-8",
-      maxBuffer: 64 * 1024 * 1024,
-    });
-  } catch {
-    return "";
-  }
+function git(cwd, args, run = createGitRunner(cwd)) {
+  const res = run(args);
+  return res.status === 0 && typeof res.stdout === "string" ? res.stdout : "";
 }
 
 /**
@@ -250,8 +248,9 @@ function git(cwd, args) {
  * and after a worker writes into it, so those edits went unreported. `-z`
  * yields raw paths: no C-style quoting of spaces or non-ASCII names.
  */
-export function getGitStatus(cwd) {
-  const out = git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+export function getGitStatus(cwd, run = createGitRunner(cwd)) {
+  // Not into submodules: git would run the status there under the submodule's own config, filters included.
+  const out = git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=all"], run);
   if (!out) return [];
   const tokens = out.split("\0");
   const files = [];
@@ -270,14 +269,16 @@ export function getGitStatus(cwd) {
  * Capture git diff stat summary.
  */
 export function getGitDiffStat(cwd) {
-  return git(cwd, ["diff", "HEAD", "--stat"]).trim();
+  return git(cwd, ["diff", "HEAD", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "--stat"]).trim();
 }
 
 /**
  * Capture the names of tracked files with uncommitted modifications.
  */
-export function getGitDiffNames(cwd) {
-  return git(cwd, ["diff", "HEAD", "--name-only", "-z"]).split("\0").filter(Boolean);
+export function getGitDiffNames(cwd, run = createGitRunner(cwd)) {
+  return git(cwd, ["diff", "HEAD", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "--name-only", "-z"], run)
+    .split("\0")
+    .filter(Boolean);
 }
 
 function hashFileContent(file) {
@@ -299,7 +300,8 @@ function hashFileContent(file) {
  * @returns {{ files: string[], hashes: Map<string, string|null> }}
  */
 export function captureWorkspaceState(cwd) {
-  const files = Array.from(new Set([...getGitStatus(cwd), ...getGitDiffNames(cwd)]));
+  const run = createGitRunner(cwd);
+  const files = Array.from(new Set([...getGitStatus(cwd, run), ...getGitDiffNames(cwd, run)]));
   const hashes = new Map();
   // With every untracked file listed, an un-ignored dependency tree could mean
   // hashing tens of thousands of files twice per write; past the cap, files are
@@ -338,25 +340,70 @@ export function changedFilesBetween(pre, post) {
 }
 
 /**
- * The `---`/`+++` header paths of a unified diff, exactly as written (prefix
- * included, trailing tab/timestamp removed, /dev/null skipped). Only a `---`
- * line directly followed by a `+++` line counts, so prose and Markdown rules
- * are not mistaken for headers.
+ * The two names on a `diff --git` line, prefixes included, or null when they
+ * cannot be told apart: a name with spaces is only unambiguous when both sides
+ * are the same file (`a/<name> b/<name>`).
+ *
+ * @param {string} rest - the line after `diff --git `
+ * @returns {[string, string]|null}
+ */
+function gitHeaderNames(rest) {
+  const unquote = (/** @type {string} */ p) => p.replace(/^"(.*)"$/, "$1");
+  const two = /^("(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*"|\S+)$/.exec(rest);
+  if (two) return [unquote(two[1]), unquote(two[2])];
+  const middle = (rest.length - 1) / 2;
+  if (Number.isInteger(middle) && rest[middle] === " ") {
+    const left = rest.slice(0, middle);
+    const right = rest.slice(middle + 1);
+    if (left.startsWith("a/") && right.startsWith("b/") && left.slice(2) === right.slice(2)) return [left, right];
+  }
+  return null;
+}
+
+/**
+ * The header paths of a unified diff, exactly as written (prefix included,
+ * trailing tab/timestamp removed, /dev/null skipped). Only a `---` line
+ * directly followed by a `+++` line counts, so prose and Markdown rules are
+ * not mistaken for headers.
+ *
+ * A patch with no such lines is still a diff when it moves a file (`rename
+ * from`/`rename to`) or changes its mode (`old mode`/`new mode`) under a
+ * `diff --git` line; the names on that line stand in for the missing headers.
+ * A `diff --git` line alone proves nothing.
  *
  * @param {string} text
  * @returns {string[]}
  */
 export function diffHeaderPaths(text) {
   const lines = String(text || "").split(/\r?\n/);
+  /** @type {string[]} */
   const paths = [];
-  const pathOf = (line) => line.slice(4).split("\t")[0].trim().replace(/^"(.*)"$/, "$1");
-  for (let i = 0; i + 1 < lines.length; i++) {
-    if (!lines[i].startsWith("--- ") || !lines[i + 1].startsWith("+++ ")) continue;
-    for (const p of [pathOf(lines[i]), pathOf(lines[i + 1])]) {
+  const pathOf = (/** @type {string} */ line) => line.slice(4).split("\t")[0].trim().replace(/^"(.*)"$/, "$1");
+  /** @type {{ names: string[], patched: boolean, from: boolean, to: boolean, oldMode: boolean, newMode: boolean } | null} */
+  let block = null;
+  const endBlock = () => {
+    if (block && !block.patched && ((block.from && block.to) || (block.oldMode && block.newMode))) paths.push(...block.names);
+    block = null;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith("diff --git ")) {
+      endBlock();
+      block = { names: gitHeaderNames(line.slice("diff --git ".length)) ?? [], patched: false, from: false, to: false, oldMode: false, newMode: false };
+    } else if (block) {
+      if (/^rename (?:from|old) /.test(line)) block.from = true;
+      else if (/^rename (?:to|new) /.test(line)) block.to = true;
+      else if (line.startsWith("old mode ")) block.oldMode = true;
+      else if (line.startsWith("new mode ")) block.newMode = true;
+    }
+    if (!line.startsWith("--- ") || !(lines[i + 1] ?? "").startsWith("+++ ")) continue;
+    if (block) block.patched = true;
+    for (const p of [pathOf(line), pathOf(lines[i + 1])]) {
       if (p && p !== "/dev/null") paths.push(p);
     }
     i++;
   }
+  endBlock();
   return paths;
 }
 
@@ -618,10 +665,6 @@ export function resolveWorkerTarget(opts, config) {
  * derived from the legacy `mode` when absent. Tasks a worker cannot perform are
  * refused here rather than run and answered with invented output.
  *
- * `previewRequired` marks a write that redoes a task whose approved preview no
- * longer applies (`staleReason` says why). A worker that edits files itself
- * runs it again; one that writes by proposing a diff is refused, because the
- * diff it would propose now is not the one that was approved.
  */
 export async function dispatchWorkerTask(opts) {
   if (nestedInWorker) {
@@ -653,14 +696,6 @@ export async function dispatchWorkerTask(opts) {
   // A worker that cannot edit files itself writes by proposing a diff, which
   // the bridge applies (see writeThroughBridge).
   if (permission === "write" && !caps.writesWorkspace) {
-    // The caller is redoing a task whose approved preview went stale. A new
-    // diff from this worker would be written unseen, so it needs a new preview.
-    if (opts.previewRequired) {
-      return refusal(
-        `the approved diff could not be applied verbatim (${opts.staleReason}), and worker provider '${target.provider}' cannot edit files itself, ` +
-          `so redoing the task would write a change nobody approved; nothing was written. Request a new preview.`
-      );
-    }
     return writeThroughBridge({ ...opts, config, workspace });
   }
 
@@ -822,21 +857,31 @@ function patchPathProblem(p) {
 }
 
 /**
- * Why a path must not be written given what is on disk, or null: it runs
- * through a link already in the workspace. Git stops at a symbolic link but not
- * at a Windows junction, so `junction/x.txt` would land wherever the junction
- * points. `lstat` reports both as links; the workspace's own path is not judged.
+ * Why a path must not be written given what is on disk, or null. Two things
+ * the patch text cannot show:
+ *
+ * - It runs through a link already in the workspace. Git stops at a symbolic
+ *   link but not at a Windows junction, so `junction/x.txt` would land wherever
+ *   the junction points. `lstat` reports both as links.
+ * - A part of it is another name for a protected folder. Windows gives a folder
+ *   a short alias, and once four siblings share its first letters the alias is
+ *   hashed (`CL59A6~1` for `.claude`): {@link protectedPatchDir} cannot read
+ *   that off the text, so each part that exists is judged by its real name.
+ *
+ * The workspace's own path is not judged.
  *
  * @param {string} workspace
  * @param {string} p - a path git named, relative to the workspace
  * @returns {string|null}
  */
-function patchLinkProblem(workspace, p) {
+function patchDiskProblem(workspace, p) {
   let at = workspace;
   for (const part of p.split(/[\\/]/).filter(Boolean)) {
     at = path.join(at, part);
     try {
       if (fs.lstatSync(at).isSymbolicLink()) return `the diff writes through a link in the workspace (${p})`;
+      const dir = protectedPatchDir(path.basename(fs.realpathSync.native(at)));
+      if (dir) return protectedMessage(dir, p);
     } catch (err) {
       // Nothing there yet, so the patch creates the rest. Anything else cannot be vouched for.
       const code = /** @type {NodeJS.ErrnoException} */ (err).code;
@@ -922,7 +967,7 @@ function patchRefusal(diff, workspace) {
     if (!workspace) continue;
     // Raw and decoded, as in patchPathProblem: the disk holds the real name, not git's quoted spelling.
     for (const candidate of new Set([p, decodeGitPath(p)])) {
-      const linked = patchLinkProblem(workspace, candidate);
+      const linked = patchDiskProblem(workspace, candidate);
       if (linked) return linked;
     }
   }
@@ -1016,7 +1061,7 @@ export function gitPatchRefusal(run, prefix, workspace) {
   for (const name of named) {
     // Judge the name inside the workspace, not the repository path above it.
     const rel = prefix && name.startsWith(prefix) ? name.slice(prefix.length) : name;
-    const problem = patchPathProblem(rel) ?? (workspace ? patchLinkProblem(workspace, rel) : null);
+    const problem = patchPathProblem(rel) ?? (workspace ? patchDiskProblem(workspace, rel) : null);
     if (problem) return problem;
   }
   return null;
@@ -1028,8 +1073,8 @@ const GIT_POLICY_ERROR_RE = /invalid path|beyond a symbolic link|is outside (?:o
 /**
  * A failed `git apply`, as `applyApprovedDiff` reports it. Git's own
  * refusals of a path (`invalid path '.git/…'`, `beyond a symbolic link`) are
- * marked `refused`, so the caller does not answer them by letting a worker
- * write the change.
+ * marked `refused`, so the caller reports them as refusals, not as a patch
+ * gone stale.
  *
  * @param {import("node:child_process").SpawnSyncReturns<string>} result
  * @param {string} fallback
@@ -1052,14 +1097,14 @@ function gitFailure(result, fallback) {
  * A patch that is refused on policy (paths outside the workspace, protected
  * directories such as `.git/` or `.claude/`, symbolic links) comes back with
  * `refused: true`: it is not a patch that merely failed to apply, so the
- * caller must not fall back to letting a worker write the change instead.
+ * caller reports it as refused, not as stale.
  * Three layers decide: a scan of the patch text, git's own report of the files
  * and modes it reads in it, and whether the paths of both run through a link on
  * disk. Nothing is written unless all three pass.
  *
  * No `--recount`: it rewrites hunk line counts to fit whatever body is
  * present, which hides a truncated diff. A hunk whose counts are wrong is
- * rejected instead, and the caller falls back or asks for a new preview.
+ * rejected instead, and the caller asks for a new preview.
  *
  * @param {string} cwd
  * @param {string} previewText
@@ -1078,8 +1123,9 @@ export function applyApprovedDiff(cwd, previewText) {
   // skips what lies outside that subdirectory (exit 0, nothing written), while
   // a plain `---`/`+++` patch is read cwd-relative. Running from the repository
   // root with `--directory=<workspace>` makes both mean the workspace.
-  const prefix = git(cwd, ["rev-parse", "--show-prefix"]).trim();
-  const top = prefix ? git(cwd, ["rev-parse", "--show-toplevel"]).trim() : "";
+  const runGit = createGitRunner(cwd);
+  const prefix = git(cwd, ["rev-parse", "--show-prefix"], runGit).trim();
+  const top = prefix ? git(cwd, ["rev-parse", "--show-toplevel"], runGit).trim() : "";
   const fromRoot = Boolean(prefix && top);
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kumo-apply-"));
@@ -1088,14 +1134,9 @@ export function applyApprovedDiff(cwd, previewText) {
     fs.writeFileSync(patchFile, diff, "utf-8");
     const base = ["apply", `-p${level}`, "--whitespace=nowarn", ...(fromRoot ? [`--directory=${prefix}`] : [])];
     // C locale: git's refusals are matched by their English text below.
-    const env = { ...process.env, LC_ALL: "C", LANGUAGE: "C" };
+    const env = { LC_ALL: "C", LANGUAGE: "C" };
     const run = (/** @type {string[]} */ extra) =>
-      spawnSync("git", [...base, ...extra, "--", patchFile], {
-        cwd: fromRoot ? top : cwd,
-        encoding: "utf-8",
-        timeout: 60000,
-        env,
-      });
+      runGit([...base, ...extra, "--", patchFile], { cwd: fromRoot ? top : cwd, timeout: 60000, env });
 
     const gitRefusal = gitPatchRefusal(run, fromRoot ? prefix : "", cwd);
     if (gitRefusal) return { ok: false, reason: gitRefusal, refused: true };
@@ -1248,7 +1289,32 @@ function errorResult(text) {
  * @param {Object} args
  * @param {{ onConfig?: (config: object) => void }} [hooks] - sees the effective settings of each call
  */
-export async function handleRoleTool(registered, { task, files, confirm, previewId, model, effort, provider }, hooks = {}) {
+export async function handleRoleTool(registered, call, hooks = {}) {
+  /** @type {Set<string>} */
+  const claimed = new Set();
+  try {
+    return await runRoleTool(registered, call, hooks, claimed);
+  } finally {
+    // Whatever the outcome: a declined or failed confirmation stays retryable with the same id.
+    for (const id of claimed) confirming.delete(id);
+  }
+}
+
+/**
+ * The preview ids a confirmation is working on right now. The approval it may
+ * wait for is an `await`, so without this two confirmations of one id would
+ * both get past {@link peekPendingPreview} and be applied twice.
+ * @type {Set<string>}
+ */
+const confirming = new Set();
+
+/**
+ * @param {import("../config/roles.js").RoleInfo} registered
+ * @param {Object} call - the arguments of the tool call
+ * @param {{ onConfig?: (config: object) => void }} hooks
+ * @param {Set<string>} claimed - the ids this call marked in {@link confirming}; the caller clears them
+ */
+async function runRoleTool(registered, { task, files, confirm, previewId, model, effort, provider }, hooks, claimed) {
   const toolName = registered.tool;
   const config = await effectiveConfig();
   hooks.onConfig?.(config);
@@ -1285,7 +1351,15 @@ export async function handleRoleTool(registered, { task, files, confirm, preview
     const result = await dispatch({ permission: "read", previewDiff: true, safetyMode });
 
     const formatted = formatResult(result, toolName);
-    if (result.ok && result.stdout) {
+    // Only a diff can be confirmed: a confirmation writes that exact diff and nothing else.
+    if (result.ok && result.stdout && !extractUnifiedDiff(result.stdout)) {
+      if (formatted.content && formatted.content[0]) {
+        formatted.content[0].text +=
+          `\n\n---\n[STATUS: NO_DIFF]\n` +
+          `The worker proposed no unified diff, so there is nothing to confirm, and nothing was written.\n` +
+          `No previewId was issued. Ask ${toolName} again, naming the files to change and asking for the change as a unified diff.`;
+      }
+    } else if (result.ok && result.stdout) {
       const generatedId = storePendingPreview(result.stdout, {
         taskHash: hashTask(task),
         safetyMode,
@@ -1323,6 +1397,12 @@ export async function handleRoleTool(registered, { task, files, confirm, preview
     if (cached.workspaceDir && cached.workspaceDir !== workspaceDir) {
       return errorResult("preview was generated for a different workspace.");
     }
+    // No await since the peek above, so two confirmations cannot both pass this.
+    if (confirming.has(previewId)) {
+      return errorResult("this previewId is already being applied by another confirmation; wait for it to finish.");
+    }
+    confirming.add(previewId);
+    claimed.add(previewId);
     confirmedPreview = cached.previewText;
 
     if (safetyMode === "interactive" && interactiveApprovalAvailable()) {
@@ -1342,10 +1422,9 @@ export async function handleRoleTool(registered, { task, files, confirm, preview
   const preState = captureWorkspaceState(workspaceDir);
 
   let result;
-  let note = "";
   if (confirmedPreview) {
-    // Apply what was approved, byte for byte. Only when that is impossible is
-    // the worker asked to redo the task, and the output says so.
+    // Apply what was approved, byte for byte. Nothing else is ever written for a
+    // confirmation: a worker run now would write what nobody reviewed.
     const applied = applyApprovedDiff(workspaceDir, confirmedPreview);
     if (applied.ok) {
       result = {
@@ -1356,26 +1435,13 @@ export async function handleRoleTool(registered, { task, files, confirm, preview
         timedOut: false,
       };
     } else if (applied.refused) {
-      // A patch the bridge will not write is not a stale one: re-running the
-      // worker would just hand it the same write.
       return errorResult(`the approved diff was refused (${applied.reason}); nothing was written.`);
-    } else if ((safetyMode === "interactive" && interactiveApprovalAvailable()) || process.env.KUMO_EXACT_DIFF_ONLY === "1") {
-      // The operator approved this exact diff, not whatever a re-run writes;
-      // writing anything else would bypass the human gate. A comparison confirms
-      // its own previews and has no human here, so it asks for the same rule.
+    } else {
+      const approver = safetyMode === "interactive" && interactiveApprovalAvailable() ? " so the operator can approve the actual change" : "";
       return errorResult(
         `the approved diff could not be applied verbatim (${applied.reason}); nothing was written. ` +
-          `Request a new preview so the operator can approve the actual change.`
+          `Request a new preview${approver}.`
       );
-    } else {
-      // Only a worker that edits files itself can redo the task; one that writes
-      // through the bridge is refused, since that would apply a diff nobody saw.
-      result = await dispatch({ permission: "write", safetyMode, previewRequired: true, staleReason: applied.reason });
-      // A refusal ran nothing, so there is no re-run to report.
-      if (result.refused) return formatResult(result, toolName);
-      note =
-        `\n\n[NOTE: the approved diff could not be applied verbatim (${applied.reason}); ` +
-        `the worker re-ran the task, so the result may differ from the preview.]`;
     }
   } else {
     result = await dispatch({ permission: "write", safetyMode });
@@ -1391,7 +1457,6 @@ export async function handleRoleTool(registered, { task, files, confirm, preview
   const diffStat = getGitDiffStat(workspaceDir);
 
   if (formatted.content && formatted.content[0]) {
-    formatted.content[0].text += note;
     // Also after an exact apply: it confirms git touched the files the
     // operator saw, under the paths the preview named.
     if (confirmedPreview) {

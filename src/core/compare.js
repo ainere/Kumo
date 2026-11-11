@@ -27,8 +27,7 @@
  * any worker call. The session's safety mode holds: under a gated mode the
  * worker proposes a diff without writing, and the bridge applies it to the
  * worktree, which is a throwaway place to apply it. The human decision is
- * keeping a side, so no bridge here can ask for one, and a diff that won't apply
- * fails that side rather than letting its worker write.
+ * keeping a side, so no bridge here asks for one.
  *
  * A worktree isn't a sandbox: its `.git` points into the real repository. An
  * autonomous worker can reach that, as it can from any autonomous turn.
@@ -100,18 +99,65 @@ export async function makeWorktree(workspace, tree, dir) {
   return path.join(dir, prefix);
 }
 
+/** Whether two paths name the same place, ignoring the case Windows ignores. */
+const samePath = (/** @type {string} */ a, /** @type {string} */ b) =>
+  process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+
+/**
+ * Git's administrative folder for the worktree at `dir`, or null when it cannot
+ * be vouched for. The worktree's `.git` file says where it is
+ * (`gitdir: <common-dir>/worktrees/<id>`), but that file sits in a folder a
+ * worker writes to, so it is believed only when the folder it names is a real
+ * directory (not a link) directly under this repository's `worktrees` folder,
+ * and points back at this very `.git` file.
+ *
+ * @param {string} workspace
+ * @param {string} dir
+ * @returns {Promise<string | null>}
+ */
+async function worktreeAdminDir(workspace, dir) {
+  try {
+    const dotGit = path.join(realpathSafe(dir), ".git");
+    if (!(await fs.promises.lstat(dotGit)).isFile()) return null;
+    const named = /^gitdir:\s*(.+?)\s*$/m.exec(await fs.promises.readFile(dotGit, "utf-8"))?.[1];
+    if (!named) return null;
+
+    const root = realpathSafe(workspace);
+    const common = (await runGit(root, ["rev-parse", "--git-common-dir"])).stdout.trim();
+    if (!common) return null;
+    const worktrees = realpathSafe(path.join(path.resolve(root, common), "worktrees"));
+
+    const admin = path.resolve(realpathSafe(dir), named);
+    const adminStat = await fs.promises.lstat(admin);
+    if (adminStat.isSymbolicLink() || !adminStat.isDirectory()) return null;
+    const real = realpathSafe(admin);
+    if (!samePath(path.dirname(real), worktrees) || !samePath(real, path.join(worktrees, path.basename(admin)))) return null;
+
+    const backPointer = (await fs.promises.readFile(path.join(admin, "gitdir"), "utf-8")).trim();
+    const pointed = path.resolve(admin, backPointer);
+    return samePath(path.join(realpathSafe(path.dirname(pointed)), path.basename(pointed)), dotGit) ? admin : null;
+  } catch {
+    // Missing or unreadable: git's records are not Kumo's to guess at.
+    return null;
+  }
+}
+
 /**
  * Remove a worktree and git's record of it. Node deletes it, not git: a worker
  * may well link the real `node_modules` in, and to git a junction is a folder to
- * empty. Best effort: a killed worker can hold a file for a moment, and what
- * stays behind is cleared next time.
+ * empty. Only this worktree's own administrative entry goes with it, and only
+ * when it checks out (see {@link worktreeAdminDir}); `git worktree prune` is
+ * never run, because it also forgets the user's own worktrees that happen to be
+ * missing at that moment. Best effort: a killed worker can hold a file for a
+ * moment, and what stays behind is cleared next time.
  *
  * @param {string} workspace
  * @param {string} dir
  */
 export async function removeWorktree(workspace, dir) {
+  const admin = await worktreeAdminDir(workspace, dir);
   await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
-  await runGit(realpathSafe(workspace), ["worktree", "prune"]);
+  if (admin) await fs.promises.rm(admin, { recursive: true, force: true }).catch(() => {});
 }
 
 /**
@@ -215,7 +261,7 @@ export class CompareRun {
       signal.throwIfAborted();
       connection = await this.connect({
         workspace: workdir,
-        env: { ...bridgeEnvFrom(process.env, [side.provider]), KUMO_SAFETY_MODE: safetyMode, KUMO_EXACT_DIFF_ONLY: "1" },
+        env: { ...bridgeEnvFrom(process.env, [side.provider]), KUMO_SAFETY_MODE: safetyMode },
         signal,
       });
       const args = {
