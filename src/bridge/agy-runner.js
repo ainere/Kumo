@@ -500,6 +500,8 @@ async function readAgyUsage() {
     let stdout = "";
     const proc = safeSpawn(bin, ["-p", "/usage"], {
       stdio: ["ignore", "pipe", "ignore"],
+      env: childEnvFor("antigravity"),
+      windowsHide: true,
     });
 
     const timer = setTimeout(() => {
@@ -607,6 +609,8 @@ export async function getAgyModels() {
     let stdout = "";
     const proc = safeSpawn(bin, ["models"], {
       stdio: ["ignore", "pipe", "ignore"],
+      env: childEnvFor("antigravity"),
+      windowsHide: true,
     });
 
     const timer = setTimeout(() => {

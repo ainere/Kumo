@@ -15,7 +15,7 @@ import {
 } from "../config/settings.js";
 import { getAgyModels } from "../bridge/agy-runner.js";
 import { MODEL_CATALOG, allKnownModels, providerOffersModel, OPEN_MODEL_PROVIDERS, EFFORT_LEVELS } from "../config/models.js";
-import { safeSpawn } from "./process.js";
+import { childEnvFor, safeSpawn } from "./process.js";
 import { findOllamaBinary } from "../providers/workers/ollama.js";
 import { CodexAppClient } from "../providers/orchestrators/codex-client.js";
 
@@ -122,7 +122,11 @@ export async function getOllamaModels() {
     let stdout = "";
     let proc;
     try {
-      proc = safeSpawn(findOllamaBinary(), ["list"], { stdio: ["ignore", "pipe", "ignore"] });
+      proc = safeSpawn(findOllamaBinary(), ["list"], {
+        stdio: ["ignore", "pipe", "ignore"],
+        env: childEnvFor("ollama"),
+        windowsHide: true,
+      });
     } catch {
       resolve([]);
       return;

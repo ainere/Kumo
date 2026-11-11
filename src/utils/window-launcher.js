@@ -6,8 +6,19 @@
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { systemBinary, withoutLookupGuard } from "./process.js";
 
 const SAFE_ARG_RE = /^[A-Za-z0-9._:\\/=@+-]+$/;
+
+/**
+ * Windows PowerShell by absolute path. `start` looks a bare name up in the
+ * working directory before PATH, and that directory may be a project folder.
+ *
+ * @returns {string}
+ */
+export function windowsPowerShell() {
+  return systemBinary("WindowsPowerShell\\v1.0\\powershell.exe");
+}
 
 /**
  * Quote a string for AppleScript double-quoted string literal context.
@@ -131,13 +142,15 @@ export async function launchInNewWindow(optsOrWorkspace = {}, maybeArgs = undefi
     return new Promise((resolve) => {
       let child;
       try {
+        // Absolute paths for both programs: `cmd` and `start` would otherwise look in
+        // the project folder (the working directory) before PATH.
         child = spawn(
-          "cmd.exe",
+          systemBinary("cmd.exe"),
           [
             "/c",
             "start",
             "KUMO — 雲",
-            "powershell.exe",
+            windowsPowerShell(),
             "-NoProfile",
             "-NoExit",
             "-ExecutionPolicy",
@@ -149,6 +162,7 @@ export async function launchInNewWindow(optsOrWorkspace = {}, maybeArgs = undefi
             cwd: workspace,
             detached: true,
             stdio: "ignore",
+            env: withoutLookupGuard(process.env),
           }
         );
       } catch {
@@ -329,7 +343,7 @@ export function buildWindowsTerminalArgv(cwd, argv, title) {
     "/c",
     "start",
     "",
-    "powershell.exe",
+    windowsPowerShell(),
     "-NoProfile",
     "-NoExit",
     "-ExecutionPolicy",
@@ -397,7 +411,7 @@ export async function launchTerminalCommand(argv, { cwd = os.homedir(), title = 
     });
 
   if (process.platform === "win32") {
-    return start("cmd.exe", buildWindowsTerminalArgv(cwd, argv, title));
+    return start(systemBinary("cmd.exe"), buildWindowsTerminalArgv(cwd, argv, title));
   }
 
   if (process.platform === "darwin") {

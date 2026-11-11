@@ -35,6 +35,50 @@ import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+// ── Current-folder lookup ──
+
+/**
+ * Node (libuv) on Windows searches the child's working folder before PATH for
+ * a bare executable name, so a project could plant `git.exe` or `cmd.exe` and
+ * have Kumo run it. This variable makes libuv skip the folder. libuv reads it
+ * from the PARENT's environment, so setting it here covers Kumo's own spawns.
+ * `cmd.exe` (which runs the npm `.cmd` shims that start provider CLIs, and whose
+ * shim calls a bare `node`) and a provider CLI's own child lookups read it from
+ * THEIR environment, so {@link childEnvFor} always hands it to provider CLIs.
+ * Only the user's own interactive shells get it removed
+ * ({@link withoutLookupGuard}), so they look things up as they normally do.
+ */
+const LOOKUP_GUARD = "NoDefaultCurrentDirectoryInExePath";
+const lookupGuardInherited = Object.keys(process.env).some((k) => k.toLowerCase() === LOOKUP_GUARD.toLowerCase());
+if (process.platform === "win32") process.env[LOOKUP_GUARD] = "1";
+
+/**
+ * A copy of `env` without the current-folder-lookup guard, unless it was in
+ * the environment before Kumo started (then it was the user's own choice).
+ *
+ * @template {Record<string, string|undefined>} T
+ * @param {T} env
+ * @returns {T}
+ */
+export function withoutLookupGuard(env) {
+  const out = { ...env };
+  if (!lookupGuardInherited) {
+    for (const key of Object.keys(out)) if (key.toLowerCase() === LOOKUP_GUARD.toLowerCase()) delete out[key];
+  }
+  return out;
+}
+
+/**
+ * Absolute path of a Windows system program, so a lookup can never land on a
+ * copy planted in a project.
+ *
+ * @param {string} name - file name, or a path below System32 (`WindowsPowerShell\v1.0\powershell.exe`)
+ * @returns {string}
+ */
+export function systemBinary(name) {
+  return path.win32.join(process.env.SystemRoot || process.env.windir || "C:\\Windows", "System32", name);
+}
+
 /**
  * Determine if a target binary on Windows is a batch script (.cmd/.bat).
  *
@@ -120,7 +164,8 @@ export function prepareSpawn(bin, args = [], options = {}, platform = process.pl
   const { shell: _ignoredShell, ...cleanOptions } = options;
 
   if (isWindowsBatch(bin, platform)) {
-    const comspec = process.env.ComSpec || "cmd.exe";
+    const envComspec = process.env.ComSpec;
+    const comspec = envComspec && path.win32.isAbsolute(envComspec) ? envComspec : systemBinary("cmd.exe");
     const commandLine = [bin, ...args].map(quoteCmdArg).join(" ");
     return {
       file: comspec,
@@ -191,12 +236,59 @@ export function pickWindowsCandidate(candidates, pathext = process.env.PATHEXT) 
 }
 
 /**
- * Resolve a bare command name to an absolute path via `where`/`which`.
+ * The spawnable extensions to try, in PATHEXT order (default .COM;.EXE;.BAT;.CMD).
+ *
+ * @returns {string[]}
+ */
+function windowsExtensions() {
+  const exts = String(process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((e) => e.trim().toLowerCase())
+    .filter((e) => SPAWNABLE_EXTENSIONS.has(e));
+  return exts.length > 0 ? exts : [".com", ".exe", ".bat", ".cmd"];
+}
+
+/** @param {string} file */
+function isRegularFile(file) {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Walk PATH on Windows without ever looking in the current folder: only
+ * absolute entries count (so `.` and other relative entries are skipped), and
+ * the current folder is found only if it is itself an absolute PATH entry.
+ *
+ * @param {string} name
+ * @returns {string|null}
+ */
+function findOnWindowsPath(name) {
+  const exts = windowsExtensions();
+  const hasExt = SPAWNABLE_EXTENSIONS.has(path.extname(name).toLowerCase());
+  const pathValue = process.env.PATH ?? process.env.Path ?? "";
+  for (const raw of pathValue.split(";")) {
+    const dir = raw.trim().replace(/^"(.*)"$/, "$1");
+    if (!dir || !path.win32.isAbsolute(dir)) continue;
+    const names = hasExt ? [name] : exts.map((ext) => name + ext);
+    for (const candidate of names) {
+      const file = path.win32.join(dir, candidate);
+      if (isRegularFile(file)) return file;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve a bare command name to an absolute path via PATH (`which` off Windows).
  *
  * npm installs CLI workers as `.cmd` shims on Windows; spawning the bare name
  * with `shell: false` fails with ENOENT, and `isWindowsBatch` cannot detect a
  * shim it never sees the extension of. Falls back to the bare name so callers
- * keep their existing behavior when the probe finds nothing.
+ * keep their existing behavior when nothing is found. On Windows this is a PATH
+ * walk done here rather than `where.exe`, which lists the current folder first.
  *
  * @param {string} name
  * @returns {string}
@@ -207,24 +299,21 @@ export function resolveBinary(name) {
   if (binaryCache.has(name)) return binaryCache.get(name);
 
   let resolved = name;
-  try {
-    const isWin = process.platform === "win32";
-    const out = execFileSync(isWin ? "where.exe" : "which", [name], {
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf-8",
-      timeout: 5000,
-      windowsHide: true,
-    });
-    const lines = String(out)
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
-    const pick = isWin ? pickWindowsCandidate(lines) : lines[0];
-    if (pick && fs.existsSync(pick)) {
-      resolved = pick;
+  if (process.platform === "win32") {
+    resolved = findOnWindowsPath(name) ?? name;
+  } else {
+    try {
+      const out = execFileSync("which", [name], {
+        stdio: ["ignore", "pipe", "ignore"],
+        encoding: "utf-8",
+        timeout: 5000,
+        windowsHide: true,
+      });
+      const pick = String(out).split(/\r?\n/).map((l) => l.trim()).filter(Boolean)[0];
+      if (pick && fs.existsSync(pick)) resolved = pick;
+    } catch {
+      /* not on PATH; keep the bare name */
     }
-  } catch {
-    /* not on PATH; keep the bare name */
   }
 
   binaryCache.set(name, resolved);
@@ -247,12 +336,15 @@ export function clearBinaryCache() {
  * broker connection URLs (DATABASE_URL, REDIS_URL, MONGODB_URI, …), webhook
  * URLs, DSNs and connection strings, which embed credentials in the value.
  * Endpoint overrides such as OPENAI_BASE_URL are deliberately not matched.
+ * Proxy variables (HTTP_PROXY, …) are left whole even when they embed
+ * credentials: a provider CLI behind an authenticating proxy cannot work without them.
  */
 export const SECRET_ENV_RE = new RegExp(
   [
-    "API_KEY|_TOKEN|_SECRET|PASSWORD|PASSWD|CREDENTIAL",
+    "API_?KEY|_TOKEN|_SECRET|PASSWORD|PASSWD|PASSPHRASE|_PASS$|_PWD$|CREDENTIAL",
     "^(TOKEN|SECRET)",
     "_KEY$",
+    "(^|_)PAT$|_AUTH$|AUTH_?TOKEN|^DOCKER_AUTH_CONFIG$|JWT|_SAS$",
     "(^|_)(DATABASE|DB|REDIS|MONGO|POSTGRES|MYSQL|MARIADB|AMQP|RABBITMQ|SQL)[A-Z0-9_]*_?(URL|URI)$",
     "WEBHOOK|(^|_)DSN$|CONNECTION_?STRING",
   ].join("|"),
@@ -367,6 +459,10 @@ export function bridgeEnvFrom(env, providers = []) {
  * APPDATA, ComSpec, TEMP, …) are preserved untouched — stripping those breaks
  * binary resolution on Windows.
  *
+ * On Windows the current-folder lookup guard is always set, whatever the
+ * environment held before Kumo started: a provider CLI runs in the workspace, and
+ * `cmd.exe` running its `.cmd` shim would otherwise run a `node.exe` planted there.
+ *
  * `ELECTRON_RUN_AS_NODE` is dropped too: the desktop app sets it for the bridge
  * only, and a child that inherited it would run Electron-based tools (and the
  * provider CLIs themselves) as plain Node. A caller that really wants it passes
@@ -378,6 +474,10 @@ export function bridgeEnvFrom(env, providers = []) {
  */
 export function childEnvFor(provider, extra = {}) {
   const env = { ...process.env };
+  if (process.platform === "win32") {
+    for (const key of Object.keys(env)) if (key.toLowerCase() === LOOKUP_GUARD.toLowerCase()) delete env[key];
+    env[LOOKUP_GUARD] = "1";
+  }
   const id = String(provider || "").toLowerCase();
   const keep = new Set(Object.hasOwn(PROVIDER_ENV_KEEP, id) ? PROVIDER_ENV_KEEP[id] : []);
 
@@ -504,7 +604,7 @@ export function killProcessTree(proc) {
   if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
   if (process.platform === "win32" && proc.pid) {
     try {
-      execFileSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], {
+      execFileSync(systemBinary("taskkill.exe"), ["/pid", String(proc.pid), "/T", "/F"], {
         stdio: "ignore",
         timeout: 5000,
       });
